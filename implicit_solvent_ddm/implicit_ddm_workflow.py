@@ -26,6 +26,7 @@ from implicit_solvent_ddm.workflow_phases import (
     compute_free_energy_and_consolidate,
     run_intermediate_simulations,
     adaptive_restraint_pilot,
+    merge_pilot_windows,
     initilized_jobs,
 )
 
@@ -116,29 +117,39 @@ def ddm_workflow(
         message="--> Moving to phase 5: Intermediate State Simulations"
     )
 
-    # Phase 4.5: Adaptive Lambda Scheduler pilot (OBSERVATIONAL, flag-gated). Runs a short-MD pilot of
-    # the complex leg and LOGS a converged restraint schedule. It is a strict barrier before Phase 5 so
-    # it runs with exclusive resources, but production Phases 5/6/7 still read the Phase-4 seed setups
-    # (setup_intermediate_jobs.rv(0..4)) below — so the free-energy path is unchanged and the pilot's
-    # return is not consumed (Step 5a). Flag off -> no pilot job, Phase 5 follows Phase 4 as before
-    # (byte-identical DAG).
+    # Phase 4.5: Adaptive Lambda Scheduler pilot (flag-gated, CLOSED LOOP). Runs a short-MD pilot of the
+    # complex + receptor legs, drives the per-band R-ADD scheduler (dielectric -> charge -> restraints) to
+    # convergence, then REBUILDS the production setups from the converged dielectric + charge schedule so
+    # Phases 5/6/7 run full-length MD on the pilot-determined window count. Flag off -> no pilot job, Phase
+    # 5 reads the Phase-4 seed setups exactly as before (byte-identical DAG).
     phase4_tail = setup_intermediate_jobs
+    setup_source = setup_intermediate_jobs  # which setup job feeds Phases 5/6/7
     if config.workflow.adaptive_lambda:
-        phase4_tail = setup_intermediate_jobs.addFollowOnJobFn(
+        pilot = setup_intermediate_jobs.addFollowOnJobFn(
             adaptive_restraint_pilot,
             decomposition_jobs.rv(),
             endstate_jobs.rv(),
             updated_config,
         )
+        # Apply the converged dielectric + charge windows onto a fresh production config (full mdin,
+        # production dir), then rebuild the production SimulationSetups from it.
+        merged = pilot.addFollowOnJobFn(merge_pilot_windows, updated_config, pilot.rv())
+        setup_source = merged.addFollowOnJobFn(
+            setup_intermediate_simulations,
+            decomposition_jobs.rv(),
+            endstate_jobs.rv(),
+            merged.rv(),
+        )
+        phase4_tail = setup_source
 
     # Phase 5: Run intermediate state simulations
     run_intermediate_jobs = phase4_tail.addFollowOnJobFn(
         run_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
+        setup_source.rv(0), # config
+        setup_source.rv(1), # complex simulations
+        setup_source.rv(2), # receptor simulations
+        setup_source.rv(3), # ligand simulations
+        setup_source.rv(4), # flat bottom simulations
     )
     run_intermediate_jobs.addFollowOnJobFn(
         initilized_jobs,
@@ -151,11 +162,11 @@ def ddm_workflow(
     # Phase 6: Post-processing and Analysis (depends on intermediate)
     analysis_jobs = run_intermediate_jobs.addFollowOnJobFn(
         run_post_analysis_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config 
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
+        setup_source.rv(0), # config
+        setup_source.rv(1), # complex simulations
+        setup_source.rv(2), # receptor simulations
+        setup_source.rv(3), # ligand simulations
+        setup_source.rv(4), # flat bottom simulations
     )
     analysis_jobs.addFollowOnJobFn(
         initilized_jobs,
@@ -173,7 +184,7 @@ def ddm_workflow(
         analysis_jobs.rv(1), # receptor post-analysis results
         analysis_jobs.rv(2), # receptor post-analysis results
         analysis_jobs.rv(3), # ligand post-analysis results
-        setup_intermediate_jobs.rv(0), # config 
+        setup_source.rv(0), # config
     )
 
     free_energy_difference_jobs.addFollowOnJobFn(

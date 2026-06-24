@@ -20,6 +20,11 @@ from implicit_solvent_ddm.adaptive_restraints import (
     restraint_band_superdiagonal,
     build_candidate_pool,
     plan_restraint_insertion,
+    lambda_from_eps,
+    eps_from_lambda,
+    lambda_of_state,
+    charge_of_state,
+    plan_band_insertion,
 )
 
 THRESH = 0.04
@@ -447,3 +452,115 @@ def test_plan_restraint_insertion_banded_converges_when_all_ok():
     )
     assert converged is True and reason == "converged"
     assert new_con is None and new_orient is None
+
+
+# ===========================================================================
+# GB-dielectric (lambda) and charge bands — generic 1-D R-ADD axis
+# ===========================================================================
+def test_lambda_eps_round_trip():
+    for eps in [1.0, 1.2, 1.6, 2.5, 5.0, 12.0, 40.0, 78.5]:
+        assert eps_from_lambda(lambda_from_eps(eps)) == pytest.approx(eps)
+    # gas sentinel: eps == 0 -> lambda 0 (no reaction field), and lambda 0 -> eps 1 (vacuum).
+    assert lambda_from_eps(0.0) == 0.0
+    assert eps_from_lambda(0.0) == pytest.approx(1.0)
+    # water is near the top of the lambda range.
+    assert lambda_from_eps(78.5) == pytest.approx(1.0 - 1.0 / 78.5)
+
+
+def test_lambda_charge_of_state():
+    # state tuple = (label, extdiel, charge, restraint)
+    assert lambda_of_state(("interactions", "0.0", "0.0", "x")) == 0.0
+    assert lambda_of_state(("gb_dielectric", "2.5", "0.0", "x")) == pytest.approx(0.6)
+    assert lambda_of_state(("electrostatics", "78.5", "0.0", "x")) == pytest.approx(1 - 1 / 78.5)
+    assert charge_of_state(("electrostatics", "78.5", "0.5", "x")) == 0.5
+
+
+def test_plan_band_insertion_lambda_targets_worst_gap():
+    # dielectric band coords (lambda) gas(0) .. water(0.987) with the middle pair weak.
+    coords = [0.0, 0.3, 0.6, 0.987]
+    matrix = _tridiag([0.50, 0.002, 0.50])  # (0.3<->0.6) is the worst pair
+    pool = build_candidate_pool([0.0, 0.987], step=0.05)
+    new_lam, converged, reason = plan_band_insertion(matrix, coords, THRESH, pool)
+    assert converged is False
+    assert 0.3 < new_lam < 0.6  # inserted strictly inside the worst gap
+
+
+def test_plan_band_insertion_charge_axis():
+    # charge band q=0 .. q=1 with one weak pair -> insert strictly inside [0, 1].
+    coords = [0.0, 1.0]
+    matrix = _tridiag([0.001])
+    pool = build_candidate_pool([0.0, 1.0], step=0.1)
+    new_q, converged, _ = plan_band_insertion(matrix, coords, THRESH, pool)
+    assert converged is False
+    assert 0.0 < new_q < 1.0
+
+
+def test_plan_band_insertion_never_breaches_band_anchors():
+    # Even with the endpoint pairs weak, an insertion can never land on or past either pinned anchor.
+    coords = [0.0, 0.5, 0.987]
+    matrix = _tridiag([0.001, 0.001])
+    pool = build_candidate_pool([0.0, 0.987], step=0.1)
+    new_lam, converged, _ = plan_band_insertion(matrix, coords, THRESH, pool)
+    assert converged is False
+    assert 0.0 < new_lam < 0.987
+
+
+def test_plan_band_insertion_converges_when_all_ok():
+    coords = [0.0, 0.5, 0.987]
+    matrix = _tridiag([0.20, 0.30])
+    pool = build_candidate_pool([0.0, 0.987], step=0.1)
+    new_lam, converged, reason = plan_band_insertion(matrix, coords, THRESH, pool)
+    assert converged is True and reason == "converged" and new_lam is None
+
+
+def test_plan_band_insertion_pool_exhausted():
+    # Weak gap but no candidate fits (empty pool) -> terminate with the pool-exhausted reason.
+    new_lam, converged, reason = plan_band_insertion(_tridiag([0.001]), [0.0, 0.1], THRESH, [])
+    assert converged is True and reason == "pool-exhausted" and new_lam is None
+
+
+# ---------------------------------------------------------------------------
+# Real CycleSteps: pin the dielectric/charge band indices + coordinates for the
+# cb7 seed with a 6-window epsilon band. Mirrors the restraint-band index tests.
+# ---------------------------------------------------------------------------
+def test_real_cyclesteps_dielectric_charge_bands():
+    from implicit_solvent_ddm.matrix_order import CycleSteps
+
+    eps_seed = sorted({1.2, 1.6, 2.5, 5.0, 12.0, 40.0})
+    cs = CycleSteps([-8.0, -2.0, 4.0], [-4.0, 2.0, 8.0], [0.0, 1.0], eps_seed)
+    cs.round(3)
+    g = len(eps_seed)
+
+    # complex dielectric band = interactions(gas) -> G GB windows -> electrostatics q=0 (water anchor).
+    cdiel = cs.complex_order[cs.start_gb_extdiel_matrix : cs.start_complex_charge_matrix + 1]
+    assert len(cdiel) == g + 2
+    assert cdiel[0][0] == "interactions"
+    assert cdiel[-1] == ("electrostatics", "78.5", "0.0", "4.0_8.0")
+    lam = [lambda_of_state(s) for s in cdiel]
+    assert lam == sorted(lam)  # ascending gas -> water
+    assert lam[0] == 0.0 and lam[-1] == pytest.approx(1 - 1 / 78.5)
+
+    # complex charge band = electrostatics q=0 -> q=1 (constant water + max restraint).
+    cchg = cs.complex_order[cs.start_complex_charge_matrix : cs.halo_restraint_matrix + 1]
+    assert [charge_of_state(s) for s in cchg] == [0.0, 1.0]
+
+    # receptor dielectric band = max-restraint water anchor -> G GB windows -> no_gb (gas).
+    start = cs.start_receptor_gb_matrix
+    rdiel = cs.receptor_order[start - 1 : start + g + 1]
+    assert len(rdiel) == g + 2
+    assert rdiel[0][0] == "lambda_window"  # the max restraint window
+    assert rdiel[-1][0] == "no_gb"
+    rlam = [lambda_of_state(s) for s in rdiel]
+    assert rlam == sorted(rlam, reverse=True)  # descending water -> gas
+    assert all(charge_of_state(s) == 1.0 for s in rdiel)  # full host charge throughout
+
+
+def test_empty_dielectric_leaves_orders_static():
+    # The static (restraints-only) path must be unchanged when no epsilon seed is given.
+    from implicit_solvent_ddm.matrix_order import CycleSteps
+
+    cs = CycleSteps([-8.0, -2.0, 4.0], [-4.0, 2.0, 8.0], [0.0, 1.0], [])
+    cs.round(3)
+    assert cs.complex_GB_exl_windows == []
+    assert cs.receptor_GB_exl_windows == []
+    assert cs.receptor_order == cs.endstate + cs.apply_restraints + cs.no_gb

@@ -156,8 +156,8 @@ def insert_one(block, superdiagonal, pool, threshold, lower_bound, upper_bound):
         made. ``converged`` is True when the loop should stop. ``reason`` is one of ``"converged"``
         (all adjacent overlaps adequate) or ``"pool-exhausted"`` (weak gaps remain but no free
         candidate can fill them — emit the best schedule with a warning). The pool-exhausted exit is
-        mandatory: without it a coarse pool that cannot reach ``threshold`` would recurse forever
-        (``good_enough`` never flips), growing the Toil graph unbounded.
+        mandatory: without it a coarse pool that cannot reach ``threshold`` would recurse forever,
+        growing the Toil graph unbounded.
     """
     if len(superdiagonal) != len(block) - 1:
         raise ValueError(
@@ -341,6 +341,68 @@ def plan_restraint_insertion(
     return new_con, new_orient, converged, reason
 
 
+# ---------------------------------------------------------------------------
+# GB-dielectric / charge bands: generic 1-D R-ADD axes
+# ---------------------------------------------------------------------------
+# The dielectric band schedules in lambda = (1 - 1/eps): GB polar solvation is exactly linear in lambda
+# (intdiel=1), so uniform lambda spacing ~ uniform energy change ~ uniform overlap. We schedule/insert in
+# lambda and map back to epsilon for the mdin. The gas anchor (igb=6, no reaction field) is lambda=0; full
+# water (eps=78.5) is lambda = 1 - 1/78.5 ~ 0.987. The charge band schedules directly in the charge
+# fraction q in [0, 1]. Both reuse the SAME generic engine (insert_one) as restraints; only the coordinate
+# axis and the (no orientational) pairing differ — so plan_band_insertion is a sibling of
+# plan_restraint_insertion, not a wrapper (the restraint path keeps its build_selected_block/orient logic).
+
+
+def lambda_from_eps(eps):
+    """Map external dielectric ``eps`` -> GB solvation coordinate ``lambda = 1 - 1/eps``.
+
+    ``eps == 0`` is the AMBER gas sentinel (igb=6, no reaction field) and maps to ``lambda = 0``.
+    """
+    eps = float(eps)
+    if eps == 0.0:
+        return 0.0
+    return 1.0 - 1.0 / eps
+
+
+def eps_from_lambda(lam):
+    """Inverse of :func:`lambda_from_eps`: ``eps = 1 / (1 - lambda)`` (``lambda=0 -> eps=1``, vacuum)."""
+    lam = float(lam)
+    return 1.0 / (1.0 - lam)
+
+
+def lambda_of_state(state):
+    """Dielectric-band coordinate (lambda) of a CycleSteps state tuple ``(label, extdiel, charge, rst)``."""
+    return lambda_from_eps(float(state[1]))
+
+
+def charge_of_state(state):
+    """Charge-band coordinate of a CycleSteps state tuple ``(label, extdiel, charge, rst)``."""
+    return float(state[2])
+
+
+def plan_band_insertion(overlap_matrix, coords, threshold, pool):
+    """Decide the single R-ADD window to insert on a generic 1-D axis (dielectric lambda or charge).
+
+    ``coords`` are the band states' axis values IN MATRIX ORDER, so ``coords[k], coords[k+1]`` are the
+    adjacent pair whose overlap is ``min_direction_superdiagonal(overlap_matrix)[k]``. The overlap matrix
+    here is ALWAYS the banded sub-grid (``compute_mbar(band=...)``), so the superdiagonal aligns 1:1 with
+    the adjacent ``coords`` pairs and there is no endstate-adjacent pair to drop. The two band endpoints
+    (``min``/``max`` coord) are the pinned anchors; insertions land strictly between them.
+
+    Returns ``(new_coord, converged, reason)`` with ``new_coord`` ``None`` when no insertion is made.
+    """
+    block = [float(c) for c in coords]
+    superdiagonal = min_direction_superdiagonal(overlap_matrix)
+    return insert_one(
+        block,
+        superdiagonal,
+        pool,
+        threshold,
+        lower_bound=min(block),
+        upper_bound=max(block),
+    )
+
+
 def compute_mbar(
     simulation_data: list[pd.DataFrame],
     temperature: float,
@@ -350,6 +412,7 @@ def compute_mbar(
     cores=1,
     disk="3G",
     restraint_band: bool = False,
+    band: Optional[str] = None,
 ):
     """Execute MBAR analysis.
 
@@ -440,28 +503,59 @@ def compute_mbar(
             )
         return df_mbar[order]
 
-    def _restraint_band_states(order, system):
-        # The RESTRAINT band = the restraint windows + their max-restraint anchor, EXCLUDING the
-        # endstate. ALS schedules WITHIN this interpolatable band; the LJ on/off single step, the lower
-        # charge windows, and the fixed endstate are NOT part of it (they would only contaminate the
-        # conditioning of the restraint overlaps the scheduler reads). For the complex the band starts
-        # at the max-restraint anchor = the last (full-charge) electrostatics state
-        # (``halo_restraint_matrix``); ``remove_restraints`` drops the max ``lambda_window``, so that
-        # anchor IS the max restraint. For ligand/receptor the band is ``apply_restraints`` (max
-        # included), endstate (index 0) excluded.
-        if system == "complex":
-            band = order[matrix_order.halo_restraint_matrix:]
-        else:
-            band = order[1 : matrix_order.apo_end_restraint_matrix + 1]
-        return [state for state in band if state[0] != "endstate"]
+    def _band_states(order, system, band_name):
+        # Select the contiguous interpolatable sub-band of ``order`` that the ALS scheduler reads. Each
+        # band runs anchor -> windows -> anchor at constant everything-else, so its adjacent overlaps are
+        # not contaminated by the other coordinates. Indices come from CycleSteps.
+        #
+        #   restraint  : restraint windows + max-restraint anchor, EXCLUDING the endstate. complex starts
+        #                at halo_restraint_matrix (the max-restraint = last full-charge electrostatics,
+        #                since remove_restraints drops the max lambda_window); ligand/receptor is
+        #                apply_restraints (max included), endstate (index 0) excluded.
+        #   dielectric : complex = gas `interactions` anchor -> GB windows -> water-q0 `electrostatics`
+        #                anchor [start_gb_extdiel_matrix : start_complex_charge_matrix + 1]; receptor =
+        #                max-restraint water anchor -> GB windows -> gas `no_gb` anchor.
+        #   charge     : complex = electrostatics q=0 -> q=1 [start_complex_charge_matrix :
+        #                halo_restraint_matrix + 1]; ligand = ligand_charges.
+        if band_name == "restraint":
+            if system == "complex":
+                states = order[matrix_order.halo_restraint_matrix:]
+            else:
+                states = order[1 : matrix_order.apo_end_restraint_matrix + 1]
+            return [state for state in states if state[0] != "endstate"]
+        if band_name == "dielectric":
+            if system == "complex":
+                return order[
+                    matrix_order.start_gb_extdiel_matrix
+                    : matrix_order.start_complex_charge_matrix + 1
+                ]
+            if system == "receptor":
+                start = matrix_order.start_receptor_gb_matrix
+                g = len(matrix_order.external_dielectic)
+                return order[start - 1 : start + g + 1]
+            raise ValueError(f"dielectric band undefined for system '{system}'")
+        if band_name == "charge":
+            if system == "complex":
+                return order[
+                    matrix_order.start_complex_charge_matrix
+                    : matrix_order.halo_restraint_matrix + 1
+                ]
+            if system == "ligand":
+                return order[matrix_order.start_ligand_charge_matrix:]
+            raise ValueError(f"charge band undefined for system '{system}'")
+        raise ValueError(f"unknown band '{band_name}'")
 
-    def _ordered_band(order, system):
-        # MBAR over ONLY the restraint-band sub-grid (band trajectories x band states) of the full N x N
-        # the pilot ran. The ROW filter is required: keeping non-band trajectory frames while dropping
-        # their columns would break pymbar's sum(N_k)==n_samples invariant.
-        band = _restraint_band_states(order, system)
-        banded = _ordered(band)  # band columns (validated present by the invariant above)
-        return banded.loc[banded.index.isin(band)]  # band trajectory rows only
+    def _ordered_band(order, system, band_name):
+        # MBAR over ONLY the band sub-grid (band trajectories x band states) of the full N x N the pilot
+        # ran. The ROW filter is required: keeping non-band trajectory frames while dropping their columns
+        # would break pymbar's sum(N_k)==n_samples invariant.
+        states = _band_states(order, system, band_name)
+        banded = _ordered(states)  # band columns (validated present by the invariant above)
+        return banded.loc[banded.index.isin(states)]  # band trajectory rows only
+
+    # Back-compat: restraint_band=True is the legacy spelling of band="restraint".
+    if band is None and restraint_band:
+        band = "restraint"
 
     # flat bottom to no flat bottom -> EXP()
     if matrix_order is None:
@@ -469,15 +563,15 @@ def compute_mbar(
 
     elif system == "complex":
         order = matrix_order.complex_order
-        df_mbar = _ordered_band(order, "complex") if restraint_band else _ordered(order)
+        df_mbar = _ordered_band(order, "complex", band) if band else _ordered(order)
 
     elif system == "ligand":
         order = matrix_order.ligand_order
-        df_mbar = _ordered_band(order, "ligand") if restraint_band else _ordered(order)
+        df_mbar = _ordered_band(order, "ligand", band) if band else _ordered(order)
 
     else:
         order = matrix_order.receptor_order
-        df_mbar = _ordered_band(order, "receptor") if restraint_band else _ordered(order)
+        df_mbar = _ordered_band(order, "receptor", band) if band else _ordered(order)
 
     equil_info = pdmbar.detect_equilibration(df_mbar)
 
@@ -574,20 +668,31 @@ def adaptive_lambda_windows(
     cycle_steps.round(3)
     job.log(f"THE SYSTEM PASSED {system_type}")
     job.log(f"complex ordered steps: {cycle_steps.complex_order}")
-    # Compute MBAR over ONLY the restraint band — the restraint windows + their max-restraint anchor.
-    # ALS schedules within this interpolatable band; the LJ on/off single step, the lower charge
-    # windows, and the fixed endstate are excluded from this solve (they would only contaminate the
-    # conditioning of the restraint overlaps the scheduler reads). The pilot still RUNS those states
-    # (for the complex leg's charge scaling + the future charge/GB bands); they are just not in the
-    # restraint overlap. So the overlap matrix here IS the restraint band (anchor + windows).
+    # Select the interpolatable band this pass schedules within, then compute MBAR over ONLY that band
+    # (anchor(s) + windows). The other coordinates' states are still RUN by the pilot but are excluded
+    # here so they do not contaminate the conditioning of the overlaps the scheduler reads. The overlap
+    # matrix returned IS the band sub-grid, so its min-direction superdiagonal aligns 1:1 with the band's
+    # ordered states.
+    if restraints_scaling:
+        band = "restraint"
+    elif charge_scaling:
+        band = "charge"
+    elif gb_scaling:
+        band = "dielectric"
+    else:
+        raise ValueError(
+            "adaptive_lambda_windows requires exactly one of restraints_scaling / charge_scaling / "
+            "gb_scaling to be True"
+        )
+
     results = compute_mbar(
         simulation_data=system_runner.post_output,
         temperature=updated_config.intermediate_args.temperature,
         matrix_order=cycle_steps,
         system=system_type,
-        restraint_band=True,
+        band=band,
     )
-    job.log(f"SYSTEM TYPE {system_type}")
+    job.log(f"SYSTEM TYPE {system_type}; ALS band={band}")
     overlap_matrix = results[0][-1].compute_overlap()["matrix"]
 
     # ------------------------------------------------------------------
@@ -603,7 +708,7 @@ def adaptive_lambda_windows(
         con_list = updated_config.intermediate_args.exponent_conformational_forces_list
         orient_list = updated_config.intermediate_args.exponent_orientational_forces_list
 
-        # The overlap matrix is ALREADY the restraint band (compute_mbar(restraint_band=True) above),
+        # The overlap matrix is ALREADY the restraint band (compute_mbar(band="restraint") above),
         # so the band is the whole matrix: start at 0, no end slice, and no endstate-adjacent pair to
         # drop (banded=True). The min-direction superdiagonal then aligns 1:1 with build_selected_block.
         band_start, band_end = 0, None
@@ -691,134 +796,98 @@ def adaptive_lambda_windows(
         ).rv()
 
     # ------------------------------------------------------------------
-    # Ligand-charge / GB-dielectric scaling: legacy symmetric-average path (deferred scope; the
-    # R-ADD revival targets restraints first). Unchanged behaviour.
+    # GB-dielectric / charge bands: the SAME deterministic R-ADD engine as restraints, on a generic 1-D
+    # axis (dielectric lambda = 1 - 1/eps, or charge fraction q). The band overlap matrix above is already
+    # the band sub-grid, so its min-direction superdiagonal aligns 1:1 with the ordered band coordinates
+    # (results[1].columns). The two band endpoints (gas/water for dielectric; q=0/q=1 for charge) are the
+    # pinned anchors; insertions land strictly between them (insert_one's lower/upper bound = min/max).
     # ------------------------------------------------------------------
-    if charge_scaling:
-        job.log("Attempting to improve ligand charge windows space phase overlap")
-        func = improve_charge_scaling
-        matrix_start = cycle_steps.start_complex_charge_matrix
-        matrix_end = cycle_steps.halo_restraint_matrix
-        if system_type == "ligand":
-            matrix_start = cycle_steps.start_ligand_charge_matrix
-            matrix_end = None
-    elif gb_scaling:
-        job.log("Attempting to improve GB external dielectric windows space phase overlap")
-        func = improve_gb_dielectric
-        matrix_start = cycle_steps.start_gb_extdiel_matrix
-        matrix_end = cycle_steps.start_complex_charge_matrix
-        updated_config.intermediate_args.gb_extdiel_windows.sort()
-    else:
-        raise ValueError(
-            "adaptive_lambda_windows requires exactly one of restraints_scaling / charge_scaling / "
-            "gb_scaling to be True"
+    if max_iterations is None:
+        max_iterations = updated_config.intermediate_args.max_adaptive_iterations
+
+    threshold = updated_config.intermediate_args.min_degree_overlap
+    band_states = list(results[1].columns)  # ordered band state tuples (aligned with overlap_matrix)
+
+    if gb_scaling:
+        axis = "dielectric(lambda)"
+        coords = [lambda_of_state(s) for s in band_states]
+        pool = build_candidate_pool(
+            coords,
+            explicit_pool=updated_config.intermediate_args.candidate_dielectric_pool,
+            step=updated_config.intermediate_args.dielectric_pool_step or 0.02,
+        )
+    else:  # charge_scaling
+        axis = "charge(q)"
+        coords = [charge_of_state(s) for s in band_states]
+        pool = build_candidate_pool(
+            coords,
+            explicit_pool=updated_config.intermediate_args.candidate_charge_pool,
+            step=updated_config.intermediate_args.charge_pool_step or 0.05,
         )
 
-    averages = overlap_average(overlap_matrix, matrix_start, end=matrix_end)
-    job.log(f"The current windows averages: {averages}")
-
-    if good_enough(
-        space_phase_overlaps=averages,
-        min=updated_config.intermediate_args.min_degree_overlap,
-    ):
-        return (
-            results,
-            updated_config,
-            system_runner,
-        )
-
-    improve_job = job.addChildJobFn(
-        func,
-        system_runner,
-        averages,
-        updated_config,
-        system_type,
+    band_sd = min_direction_superdiagonal(overlap_matrix)
+    job.log(
+        f"[ALS][{system_type}] {axis} band ({len(coords)} states, {len(band_sd)} adjacent pairs), "
+        f"min_degree_overlap threshold={threshold}; coords (matrix order)="
+        f"{[round(c, 4) for c in coords]}"
     )
+    for k in range(len(band_sd)):
+        flag = "WEAK -> insert" if band_sd[k] < threshold else "ok"
+        job.log(
+            f"[ALS][{system_type}]   pair ({round(coords[k], 4)} <-> {round(coords[k + 1], 4)}): "
+            f"overlap={band_sd[k]:.4f}  [{flag}]"
+        )
+
+    new_coord, converged, reason = plan_band_insertion(overlap_matrix, coords, threshold, pool)
+
+    if converged or max_iterations <= 0:
+        if converged and reason == "pool-exhausted":
+            job.log(
+                f"[ALS][{system_type}] WARNING: {axis} candidate pool exhausted with weak gaps "
+                f"remaining — emitting best schedule"
+            )
+        elif converged:
+            job.log(f"[ALS][{system_type}] {axis} schedule converged ({len(coords)} states)")
+        else:
+            job.log(f"[ALS][{system_type}] iteration cap reached for {axis} band")
+        return (results, updated_config, system_runner)
+
+    if gb_scaling:
+        new_eps = float(eps_from_lambda(new_coord))
+        job.log(
+            f"[ALS][{system_type}] inserting GB window eps={new_eps:.4f} (lambda={new_coord:.4f}) "
+            f"({max_iterations - 1} iterations left)"
+        )
+        improve_job = job.addChildJobFn(
+            improve_dielectric_overlap,
+            system_runner,
+            new_eps,
+            updated_config,
+            system_type,
+        )
+    else:
+        new_charge = float(round(new_coord, ROUND_DP))
+        job.log(
+            f"[ALS][{system_type}] inserting charge window q={new_charge} "
+            f"({max_iterations - 1} iterations left)"
+        )
+        improve_job = job.addChildJobFn(
+            improve_charge_overlap,
+            system_runner,
+            new_charge,
+            updated_config,
+            system_type,
+        )
+
     return improve_job.addFollowOnJobFn(
         adaptive_lambda_windows,
         improve_job.rv(0),
         improve_job.rv(1),
         system_type=system_type,
-        restraints_scaling=restraints_scaling,
         charge_scaling=charge_scaling,
         gb_scaling=gb_scaling,
+        max_iterations=max_iterations - 1,
     ).rv()
-
-
-def overlap_average(overlap_matrix, start, end=None):
-    """
-    Compute the average of the degree of space phase overlap between a slice adjacent states.
-
-    Parameters
-    ----------
-    overlap_matrix: list
-        Overlap matrix between the states.
-    start: int
-        Where the matrix should start reading degree of phase space.
-    end: int
-        The position to end the matrix.
-
-    Returns
-    ------
-    A list of averages of the degree of phase space overlap between adjacent states.
-    """
-
-    overlap_neighbors = group_overlap_neighbors(overlap_matrix)
-    print(f"OVERLAP NEIGH: {overlap_neighbors}")
-    restraints_overlap = overlap_neighbors[start:]
-
-    if end is not None:
-        restraints_overlap = overlap_neighbors[start:end]
-
-    print(f"RESTRAINT OVERLAPS NUMBERS: {restraints_overlap}")
-    return [(x[0] + x[1]) / 2 for x in restraints_overlap]
-
-
-def good_enough(space_phase_overlaps, min=0.03):
-    """Check that all averge degree of overlap are about the minimum criteria.
-
-    Parameters
-    ----------
-    averages: list
-        A list of averages degree of overlap between adjacent stats.
-    min: float
-        Minimum criteria of degree of overlap percent. Default value = 0.03 (3% overlap)
-
-    Returns
-       A boolean wheter all overlap are above the minimum criteria.
-    """
-
-    return all([x >= min for x in space_phase_overlaps])
-
-
-def group_overlap_neighbors(matrix):
-    """
-    Retireve both the foward and reverse degree of overlap between adjacent states.
-
-    Parameters
-    ----------
-    matrix: np.ndarray
-        Estimated state overlap matrix : O[i,j] is an estimate of the probability of observing a sample from state i in state j
-
-    Returns
-    -------
-    overlap_neighbors: List[tuple[float, float]]
-        Returns a list of tuples of estimated probability of both forward and reverse degree of overlap.
-    """
-    size = matrix.shape[0] - 1
-
-    def get_overlap_neighbors(n=0, new=[]):
-        if n == size:
-            return new
-
-        else:
-            a = round(matrix[n, n + 1], 2)
-            b = round(matrix[n + 1, n], 2)
-            new.append((a, b))
-
-            return get_overlap_neighbors(n + 1, new=new)
-
-    return get_overlap_neighbors()
 
 
 def improve_restraints_overlap(
@@ -939,165 +1008,50 @@ def improve_restraints_overlap(
     )
 
 
-def improve_charge_scaling(
+def improve_dielectric_overlap(
     job,
     runner: IntermidateRunner,
-    avg_overlap,
+    new_eps: float,
     config: Config,
     system_type: str,
 ):
-    """Improve poor space overlap of two adjacent states via bisection.
+    """Insert exactly ONE GB-dielectric window (R-ADD) and run it via a two-phase sub-runner.
 
-    If the user specifed an upper and lower bound (within the configuration file) an biscetion
-    will be attempted to improve the overlap between the upper and lower bounds. If only provided
-    an upper bound limit than a subtraction of 1 will be computed and biscetion when needed.
-    This adaptive procedure will be applied towards ligand net charge bisceting between
-    1 (ligand fully charge) to 0 (ligand's net charge = 0).
-    Args:
-        job (_type_): _description_
-        runner (IntermidateRunner): _description_
-        avg_overlap (_type_): _description_
-        config (Config): _description_
-        system_type (str): _description_
+    Mirrors :func:`improve_restraints_overlap` but on the dielectric axis: the single ``new_eps`` to
+    insert is chosen upstream by ``adaptive_lambda_windows`` (``plan_band_insertion`` -> ``insert_one``
+    in lambda, mapped back to epsilon). It writes one short-pilot extdiel mdin (saltcon=0), appends one MD
+    window at the MAX restraint, records the epsilon in the canonical ``gb_extdiel_windows`` schedule, and
+    runs the window in two phases (MD then re-score) sharing ``post_output`` by reference with ``runner``.
 
-    Parameters
-    ----------
-    job: Toil.job
-        The atomic unit of work in a Toil workflow is a Job.
-    runner: IntermidateRunner
-        An system specific runner object to create and inital any new MD runs needed.
-    avg_overlap: list
-        A list of averages degree of overlap between adjacent stats.
-    config: Config
-        User specified configuration file containing necesssary input information.
-    system_type: str
-        System type to denote the specific system_runner (i.e. complex, receptor or ligand)
-
-    Returns
-    -------
-    A runner job promise (toil.job.Promise) is essentially a pointer to for the return value that is replaced by the actual return value once it has been evaluated. If any windows were created MD simulation and post-process analysis will be performed and returned.
-    config: Config
-        An updated configuration file with new inserted states.
+    The complex band decharges the ligand (q=0 topology via ``alter_topology``) under dirstruct_halo; the
+    receptor band reuses the full-charge apo topology (no ligand to decharge) under dirstruct_apo.
     """
-    # init job scaling job
-    charge_job = job.addChildJobFn(initilized_jobs)
-    charges = config.intermediate_args.charges_lambda_window.copy()
+    new_eps = float(new_eps)
+    job.log(f"[ALS][{system_type}] writing GB-dielectric window extdiel={new_eps:.5g}")
 
-    job.log(f"Interating over windows {avg_overlap}")
+    setup_job = job.addChildJobFn(initilized_jobs)
+    before = len(runner.simulations)
 
-    for index, overlap in enumerate(avg_overlap):
-        # if sufficient overlap continue iterating
-        if overlap > config.intermediate_args.min_degree_overlap:
-            continue
-        # biscet between adjacent windows with poor overlap
-        new_charge = bisect_between(charges[index], charges[index + 1])
-        # append to list
-        job.log(
-            f"Biscent between charges {charges[index], charges[index + 1]} = {new_charge}"
-        )
-        config.intermediate_args.charges_lambda_window.append(new_charge)
-        # check to see if the system passed is an complex
-        if system_type == "complex":
-            runner._add_complex_simulation(
-                conformational=max(
-                    config.intermediate_args.exponent_conformational_forces
-                ),
-                orientational=max(
-                    config.intermediate_args.exponent_orientational_forces
-                ),
-                mdin=config.inputs["default_mdin"],
-                restraint_file=runner.restraints.max_complex_restraint,
-                charge=new_charge,
-                charge_parm=charge_job.addChildJobFn(
-                    alter_topology,
-                    solute_amber_parm=config.endstate_files.complex_parameter_filename,
-                    solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
-                    ligand_mask=config.amber_masks.ligand_mask,
-                    receptor_mask=config.amber_masks.receptor_mask,
-                    set_charge=new_charge,
-                ),
-            )
-        else:
-            # if not a complex then it must be a ligand only system
-            runner._add_ligand_simulation(
-                conformational=max(
-                    config.intermediate_args.exponent_conformational_forces
-                ),
-                mdin=config.inputs["no_solvent_mdin"],
-                restraint_file=runner.restraints.max_ligand_conformational_restraint,
-                charge=new_charge,
-                charge_parm=charge_job.addChildJobFn(
-                    alter_topology,
-                    solute_amber_parm=config.endstate_files.ligand_parameter_filename,
-                    solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
-                    ligand_mask=config.amber_masks.ligand_mask,
-                    receptor_mask=config.amber_masks.receptor_mask,
-                    set_charge=new_charge,
-                ),
-            )
+    # Short-pilot extdiel mdin (saltcon=0 keeps the band linear in lambda). nstlim/ntwx fall back to the
+    # production length (None) if the pilot inputs were not emitted, so this stays callable in isolation.
+    extdiel_mdin = setup_job.addChildJobFn(
+        generate_extdiel_mdin,
+        user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
+        gb_extdiel=new_eps,
+        nstlim=config.inputs.get("pilot_nstlim_steps"),
+        ntwx=config.inputs.get("pilot_ntwx"),
+    ).rv()
 
-    charges_done = charge_job.addFollowOnJobFn(initilized_jobs)
-    return (
-        charges_done.addChild(runner.new_runner(config, runner.__dict__)).rv(),
-        config,
-    )
+    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
 
-
-def improve_gb_dielectric(
-    job,
-    runner: IntermidateRunner,
-    avg_overlap,
-    config: Config,
-    system_type: str,
-):
-    """_summary_
-
-    Args:
-        job (_type_): _description_
-        runner (IntermidateRunner): _description_
-        avg_overlap (_type_): _description_
-        config (Config): _description_
-        system_type (str): _description_
-    """
-    # init gb external dielectric
-    gb_dielectric_job = job.addChildJobFn(initilized_jobs)
-
-    lower_upper_bound = [0.0, 78.5]
-
-    gb_dielectric = config.intermediate_args.gb_extdiel_windows.copy()
-    # add in lower & upper bounds then sort
-    gb_dielectric = sorted(list(set(gb_dielectric + lower_upper_bound)))
-
-    job.log(f"Interating over GB windows {avg_overlap}")
-
-    for index, overlap in enumerate(avg_overlap):
-        # if sufficient overlap continue iterating
-        if overlap > config.intermediate_args.min_degree_overlap:
-            continue
-
-        # poor overlap
-        else:
-            # biscet between upper and lower bound
-            new_gb_dielectric = bisect_between(
-                gb_dielectric[index], gb_dielectric[index + 1]
-            )
-            job.log(
-                f"bisecting between {gb_dielectric[index]} & {gb_dielectric[index + 1]} = {new_gb_dielectric}"
-            )
-        # append new dielectric
-        config.intermediate_args.gb_extdiel_windows.append(new_gb_dielectric)
-
-        # create new runner simulation
+    if system_type == "complex":
         runner._add_complex_simulation(
-            conformational=max(config.intermediate_args.exponent_conformational_forces),
-            orientational=max(config.intermediate_args.exponent_orientational_forces),
-            mdin=gb_dielectric_job.addChildJobFn(
-                generate_extdiel_mdin,
-                user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
-                gb_extdiel=new_gb_dielectric,
-            ).rv(),
+            conformational=max_con,
+            orientational=max(config.intermediate_args.exponent_orientational_forces_list),
+            mdin=extdiel_mdin,
             restraint_file=runner.restraints.max_complex_restraint,
-            charge_parm=gb_dielectric_job.addChildJobFn(
+            charge=0.0,
+            charge_parm=setup_job.addChildJobFn(
                 alter_topology,
                 solute_amber_parm=config.endstate_files.complex_parameter_filename,
                 solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
@@ -1105,36 +1059,303 @@ def improve_gb_dielectric(
                 receptor_mask=config.amber_masks.receptor_mask,
                 set_charge=0.0,
             ),
-            charge=0.0,
-            gb_extdiel=new_gb_dielectric,
+            gb_extdiel=new_eps,
+        )
+    else:  # receptor: full host charge, default apo topology
+        runner._add_receptor_simulation(
+            conformational=max_con,
+            mdin=extdiel_mdin,
+            restraint_file=runner.restraints.max_receptor_conformational_restraint,
+            gb_extdiel=new_eps,
         )
 
-    # sort the new added windows
-    config.intermediate_args.gb_extdiel_windows.sort()
+    new_sims = runner.simulations[before:]
 
-    # gb scaling done
-    gb_scaling_done = gb_dielectric_job.addFollowOnJobFn(initilized_jobs)
+    # Canonical schedule (R1): CycleSteps + compute_mbar read this list, so record the new epsilon here.
+    config.intermediate_args.gb_extdiel_windows.append(new_eps)
 
-    return (
-        gb_scaling_done.addChild(runner.new_runner(config, runner.__dict__)).rv(),
-        config,
+    setup_done = setup_job.addFollowOnJobFn(initilized_jobs)
+    md_runner = setup_done.addChild(
+        runner.new_runner(config, runner.__dict__, post_only=False, simulations=new_sims)
+    )
+    post_runner = md_runner.addFollowOn(
+        runner.new_runner(config, runner.__dict__, post_only=True)
+    )
+    return (post_runner.rv(), config)
+
+
+# ---------------------------------------------------------------------------
+# Matched dual-leg GB-dielectric scheduler (pilot)
+# ---------------------------------------------------------------------------
+# The dielectric schedule (config.gb_extdiel_windows) is SHARED by the complex and receptor legs so the
+# host desolvation cancels between them. The pilot therefore schedules the dielectric band on BOTH legs in
+# lockstep: every inserted epsilon window is added to BOTH runners (so each leg's MBAR grid stays
+# consistent with the shared schedule), and the insertion decision uses the MIN of the two legs' adjacent
+# overlaps (so the worse-overlapping leg governs — the receptor cliff is actually worse than the complex
+# one). Charge + restraint bands stay single-leg (complex) via adaptive_lambda_windows.
+
+
+def _dielectric_band_ascending(runner, config, system_type):
+    """Return ``(coords, superdiagonal)`` for one leg's dielectric band, normalized to ASCENDING lambda.
+
+    Both legs span the SAME lambda interval [0, ~0.987] with the SAME interior windows, so normalizing to
+    ascending lambda makes the two legs' superdiagonals align index-for-index (the receptor band is stored
+    water->gas, i.e. descending, so it is reversed here).
+    """
+    cycle_steps = CycleSteps(
+        conformation_forces=config.intermediate_args.exponent_conformational_forces_list,
+        orientational_forces=config.intermediate_args.exponent_orientational_forces_list,
+        charges_windows=config.intermediate_args.charges_lambda_window,
+        external_dielectic=config.intermediate_args.gb_extdiel_windows,
+    )
+    cycle_steps.round(3)
+    results = compute_mbar(
+        simulation_data=runner.post_output,
+        temperature=config.intermediate_args.temperature,
+        matrix_order=cycle_steps,
+        system=system_type,
+        band="dielectric",
+    )
+    overlap = results[0][-1].compute_overlap()["matrix"]
+    coords = [lambda_of_state(s) for s in results[1].columns]
+    sd = min_direction_superdiagonal(overlap)
+    if coords and coords[0] > coords[-1]:  # descending (receptor) -> flip to ascending
+        coords = list(reversed(coords))
+        sd = list(reversed(sd))
+    return coords, sd
+
+
+def pilot_dielectric_scheduler(
+    job,
+    complex_runner: IntermidateRunner,
+    receptor_runner: IntermidateRunner,
+    config: Config,
+    max_iterations: Optional[int] = None,
+):
+    """Drive the matched complex+receptor GB-dielectric R-ADD to convergence (pilot).
+
+    Returns ``(complex_runner, receptor_runner, converged_config)``. ``converged_config`` carries the
+    expanded shared ``gb_extdiel_windows`` consumed by the production rebuild (Stage D / close the loop).
+    """
+    updated_config = copy.deepcopy(config)
+    if max_iterations is None:
+        max_iterations = updated_config.intermediate_args.max_adaptive_iterations
+    threshold = updated_config.intermediate_args.min_degree_overlap
+
+    c_coords, c_sd = _dielectric_band_ascending(complex_runner, updated_config, "complex")
+    r_coords, r_sd = _dielectric_band_ascending(receptor_runner, updated_config, "receptor")
+
+    # Both legs share the lambda axis; the combined superdiagonal is the per-pair min (worse leg governs).
+    n = min(len(c_sd), len(r_sd))
+    combined = [min(c_sd[k], r_sd[k]) for k in range(n)]
+    coords = c_coords  # ascending lambda, identical interior to r_coords
+
+    job.log(
+        f"[ALS][dielectric] band ({len(coords)} states); threshold={threshold}; "
+        f"lambda coords={[round(c, 4) for c in coords]}"
+    )
+    for k in range(n):
+        flag = "WEAK -> insert" if combined[k] < threshold else "ok"
+        job.log(
+            f"[ALS][dielectric]   pair ({round(coords[k], 4)} <-> {round(coords[k + 1], 4)}): "
+            f"complex={c_sd[k]:.4f} receptor={r_sd[k]:.4f} min={combined[k]:.4f} [{flag}]"
+        )
+
+    pool = build_candidate_pool(
+        coords,
+        explicit_pool=updated_config.intermediate_args.candidate_dielectric_pool,
+        step=updated_config.intermediate_args.dielectric_pool_step or 0.02,
+    )
+    new_lam, converged, reason = insert_one(
+        list(coords),
+        combined,
+        pool,
+        threshold,
+        lower_bound=min(coords),
+        upper_bound=max(coords),
     )
 
+    if converged or max_iterations <= 0:
+        if converged and reason == "pool-exhausted":
+            job.log("[ALS][dielectric] WARNING: candidate pool exhausted with weak gaps remaining")
+        elif converged:
+            job.log(
+                f"[ALS][dielectric] schedule converged: "
+                f"{sorted(updated_config.intermediate_args.gb_extdiel_windows)}"
+            )
+        else:
+            job.log("[ALS][dielectric] iteration cap reached")
+        return (complex_runner, receptor_runner, updated_config)
 
-def bisect_between(start, end):
+    new_eps = float(eps_from_lambda(new_lam))
+    job.log(
+        f"[ALS][dielectric] inserting matched GB window eps={new_eps:.4f} (lambda={new_lam:.4f}) "
+        f"into BOTH legs ({max_iterations - 1} iterations left)"
+    )
+    improve_job = job.addChildJobFn(
+        improve_dielectric_overlap_both,
+        complex_runner,
+        receptor_runner,
+        new_eps,
+        updated_config,
+    )
+    return improve_job.addFollowOnJobFn(
+        pilot_dielectric_scheduler,
+        improve_job.rv(0),
+        improve_job.rv(1),
+        improve_job.rv(2),
+        max_iterations=max_iterations - 1,
+    ).rv()
+
+
+def improve_dielectric_overlap_both(
+    job,
+    complex_runner: IntermidateRunner,
+    receptor_runner: IntermidateRunner,
+    new_eps: float,
+    config: Config,
+):
+    """Insert ONE matched GB-dielectric window into BOTH legs and run each via a two-phase sub-runner.
+
+    The single epsilon is appended to the shared ``gb_extdiel_windows`` ONCE (not once per leg). Returns
+    ``(complex_post_runner, receptor_post_runner, config)``.
     """
-    Perform a bisection search between two numbers.
+    new_eps = float(new_eps)
+    job.log(f"[ALS][dielectric] writing matched GB window extdiel={new_eps:.5g} (complex + receptor)")
 
-    Parameters
-    ----------
-        start (float): The start of the interval.
-        end (float): The end of the interval.
+    setup_job = job.addChildJobFn(initilized_jobs)
+    c_before = len(complex_runner.simulations)
+    r_before = len(receptor_runner.simulations)
 
-    Returns
-    -------
-        float: The midpoint between start and end.
+    # One short-pilot extdiel mdin (saltcon=0) reused by both legs (same epsilon, same pilot length).
+    extdiel_mdin = setup_job.addChildJobFn(
+        generate_extdiel_mdin,
+        user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
+        gb_extdiel=new_eps,
+        nstlim=config.inputs.get("pilot_nstlim_steps"),
+        ntwx=config.inputs.get("pilot_ntwx"),
+    ).rv()
+
+    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
+    max_orient = max(config.intermediate_args.exponent_orientational_forces_list)
+
+    complex_runner._add_complex_simulation(
+        conformational=max_con,
+        orientational=max_orient,
+        mdin=extdiel_mdin,
+        restraint_file=complex_runner.restraints.max_complex_restraint,
+        charge=0.0,
+        charge_parm=setup_job.addChildJobFn(
+            alter_topology,
+            solute_amber_parm=config.endstate_files.complex_parameter_filename,
+            solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+            ligand_mask=config.amber_masks.ligand_mask,
+            receptor_mask=config.amber_masks.receptor_mask,
+            set_charge=0.0,
+        ),
+        gb_extdiel=new_eps,
+    )
+    receptor_runner._add_receptor_simulation(
+        conformational=max_con,
+        mdin=extdiel_mdin,
+        restraint_file=receptor_runner.restraints.max_receptor_conformational_restraint,
+        gb_extdiel=new_eps,
+    )
+
+    c_sims = complex_runner.simulations[c_before:]
+    r_sims = receptor_runner.simulations[r_before:]
+
+    # Canonical shared schedule: append the epsilon ONCE.
+    config.intermediate_args.gb_extdiel_windows.append(new_eps)
+
+    setup_done = setup_job.addFollowOnJobFn(initilized_jobs)
+    c_md = setup_done.addChild(
+        complex_runner.new_runner(config, complex_runner.__dict__, post_only=False, simulations=c_sims)
+    )
+    c_post = c_md.addFollowOn(
+        complex_runner.new_runner(config, complex_runner.__dict__, post_only=True)
+    )
+    r_md = setup_done.addChild(
+        receptor_runner.new_runner(config, receptor_runner.__dict__, post_only=False, simulations=r_sims)
+    )
+    r_post = r_md.addFollowOn(
+        receptor_runner.new_runner(config, receptor_runner.__dict__, post_only=True)
+    )
+    return (c_post.rv(), r_post.rv(), config)
+
+
+def improve_charge_overlap(
+    job,
+    runner: IntermidateRunner,
+    new_charge: float,
+    config: Config,
+    system_type: str,
+):
+    """Insert exactly ONE charge window (R-ADD) and run it via a two-phase sub-runner.
+
+    Mirrors :func:`improve_restraints_overlap` on the charge axis: the single ``new_charge`` to insert is
+    chosen upstream by ``adaptive_lambda_windows``. It builds the scaled-charge topology via
+    ``alter_topology``, appends one MD window at the MAX restraint and full water (eps=78.5), records the
+    charge in the canonical ``charges_lambda_window`` schedule, and runs the window in two phases sharing
+    ``post_output`` by reference with ``runner``.
     """
-    return (start + end) / 2
+    new_charge = float(round(new_charge, ROUND_DP))
+    job.log(f"[ALS][{system_type}] writing charge window q={new_charge}")
+
+    # Short-pilot MD length; fall back to the production mdin if the pilot mdin was not emitted.
+    pilot_mdin = config.inputs.get("pilot_mdin") or config.inputs["default_mdin"]
+    pilot_no_solv = config.inputs.get("pilot_no_solvent_mdin") or config.inputs["no_solvent_mdin"]
+
+    setup_job = job.addChildJobFn(initilized_jobs)
+    before = len(runner.simulations)
+    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
+
+    if system_type == "complex":
+        runner._add_complex_simulation(
+            conformational=max_con,
+            orientational=max(config.intermediate_args.exponent_orientational_forces_list),
+            mdin=pilot_mdin,
+            restraint_file=runner.restraints.max_complex_restraint,
+            charge=new_charge,
+            charge_parm=setup_job.addChildJobFn(
+                alter_topology,
+                solute_amber_parm=config.endstate_files.complex_parameter_filename,
+                solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+                ligand_mask=config.amber_masks.ligand_mask,
+                receptor_mask=config.amber_masks.receptor_mask,
+                set_charge=new_charge,
+            ),
+        )
+    else:  # ligand-only charge scaling (igb=6 gas) — uses the no-solvent pilot mdin
+        runner._add_ligand_simulation(
+            conformational=max_con,
+            mdin=pilot_no_solv,
+            restraint_file=runner.restraints.max_ligand_conformational_restraint,
+            charge=new_charge,
+            charge_parm=setup_job.addChildJobFn(
+                alter_topology,
+                solute_amber_parm=config.endstate_files.ligand_parameter_filename,
+                solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
+                ligand_mask=config.amber_masks.ligand_mask,
+                receptor_mask=config.amber_masks.receptor_mask,
+                set_charge=new_charge,
+            ),
+        )
+
+    new_sims = runner.simulations[before:]
+
+    # Canonical schedule (R1): CycleSteps + compute_mbar read this list, so record the new charge here.
+    config.intermediate_args.charges_lambda_window.append(new_charge)
+
+    setup_done = setup_job.addFollowOnJobFn(initilized_jobs)
+    md_runner = setup_done.addChild(
+        runner.new_runner(config, runner.__dict__, post_only=False, simulations=new_sims)
+    )
+    post_runner = md_runner.addFollowOn(
+        runner.new_runner(config, runner.__dict__, post_only=True)
+    )
+    return (post_runner.rv(), config)
+
 
 
 def run_exponential_averaging(

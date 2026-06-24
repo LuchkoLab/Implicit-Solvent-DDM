@@ -496,8 +496,45 @@ class IntermidateRunner(Job):
 
         self.simulations.append(new_job)
 
-    def _add_receptor_simulation(self, conformational, mdin, restraint_file):
+    def _add_receptor_simulation(
+        self,
+        conformational,
+        mdin,
+        restraint_file,
+        gb_extdiel=None,
+    ):
         con_force = float(round(conformational, 3))
+
+        dirs_args = {
+            "topology": self.config.endstate_files.receptor_parameter_filename,
+            "state_label": "lambda_window",
+            "extdiel": 78.5,
+            "charge": 1.0,
+            "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
+            "igb_value": self.config.intermediate_args.igb_solvent,
+            "conformational_restraint": con_force,
+            "filename": f"state_2_{con_force}_prod",
+            "runtype": f"Running restraint window, Conformational restraint: {con_force}",
+            "topdir": self.config.system_settings.top_directory_path,
+        }
+
+        # GB-dielectric window: the apo host carries its FULL charge (q=1; no ligand to decharge), so the
+        # default receptor topology is reused — only the external dielectric (and state label) change. The
+        # restraint_file is passed as a RESOLVED max-restraint file (not a promise), mirroring the complex
+        # gb_extdiel branch in _add_complex_simulation.
+        if gb_extdiel is not None:
+            dirs_args.update(
+                {
+                    "state_label": "gb_dielectric",
+                    "extdiel": gb_extdiel,
+                    "charge": 1.0,
+                    "filename": f"state_8_{gb_extdiel}_prod",
+                    "runtype": f"Running receptor GB window. extdiel: {gb_extdiel}",
+                }
+            )
+        else:
+            restraint_file = restraint_file.rv()
+
         new_job = Simulation(
             executable=self.config.system_settings.executable,
             mpi_command=self.config.system_settings.mpi_command,
@@ -506,21 +543,10 @@ class IntermidateRunner(Job):
             prmtop=self.config.endstate_files.receptor_parameter_filename,
             incrd=self.config.inputs["receptor_endstate_frame"],
             input_file=mdin,
-            restraint_file=restraint_file.rv(),
+            restraint_file=restraint_file,
             working_directory=self.config.system_settings.working_directory,
             system_type="receptor",
-            directory_args={
-                "topology": self.config.endstate_files.receptor_parameter_filename,
-                "state_label": "lambda_window",
-                "extdiel": 78.5,
-                "charge": 1.0,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "conformational_restraint": con_force,
-                "filename": f"state_2_{con_force}_prod",
-                "runtype": f"Running restraint window, Conformational restraint: {con_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
+            directory_args=dirs_args,
             dirstruct="dirstruct_apo",
             # Receptor runs on GPU when CUDA is set (mirrors setup_apply_restraint_windows: a
             # non-ligand system requests an accelerator so Toil pins it to a distinct device).

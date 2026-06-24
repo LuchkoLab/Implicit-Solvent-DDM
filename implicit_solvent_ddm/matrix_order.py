@@ -60,6 +60,8 @@ class CycleSteps:
 
     @property
     def complex_GB_exl_windows(self):
+        # Sorted by epsilon ASCENDING so the band runs gas-anchor -> full-water monotonically and each
+        # adjacent pair is a single small step in lambda = (1 - 1/eps) (see adaptive_restraints).
         return [
             (
                 "gb_dielectric",
@@ -67,7 +69,24 @@ class CycleSteps:
                 "0.0",
                 f"{max(self.conformation_forces)}_{max(self.orientational_forces)}",
             )
-            for dielectric in self.external_dielectic
+            for dielectric in sorted(self.external_dielectic)
+        ]
+
+    @property
+    def receptor_GB_exl_windows(self):
+        # Receptor (apo-host) GB-dielectric band. Same epsilon schedule as the complex band so the host
+        # desolvation cancels between the two legs, but at FULL host charge (q=1.0; the ligand is not in
+        # the apo system) and a single conformational restraint label (apo systems have no orientational
+        # restraint). Sorted epsilon DESCENDING (water -> gas) so it splices monotonically between
+        # apply_restraints (ends at max restraint, eps=78.5) and no_gb (gas).
+        return [
+            (
+                "gb_dielectric",
+                f"{dielectric}",
+                "1.0",
+                f"{max(self.conformation_forces)}",
+            )
+            for dielectric in sorted(self.external_dielectic, reverse=True)
         ]
 
     @property
@@ -120,7 +139,14 @@ class CycleSteps:
 
     @property
     def receptor_order(self) -> list:
-        return self.endstate + self.apply_restraints + self.no_gb
+        # GB-dielectric band (when external_dielectic is non-empty) splices between the restraint windows
+        # and the gas no_gb anchor: endstate -> restraints(ASC) -> GB(eps DESC) -> no_gb(gas).
+        return (
+            self.endstate
+            + self.apply_restraints
+            + self.receptor_GB_exl_windows
+            + self.no_gb
+        )
 
     @property
     def complex_order(self) -> list:
@@ -148,6 +174,13 @@ class CycleSteps:
     @property
     def start_gb_extdiel_matrix(self):
         return len(self.no_interactions)
+
+    @property
+    def start_receptor_gb_matrix(self):
+        # Index in receptor_order of the FIRST GB-dielectric window (just after endstate + restraints).
+        # The receptor dielectric BAND (for ALS) is [start_receptor_gb_matrix - 1 : start + G + 1], i.e.
+        # the max-restraint water anchor -> G GB windows -> the gas no_gb anchor (inclusive).
+        return len(self.endstate) + len(self.apply_restraints)
 
     @property
     def apo_end_restraint_matrix(self) -> int:

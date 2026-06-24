@@ -25,6 +25,7 @@ from implicit_solvent_ddm.adaptive_restraints import (
     run_exponential_averaging,
     run_compute_mbar,
     adaptive_lambda_windows,
+    pilot_dielectric_scheduler,
 )
 from implicit_solvent_ddm.run_endstate import (
     run_remd,
@@ -103,6 +104,10 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
         # default-mdin states).
         config.inputs["pilot_mdin"] = pilot_mdin.rv(0)
         config.inputs["pilot_no_solvent_mdin"] = pilot_mdin.rv(1)
+        # Pilot MD length (steps) + trajectory interval, reused by the GB-dielectric band to shorten the
+        # per-epsilon extdiel mdins it generates for ALS-inserted windows.
+        config.inputs["pilot_nstlim_steps"] = pilot_mdin.rv(2)
+        config.inputs["pilot_ntwx"] = pilot_mdin.rv(3)
 
     return config
 
@@ -381,6 +386,12 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
             set_charge=0.0,
         ).rv()
         
+        # Pilot setups shorten the per-epsilon extdiel mdins to the pilot MD length; production keeps full
+        # length (nstlim/ntwx = None -> no-op). The als_pilot marker is set only on the pilot deepcopy in
+        # adaptive_restraint_pilot, so the static/production path is byte-identical.
+        gb_nstlim = config.inputs.get("pilot_nstlim_steps") if config.inputs.get("als_pilot") else None
+        gb_ntwx = config.inputs.get("pilot_ntwx") if config.inputs.get("als_pilot") else None
+
         # Interpolate GB external dielectric constant
         for dielectric in config.intermediate_args.gb_extdiel_windows:
             complex_simulations.setup_gb_external_dielectric(
@@ -391,6 +402,26 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     generate_extdiel_mdin,
                     user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
                     gb_extdiel=dielectric,
+                    nstlim=gb_nstlim,
+                    ntwx=gb_ntwx,
+                ).rv(),
+            )
+
+            # Matched receptor (apo-host) GB band: same epsilon schedule at FULL host charge so the host
+            # desolvation cancels between the complex and receptor legs. Uses the default (full-charge)
+            # receptor topology — no alter_topology needed (the apo system has no ligand to decharge).
+            # Mandatory whenever the band is enabled: receptor_GB_exl_windows is now in receptor_order, so
+            # compute_mbar's _ordered() invariant requires these columns to exist.
+            receptor_simulations.setup_gb_external_dielectric(
+                restraint_key=f"receptor_{max_conformational_force}_rst",
+                prmtop=config.endstate_files.receptor_parameter_filename,
+                extdiel=dielectric,
+                mdin=job.addChildJobFn(
+                    generate_extdiel_mdin,
+                    user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
+                    gb_extdiel=dielectric,
+                    nstlim=gb_nstlim,
+                    ntwx=gb_ntwx,
                 ).rv(),
             )
 
@@ -746,21 +777,14 @@ def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Con
     # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate
     # re-scoring from the pilot and guarantees no endstate column/rows leak into the pilot data.
     pilot_config.workflow.end_state_postprocess = False
+    # Mark this as the pilot setup so the GB-dielectric setup loop shortens its per-epsilon extdiel mdins
+    # to the pilot MD length (setup_intermediate_simulations checks inputs["als_pilot"]); production is
+    # unaffected since this marker lives only on the pilot deepcopy.
+    pilot_config.inputs["als_pilot"] = True
     # Isolate the pilot output tree (top_directory_path = working_directory/output_directory_name).
     pilot_config.system_settings.output_directory_name = (
         pilot_config.system_settings.output_directory_name + "_pilot"
     )
-
-    # KNOWN LIMITATION: GB-external-dielectric pilot states are generated from mdin_intermediate_file
-    # (generate_extdiel_mdin) and are NOT shortened, so they would run at full production length. The
-    # restraints-only ALS scope uses empty gb_extdiel_windows, so this is not hit; warn loudly if a
-    # caller ever enables it before the restraints-focused pilot (Step 6) lands.
-    if pilot_config.intermediate_args.gb_extdiel_windows:
-        job.fileStore.logToMaster(
-            "[ALS][pilot] WARNING: gb_extdiel_windows set — GB-dielectric pilot states run at FULL "
-            "production length (not shortened). Expect a slow pilot until the restraints-focused "
-            "pilot lands."
-        )
 
     job.fileStore.logToMaster(
         f"[ALS][pilot] Phase 4.5 starting. pilot output dir: "
@@ -780,60 +804,118 @@ def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Con
         _pilot_md_post_drive,
         setup_pilot.rv(0),  # pilot config (binding modes + pilot mdin + seed _list)
         setup_pilot.rv(1),  # complex SimulationSetup
+        setup_pilot.rv(2),  # receptor SimulationSetup (for the matched dielectric band)
     ).rv()
 
 
-def _pilot_md_post_drive(job, pilot_config: Config, complex_setup):
-    """Run the complex pilot leg (short MD -> post-analysis) then drive the R-ADD scheduler.
+def _pilot_runner(simulations, pilot_config, distruct, post_only):
+    """Build one pilot IntermidateRunner (short MD or post-analysis pass)."""
+    return IntermidateRunner(
+        simulations,
+        pilot_config.inputs["restraints"],
+        post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
+        post_process_mdin=pilot_config.inputs["post_mdin"],
+        post_process_distruct=distruct,
+        post_only=post_only,
+        config=pilot_config,
+    )
 
-    Mirrors the Phase-5 (MD, ``post_only=False``) then Phase-6 (post-analysis, ``post_only=True``)
-    ``IntermidateRunner`` construction, chained MD -> followOn(post) so the trajectories exist before
-    re-scoring. The post-runner's ``.rv()`` is the runner with a populated ``post_output`` (``run()``
-    returns ``self``), which ``adaptive_lambda_windows`` consumes exactly as Phase 7 does.
+
+def _pilot_md_post_drive(job, pilot_config: Config, complex_setup, receptor_setup):
+    """Run the complex AND receptor pilot legs (short MD -> post-analysis), then drive the band passes.
+
+    Both legs are needed because the GB-dielectric band is scheduled on a MATCHED complex+receptor
+    schedule (so the host desolvation cancels). Each leg runs MD (``post_only=False``) then post-analysis
+    (``post_only=True``); a follow-on join then drives the per-band R-ADD passes in
+    ``_pilot_band_passes``. ``run()`` returns the runner with a populated ``post_output``.
     """
-    md_runner = job.addChild(
-        IntermidateRunner(
-            complex_setup.simulations,
-            pilot_config.inputs["restraints"],
-            post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
-            post_process_mdin=pilot_config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=False,
-            config=pilot_config,
-        )
+    c_md = job.addChild(_pilot_runner(complex_setup.simulations, pilot_config, "post_process_halo", False))
+    c_post = c_md.addFollowOn(
+        _pilot_runner(complex_setup.simulations, pilot_config, "post_process_halo", True)
     )
-    post_runner = md_runner.addFollowOn(
-        IntermidateRunner(
-            complex_setup.simulations,
-            pilot_config.inputs["restraints"],
-            post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
-            post_process_mdin=pilot_config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=True,
-            config=pilot_config,
-        )
+    r_md = job.addChild(_pilot_runner(receptor_setup.simulations, pilot_config, "post_process_apo", False))
+    r_post = r_md.addFollowOn(
+        _pilot_runner(receptor_setup.simulations, pilot_config, "post_process_apo", True)
     )
 
-    driver = post_runner.addFollowOnJobFn(
+    # The band passes run after BOTH legs' post-analysis (a follow-on of `job` waits on all its children).
+    drive = job.addFollowOnJobFn(
+        _pilot_band_passes, c_post.rv(), r_post.rv(), pilot_config
+    )
+    return drive.rv()
+
+
+def _pilot_band_passes(job, complex_runner, receptor_runner, pilot_config: Config):
+    """Drive the per-band R-ADD passes sequentially, threading the converged config forward.
+
+    Order: matched dielectric (complex + receptor) -> charge (complex) -> restraints (complex). Each pass
+    reads its own banded overlap and inserts in its own coordinate; the converged config (expanded window
+    lists) is threaded into the next pass and ultimately returned for the production rebuild (Stage D).
+    """
+    # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
+    diel = job.addChildJobFn(
+        pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
+    )
+    # Pass 2 — charge band on the complex leg. adaptive_lambda_windows -> (results, config, runner).
+    charge = diel.addFollowOnJobFn(
         adaptive_lambda_windows,
-        post_runner.rv(),
-        pilot_config,
+        diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
+        diel.rv(2),  # dielectric-converged config
+        "complex",
+        charge_scaling=True,
+    )
+    # Pass 3 — restraint band on the complex leg.
+    restr = charge.addFollowOnJobFn(
+        adaptive_lambda_windows,
+        charge.rv(2),  # complex runner
+        charge.rv(1),  # charge-converged config
         "complex",
         restraints_scaling=True,
     )
-    # adaptive_lambda_windows returns (results, converged_config, runner); log the converged schedule.
-    driver.addFollowOnJobFn(_log_pilot_schedule, driver.rv(1))
-    return driver.rv(1)
+    restr.addFollowOnJobFn(_log_pilot_schedule, restr.rv(1))
+    return restr.rv(1)
+
+
+def merge_pilot_windows(job, production_config: Config, converged_config: Config):
+    """Close the loop: apply the pilot's converged dielectric + charge schedules to a PRODUCTION config.
+
+    Returns a deep copy of ``production_config`` (full-length mdin, production output dir — NOT the pilot's
+    short mdin / ``_pilot`` dir) whose ``gb_extdiel_windows`` and ``charges_lambda_window`` are replaced by
+    the pilot-converged (expanded) lists. The production GB / charge setup loops iterate those lists, so the
+    rebuilt setups carry the pilot-determined window COUNT for both legs.
+
+    Scope: the RESTRAINT band is intentionally left at the seed schedule here — closing it would require
+    materializing restraint files for inserted exponents in an earlier phase (RestraintMaker), and the
+    restraint band is already well-overlapped (the target host-desolvation cliff is in the dielectric +
+    charge bands). The restraint pilot pass still runs and logs its converged schedule for observability.
+    """
+    merged = copy.deepcopy(production_config)
+    merged.intermediate_args.gb_extdiel_windows = list(
+        converged_config.intermediate_args.gb_extdiel_windows
+    )
+    merged.intermediate_args.charges_lambda_window = list(
+        converged_config.intermediate_args.charges_lambda_window
+    )
+    job.fileStore.logToMaster(
+        f"[ALS][pilot] rebuilding production from converged schedule: "
+        f"{len(merged.intermediate_args.gb_extdiel_windows)} GB dielectric windows, "
+        f"{len(merged.intermediate_args.charges_lambda_window)} charge windows"
+    )
+    return merged
 
 
 def _log_pilot_schedule(job, converged_config: Config):
-    """Terminal pilot follow-on: log the converged restraint schedule (5a deliverable)."""
+    """Terminal pilot follow-on: log the converged schedules across all bands (loop-close deliverable)."""
     con = sorted(converged_config.intermediate_args.exponent_conformational_forces_list)
     orient = sorted(converged_config.intermediate_args.exponent_orientational_forces_list)
+    charges = sorted(converged_config.intermediate_args.charges_lambda_window)
+    eps = sorted(converged_config.intermediate_args.gb_extdiel_windows)
     job.fileStore.logToMaster(
-        f"[ALS][pilot] CONVERGED complex restraint schedule: {len(con)} windows\n"
-        f"[ALS][pilot]   conformational exponents: {con}\n"
-        f"[ALS][pilot]   orientational  exponents: {orient}"
+        f"[ALS][pilot] CONVERGED schedules feeding production:\n"
+        f"[ALS][pilot]   restraint conformational exponents ({len(con)}): {con}\n"
+        f"[ALS][pilot]   restraint orientational  exponents ({len(orient)}): {orient}\n"
+        f"[ALS][pilot]   charge windows ({len(charges)}): {charges}\n"
+        f"[ALS][pilot]   GB dielectric windows ({len(eps)}): {eps}"
     )
     return converged_config
 

@@ -9,6 +9,7 @@ import re
 import shutil
 import string
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional, Type, Union, Dict
 from pathlib import Path
@@ -712,6 +713,13 @@ class IntermediateStateArgs:
     candidate_conformational_pool: List[float] = field(default_factory=list)  # fixed candidate exponent pool; empty -> derive from seed + candidate_pool_step
     candidate_pool_step: Optional[float] = None  # pool granularity in exponent space; None -> default fill between endstate and pinned max
     redistribution_mode: str = "add"            # "add" = R-ADD (insert +1, never move); "move" reserved for uniform pools
+    # --- GB-dielectric band knobs (lambda = 1 - 1/eps axis) ---
+    gb_extdiel_floor: float = 1.0               # lowest allowed external dielectric (eps=1 -> vacuum, lambda=0); seeds are clamped to [floor, 78.5]
+    candidate_dielectric_pool: List[float] = field(default_factory=list)  # fixed candidate lambda pool for the dielectric band; empty -> derive from seed + dielectric_pool_step
+    dielectric_pool_step: Optional[float] = None  # dielectric pool granularity in LAMBDA space; None -> default fill between the band anchors
+    # --- Charge band knobs (q in [0, 1] axis) ---
+    candidate_charge_pool: List[float] = field(default_factory=list)  # fixed candidate charge pool; empty -> derive from seed + charge_pool_step
+    charge_pool_step: Optional[float] = None    # charge pool granularity; None -> default fill between q=0 and q=1
 
     guest_restraint_template: Optional[str] = None
     receptor_restraint_template: Optional[str] = None
@@ -736,11 +744,22 @@ class IntermediateStateArgs:
         self.charges_lambda_window = [float(charge) for charge in self.charges_lambda_window]
         self.exponent_conformational_forces = [float(force) for force in self.exponent_conformational_forces]
         self.exponent_orientational_forces = [float(force) for force in self.exponent_orientational_forces]
-        # Convert GB external dielectric scaling to dielectric values (if present)
+        # gb_extdiel_windows are EXPLICIT external-dielectric (epsilon) seed values for the GB-dielectric
+        # band (NOT fractions of 78.5). Clamp each to [gb_extdiel_floor, 78.5] (eps=1 is vacuum/lambda=0,
+        # the lowest physically meaningful value; 78.5 is full water, the upper anchor) and warn on any
+        # value that had to be clamped, then de-duplicate and sort ascending.
         if self.gb_extdiel_windows:
-            self.gb_extdiel_windows = [
-                float(78.5 * val) for val in self.gb_extdiel_windows if val not in {0, 1}
-            ]   
+            clamped = []
+            for val in self.gb_extdiel_windows:
+                eps = float(val)
+                lo, hi = float(self.gb_extdiel_floor), 78.5
+                fixed = min(max(eps, lo), hi)
+                if fixed != eps:
+                    warnings.warn(
+                        f"gb_extdiel_windows: epsilon {eps} outside [{lo}, {hi}] — clamped to {fixed}"
+                    )
+                clamped.append(fixed)
+            self.gb_extdiel_windows = sorted(set(clamped))
 
         # Apply 2^x to get force magnitudes
         self.conformational_restraints_forces = np.exp2(self.exponent_conformational_forces)
