@@ -564,3 +564,48 @@ def test_empty_dielectric_leaves_orders_static():
     assert cs.complex_GB_exl_windows == []
     assert cs.receptor_GB_exl_windows == []
     assert cs.receptor_order == cs.endstate + cs.apply_restraints + cs.no_gb
+
+
+# ---------------------------------------------------------------------------
+# Close-the-loop merge: apply_converged_schedule must carry the pilot's converged
+# dielectric, charge, AND restraint schedules into the production config so the
+# re-decomposition's RestraintMaker materializes a file per (inserted) window.
+# ---------------------------------------------------------------------------
+def test_apply_converged_schedule_carries_all_bands():
+    import os
+    import numpy as np
+    import yaml
+    from implicit_solvent_ddm.config import Config
+    from implicit_solvent_ddm.workflow_phases import apply_converged_schedule
+
+    cfg_path = os.path.join("implicit_solvent_ddm", "tests", "input_files", "config.yaml")
+    with open(cfg_path) as fh:
+        raw = yaml.safe_load(fh)
+    production = Config.from_config(raw)
+    converged = Config.from_config(raw)
+    orig_prod_gb = list(production.intermediate_args.gb_extdiel_windows)
+
+    # Simulate a converged pilot: dielectric + charge windows inserted, plus an R-ADD restraint window
+    # (con=1.0 / orient=5.0) strictly inside the seed (-8..4) — recorded in the PAIRED _list fields.
+    converged.intermediate_args.gb_extdiel_windows = [1.5, 3.0, 10.0, 40.0]
+    converged.intermediate_args.charges_lambda_window = [0.0, 0.25, 0.5, 1.0]
+    converged.intermediate_args.exponent_conformational_forces_list = [-8.0, -2.0, 4.0, 1.0]
+    converged.intermediate_args.exponent_orientational_forces_list = [-4.0, 2.0, 8.0, 5.0]
+
+    merged = apply_converged_schedule(production, converged)
+    m = merged.intermediate_args
+
+    # dielectric + charge window VALUES carried verbatim (production loops iterate these)
+    assert m.gb_extdiel_windows == [1.5, 3.0, 10.0, 40.0]
+    assert m.charges_lambda_window == [0.0, 0.25, 0.5, 1.0]
+    # restraint exponents carried, index-paired
+    assert m.exponent_conformational_forces == [-8.0, -2.0, 4.0, 1.0]
+    assert m.exponent_orientational_forces == [-4.0, 2.0, 8.0, 5.0]
+    # forces recomputed as 2**exponent (what RestraintMaker / setup iterate), index-aligned
+    assert list(m.conformational_restraints_forces) == pytest.approx(list(np.exp2([-8.0, -2.0, 4.0, 1.0])))
+    assert list(m.orientational_restraint_forces) == pytest.approx(list(np.exp2([-4.0, 2.0, 8.0, 5.0])))
+    # anchor protection: the inserted con=1.0 is interior, so max force is unchanged
+    assert max(m.exponent_conformational_forces) == 4.0
+    # deep copy: the production config is not mutated
+    assert merged is not production
+    assert list(production.intermediate_args.gb_extdiel_windows) == orig_prod_gb

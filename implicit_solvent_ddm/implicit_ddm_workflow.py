@@ -131,12 +131,23 @@ def ddm_workflow(
             endstate_jobs.rv(),
             updated_config,
         )
-        # Apply the converged dielectric + charge windows onto a fresh production config (full mdin,
-        # production dir), then rebuild the production SimulationSetups from it.
+        # Apply the converged dielectric + charge + restraint windows onto a fresh production config
+        # (full mdin, production dir).
         merged = pilot.addFollowOnJobFn(merge_pilot_windows, updated_config, pilot.rv())
-        setup_source = merged.addFollowOnJobFn(
+        # Re-run Phase 3 on the merged schedule so RestraintMaker materializes a restraint file for every
+        # pilot-inserted exponent (the original seed RestraintMaker only carries seed-window files, so an
+        # inserted con/orient window's restraint_key would not resolve). Anchor protection keeps inserts
+        # inside the seed (min, max), so binding modes, max_*_restraint, and the Boresch ΔG are unchanged
+        # — this only adds the inserted interior restraint files. Then rebuild the production setups from
+        # the merged config + re-generated restraints.
+        redecomposition_jobs = merged.addFollowOnJobFn(
+            decompose_system_and_generate_restraints,
+            endstate_jobs.rv(),
+            merged.rv(),
+        )
+        setup_source = redecomposition_jobs.addFollowOnJobFn(
             setup_intermediate_simulations,
-            decomposition_jobs.rv(),
+            redecomposition_jobs.rv(),
             endstate_jobs.rv(),
             merged.rv(),
         )

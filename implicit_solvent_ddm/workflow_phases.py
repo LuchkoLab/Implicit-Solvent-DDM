@@ -876,30 +876,59 @@ def _pilot_band_passes(job, complex_runner, receptor_runner, pilot_config: Confi
     return restr.rv(1)
 
 
-def merge_pilot_windows(job, production_config: Config, converged_config: Config):
-    """Close the loop: apply the pilot's converged dielectric + charge schedules to a PRODUCTION config.
+def apply_converged_schedule(production_config: Config, converged_config: Config) -> Config:
+    """Pure: return a deep copy of ``production_config`` with the pilot's converged dielectric, charge,
+    AND restraint schedules applied (full-length mdin / production dir preserved).
 
-    Returns a deep copy of ``production_config`` (full-length mdin, production output dir — NOT the pilot's
-    short mdin / ``_pilot`` dir) whose ``gb_extdiel_windows`` and ``charges_lambda_window`` are replaced by
-    the pilot-converged (expanded) lists. The production GB / charge setup loops iterate those lists, so the
-    rebuilt setups carry the pilot-determined window COUNT for both legs.
+    * Dielectric + charge bands: the production setup loops iterate ``gb_extdiel_windows`` /
+      ``charges_lambda_window`` directly, so replacing those window-value lists is sufficient.
+    * Restraint band: the production setup (and ``RestraintMaker``) iterate the FORCE lists
+      ``conformational_restraints_forces`` / ``orientational_restraint_forces`` (= ``2**exponent``). The
+      pilot records its converged schedule in the PAIRED ``exponent_*_forces_list`` (seed + R-ADD
+      insertions, ``con``/``orient`` aligned by index), so we carry those into the production seed
+      exponents and recompute the forces. The caller must re-run
+      ``decompose_system_and_generate_restraints`` on the result so ``RestraintMaker`` materializes a
+      restraint file for every window — including the inserted ones — keyed by force.
 
-    Scope: the RESTRAINT band is intentionally left at the seed schedule here — closing it would require
-    materializing restraint files for inserted exponents in an earlier phase (RestraintMaker), and the
-    restraint band is already well-overlapped (the target host-desolvation cliff is in the dielectric +
-    charge bands). The restraint pilot pass still runs and logs its converged schedule for observability.
+    R-ADD anchor protection keeps every inserted exponent strictly inside ``(min, max)``, so
+    ``max_*_restraint`` and the analytical Boresch ΔG are unchanged; re-decomposition only adds the
+    inserted *interior* restraint files.
     """
     merged = copy.deepcopy(production_config)
-    merged.intermediate_args.gb_extdiel_windows = list(
-        converged_config.intermediate_args.gb_extdiel_windows
-    )
-    merged.intermediate_args.charges_lambda_window = list(
-        converged_config.intermediate_args.charges_lambda_window
-    )
+    conv = converged_config.intermediate_args
+    m = merged.intermediate_args
+
+    m.gb_extdiel_windows = list(conv.gb_extdiel_windows)
+    m.charges_lambda_window = list(conv.charges_lambda_window)
+
+    con_exps = list(conv.exponent_conformational_forces_list)
+    orient_exps = list(conv.exponent_orientational_forces_list)
+    if con_exps and len(con_exps) == len(orient_exps):
+        m.exponent_conformational_forces = con_exps
+        m.exponent_orientational_forces = orient_exps
+        m.conformational_restraints_forces = np.exp2(con_exps)
+        m.orientational_restraint_forces = np.exp2(orient_exps)
+    return merged
+
+
+def merge_pilot_windows(job, production_config: Config, converged_config: Config):
+    """Close the loop (Toil wrapper): apply the pilot's converged dielectric + charge + RESTRAINT
+    schedules to a PRODUCTION config (full-length mdin, production output dir — NOT the pilot's short
+    mdin / ``_pilot`` dir) and return it.
+
+    The caller re-runs ``decompose_system_and_generate_restraints`` on the returned config so
+    ``RestraintMaker`` materializes restraint files for the pilot-inserted exponents (the seed
+    RestraintMaker only carries seed-window files), then rebuilds the production ``SimulationSetup``s —
+    so Phases 5/6/7 run full-length MD on the ALL pilot-determined windows (dielectric, charge, AND
+    restraint). The pure schedule merge lives in :func:`apply_converged_schedule` (unit-tested).
+    """
+    merged = apply_converged_schedule(production_config, converged_config)
+    m = merged.intermediate_args
     job.fileStore.logToMaster(
         f"[ALS][pilot] rebuilding production from converged schedule: "
-        f"{len(merged.intermediate_args.gb_extdiel_windows)} GB dielectric windows, "
-        f"{len(merged.intermediate_args.charges_lambda_window)} charge windows"
+        f"{len(m.gb_extdiel_windows)} GB dielectric windows, "
+        f"{len(m.charges_lambda_window)} charge windows, "
+        f"{len(m.conformational_restraints_forces)} restraint windows"
     )
     return merged
 
