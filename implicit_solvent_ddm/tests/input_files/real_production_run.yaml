@@ -2,7 +2,7 @@
 
 
 hardware_parameters:
-  executable: "sander" # executable machine for MD choice : [sander, sander.MPI, pmemed, pemed.MPI, pmeded.CUDA]
+  executable: "pmemd" # executable machine for MD choice : [sander, sander.MPI, pmemed, pemed.MPI, pmeded.CUDA]
   mpi_command:  # system dependent /
   CUDA:  # run on GPU
   memory: "2G"
@@ -25,7 +25,7 @@ number_of_cores_per_system:
 
 AMBER_masks:
   receptor_mask: ':CB7' # list of Amber masks denoting receptor atoms in respected complex file
-  ligand_mask: ':M14' # list of Amber masks denoting ligand atoms in respected complex file
+  ligand_mask: ':ADN' # list of Amber masks denoting ligand atoms in respected complex file
 
 
 workflow:
