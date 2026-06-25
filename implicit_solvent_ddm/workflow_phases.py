@@ -901,6 +901,16 @@ def apply_converged_schedule(production_config: Config, converged_config: Config
     m.gb_extdiel_windows = list(conv.gb_extdiel_windows)
     m.charges_lambda_window = list(conv.charges_lambda_window)
 
+    # Re-sync the production GB-dielectric setup GATE to the merged window list. The boolean
+    # ``workflow.gb_extdiel_windows`` is derived from the list ONLY in ``Config.__post_init__``
+    # (config.py: empty list -> flag False), so a seed config with no GB windows leaves the flag False.
+    # ``copy.deepcopy`` above does NOT re-run ``__post_init__``, so without this the production setup loop
+    # (``setup_intermediate_simulations``, gated on the flag) would SKIP the pilot-inserted GB windows
+    # even though ``compute_mbar``'s ``CycleSteps`` order is built from the *list* and expects them — the
+    # "('gb_dielectric', ...) absent from the MBAR dataframe columns" schedule/data mismatch. The list is
+    # the single source of truth for both legs (complex + receptor share this schedule).
+    merged.workflow.gb_extdiel_windows = bool(m.gb_extdiel_windows)
+
     con_exps = list(conv.exponent_conformational_forces_list)
     orient_exps = list(conv.exponent_orientational_forces_list)
     if con_exps and len(con_exps) == len(orient_exps):

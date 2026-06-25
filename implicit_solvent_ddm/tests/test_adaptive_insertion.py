@@ -584,6 +584,10 @@ def test_apply_converged_schedule_carries_all_bands():
     production = Config.from_config(raw)
     converged = Config.from_config(raw)
     orig_prod_gb = list(production.intermediate_args.gb_extdiel_windows)
+    # The seed config has no gb_extdiel_windows, so Config.__post_init__ disables the production GB gate.
+    # The pilot (below) discovers GB windows starting from the gas/water anchors; the merge must turn the
+    # gate back on, else setup_intermediate_simulations skips them and compute_mbar's order desyncs.
+    assert production.workflow.gb_extdiel_windows is False
 
     # Simulate a converged pilot: dielectric + charge windows inserted, plus an R-ADD restraint window
     # (con=1.0 / orient=5.0) strictly inside the seed (-8..4) — recorded in the PAIRED _list fields.
@@ -606,6 +610,34 @@ def test_apply_converged_schedule_carries_all_bands():
     assert list(m.orientational_restraint_forces) == pytest.approx(list(np.exp2([-4.0, 2.0, 8.0, 5.0])))
     # anchor protection: the inserted con=1.0 is interior, so max force is unchanged
     assert max(m.exponent_conformational_forces) == 4.0
-    # deep copy: the production config is not mutated
+    # GB gate re-enabled: the pilot added GB windows to an empty-seed config, so the production setup
+    # loop must now run (its boolean gate keys off this, while compute_mbar keys off the list).
+    assert merged.workflow.gb_extdiel_windows is True
+    # deep copy: the production config is not mutated (gate + windows unchanged on the original)
     assert merged is not production
     assert list(production.intermediate_args.gb_extdiel_windows) == orig_prod_gb
+    assert production.workflow.gb_extdiel_windows is False
+
+
+def test_apply_converged_schedule_disables_gb_gate_when_no_windows():
+    """Symmetric guard: if the pilot converges to ZERO GB windows (no desolvation cliff), the merged
+    config must DISABLE the GB gate so the production setup and compute_mbar order stay consistent
+    (no gb_dielectric columns expected, none produced)."""
+    import os
+    import yaml
+    from implicit_solvent_ddm.config import Config
+    from implicit_solvent_ddm.workflow_phases import apply_converged_schedule
+
+    cfg_path = os.path.join("implicit_solvent_ddm", "tests", "input_files", "config.yaml")
+    with open(cfg_path) as fh:
+        raw = yaml.safe_load(fh)
+    production = Config.from_config(raw)
+    # Seed a production config WITH a GB band (gate True), then converge to an empty schedule.
+    production.intermediate_args.gb_extdiel_windows = [2.0, 10.0]
+    production.workflow.gb_extdiel_windows = True
+    converged = Config.from_config(raw)
+    converged.intermediate_args.gb_extdiel_windows = []
+
+    merged = apply_converged_schedule(production, converged)
+    assert merged.intermediate_args.gb_extdiel_windows == []
+    assert merged.workflow.gb_extdiel_windows is False
