@@ -266,7 +266,7 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
         system_type="receptor",
         restraints=decomposition_jobs[2],     # restraints
         binding_mode=decomposition_jobs[0],   # receptor binding mode
-        endstate_traj=endstate_jobs[3],  # receptor trajectory
+        endstate_traj=endstate_jobs[2],  # receptor trajectory (index 2; [3] is the ligand traj)
     )
     
     ligand_simulations = SimulationSetup(
