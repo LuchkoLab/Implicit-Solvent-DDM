@@ -25,6 +25,8 @@ from implicit_solvent_ddm.adaptive_restraints import (
     lambda_of_state,
     charge_of_state,
     plan_band_insertion,
+    plan_batch_insertion,
+    prune_schedule,
 )
 
 THRESH = 0.04
@@ -641,3 +643,109 @@ def test_apply_converged_schedule_disables_gb_gate_when_no_windows():
     merged = apply_converged_schedule(production, converged)
     assert merged.intermediate_args.gb_extdiel_windows == []
     assert merged.workflow.gb_extdiel_windows is False
+
+
+# ---------------------------------------------------------------------------
+# Batch insertion: bisect EVERY weak gap per round (parallel-friendly), vs. one-at-a-time insert_one.
+# ---------------------------------------------------------------------------
+def test_plan_batch_insertion_fills_every_weak_gap_in_one_call():
+    # complex-style descending block; all three adjacent pairs weak; pool has each gap's midpoint.
+    block = [4.0, 3.0, 2.0, 1.0]
+    superdiagonal = [0.0, 0.0, 0.0]
+    pool = [3.5, 2.5, 1.5]
+    new_exps, converged, reason = plan_batch_insertion(
+        block, superdiagonal, pool, THRESH, lower_bound=1.0, upper_bound=4.0
+    )
+    assert converged is False and reason == ""
+    assert new_exps == [1.5, 2.5, 3.5]  # one midpoint per weak gap, all at once, sorted
+
+
+def test_plan_batch_insertion_only_fills_the_weak_gaps():
+    block = [4.0, 3.0, 2.0]
+    superdiagonal = [0.0, 0.20]  # only the first pair is weak
+    pool = [3.5, 2.5]
+    new_exps, converged, reason = plan_batch_insertion(
+        block, superdiagonal, pool, THRESH, lower_bound=2.0, upper_bound=4.0
+    )
+    assert new_exps == [3.5] and converged is False
+
+
+def test_plan_batch_insertion_converged():
+    new_exps, converged, reason = plan_batch_insertion(
+        [4.0, 3.0], [0.20], [3.5], THRESH, lower_bound=3.0, upper_bound=4.0
+    )
+    assert new_exps == [] and converged is True and reason == "converged"
+
+
+def test_plan_batch_insertion_pool_exhausted_when_no_candidate():
+    new_exps, converged, reason = plan_batch_insertion(
+        [4.0, 3.0], [0.0], pool=[], threshold=THRESH, lower_bound=3.0, upper_bound=4.0
+    )
+    assert new_exps == [] and converged is True and reason == "pool-exhausted"
+
+
+def test_plan_batch_insertion_respects_anchor_bounds():
+    # midpoint candidate exists in the pool but lies outside the (lower,upper) anchor interval -> skipped.
+    new_exps, converged, reason = plan_batch_insertion(
+        [4.0, 2.0], [0.0], pool=[3.5], threshold=THRESH, lower_bound=2.0, upper_bound=3.0
+    )
+    assert new_exps == [] and reason == "pool-exhausted"
+
+
+def test_plan_batch_insertion_length_mismatch_raises():
+    with pytest.raises(ValueError):
+        plan_batch_insertion([4.0, 3.0, 2.0], [0.0], [2.5], THRESH, lower_bound=2.0, upper_bound=4.0)
+
+
+# ---------------------------------------------------------------------------
+# Prune: minimal connected subset from the FULL pairwise overlap matrix (greedy farthest jump).
+# ---------------------------------------------------------------------------
+def _decay_matrix(n, by_distance):
+    """Symmetric overlap matrix: O[i][j] = by_distance[|i-j|] (diagonal 1.0, missing distances 0.0)."""
+    return [
+        [1.0 if i == j else by_distance.get(abs(i - j), 0.0) for j in range(n)]
+        for i in range(n)
+    ]
+
+
+def test_prune_schedule_drops_redundant_windows():
+    # adjacent 0.2, skip-1 0.1, farther ~0. At threshold 0.08, every-other window is reachable.
+    M = _decay_matrix(5, {1: 0.2, 2: 0.1, 3: 0.03, 4: 0.01})
+    assert prune_schedule(M, threshold=0.08) == [0, 2, 4]
+
+
+def test_prune_schedule_keeps_anchors_and_stays_connected():
+    M = _decay_matrix(5, {1: 0.2, 2: 0.1, 3: 0.03, 4: 0.01})
+    kept = prune_schedule(M, threshold=0.08)
+    assert kept[0] == 0 and kept[-1] == 4                      # anchors always retained
+    # every consecutive kept pair clears the threshold (valid BAR ladder)
+    for a, b in zip(kept, kept[1:]):
+        assert min(M[a][b], M[b][a]) >= 0.08
+
+
+def test_prune_schedule_higher_threshold_keeps_more():
+    M = _decay_matrix(5, {1: 0.2, 2: 0.1, 3: 0.03, 4: 0.01})
+    # at 0.15 even skip-1 (0.1) fails, so nothing can be dropped
+    assert prune_schedule(M, threshold=0.15) == [0, 1, 2, 3, 4]
+
+
+def test_prune_schedule_collapses_to_anchors_when_endpoints_overlap():
+    M = _decay_matrix(5, {1: 0.2, 2: 0.2, 3: 0.2, 4: 0.2})
+    assert prune_schedule(M, threshold=0.1) == [0, 4]
+
+
+def test_prune_schedule_no_pruning_when_only_neighbors_connected():
+    M = _decay_matrix(5, {1: 0.2, 2: 0.01, 3: 0.0, 4: 0.0})
+    assert prune_schedule(M, threshold=0.08) == [0, 1, 2, 3, 4]
+
+
+def test_prune_schedule_uses_min_direction():
+    # 0->2 looks great one way (0.2) but is ~0 the other way; min-direction must NOT skip window 1.
+    M = _decay_matrix(5, {1: 0.2, 2: 0.0, 3: 0.0, 4: 0.0})
+    M[0][2] = 0.2  # asymmetric: forward strong, reverse (M[2][0]) stays 0.0
+    assert prune_schedule(M, threshold=0.08) == [0, 1, 2, 3, 4]
+
+
+def test_prune_schedule_small_n_is_identity():
+    assert prune_schedule([[1.0]], threshold=0.08) == [0]
+    assert prune_schedule([[1.0, 0.0], [0.0, 1.0]], threshold=0.08) == [0, 1]

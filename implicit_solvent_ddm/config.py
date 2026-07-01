@@ -709,7 +709,10 @@ class IntermediateStateArgs:
     pilot_ps: float = 50.0                       # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
     pilot_frames: int = 100                      # target trajectory frames written over the pilot window; pilot ntwx = round(nstlim / pilot_frames), so MBAR sampling is independent of dt and of the user's production ntwx (which is tuned for a much longer run)
     pilot_nstlim: Optional[int] = None          # explicit step-count override of pilot_ps (None -> derive from pilot_ps + dt); set only for tiny test systems where 50 ps is absurd
-    max_adaptive_iterations: int = 12           # hard cap on R-ADD insertions per system (termination guard)
+    max_adaptive_iterations: int = 12           # hard cap on R-ADD iterations per system (termination guard); with batch_insertion this caps ROUNDS, not windows
+    batch_insertion: bool = False               # ALS restraints: insert a window in EVERY weak gap per round and run them in parallel (converges a many-window leg in ~log rounds), vs. default one-at-a-time R-ADD
+    prune_after_convergence: bool = False       # ALS restraints: once the dense ladder converges, prune it to the MINIMAL connected subset using the full pairwise pilot overlap matrix (prune_schedule) so production runs the fewest windows
+    prune_margin: float = 2.0                   # prune threshold = min_degree_overlap * prune_margin; >1 because the 50 ps pilot over-estimates overlap vs 10 ns production
     candidate_conformational_pool: List[float] = field(default_factory=list)  # fixed candidate exponent pool; empty -> derive from seed + candidate_pool_step
     candidate_pool_step: Optional[float] = None  # pool granularity in exponent space; None -> default fill between endstate and pinned max
     redistribution_mode: str = "add"            # "add" = R-ADD (insert +1, never move); "move" reserved for uniform pools

@@ -192,6 +192,122 @@ def insert_one(block, superdiagonal, pool, threshold, lower_bound, upper_bound):
         return (new_con, False, "")
 
 
+def plan_batch_insertion(block, superdiagonal, pool, threshold, lower_bound, upper_bound):
+    """Batch R-ADD: return the window to insert for EVERY weak adjacent pair this round (not just one).
+
+    The batch analogue of :func:`insert_one`. Instead of inserting a single window in the globally-worst
+    gap and re-piloting, this returns one new exponent per *fillable* weak pair so the caller can run them
+    all in parallel — one pilot round per bisection *generation* instead of one round per window (the
+    decisive win when a leg needs many windows, e.g. flexible-protein restraints). Each new point is the
+    gap midpoint snapped to the candidate ``pool`` (identical placement rule to ``insert_one``), confined
+    to the open anchor interval ``(lower_bound, upper_bound)``. A weak pair already at pool spacing (no
+    free candidate inside) is skipped — it gets bisected on a later round once the pool refines, or is the
+    min-gap floor.
+
+    Returns ``(new_exps, converged, reason)``:
+    * ``new_exps`` — sorted exponents to insert this round (empty when no insertion is made).
+    * ``converged`` — True when this should be the final round (no fillable weak pair remains).
+    * ``reason`` — ``"converged"`` (no weak pair at all) | ``"pool-exhausted"`` (weak pairs remain but
+      none fillable — emit best + warn) | ``""`` (more rounds to do).
+    """
+    if len(superdiagonal) != len(block) - 1:
+        raise ValueError(
+            f"superdiagonal length {len(superdiagonal)} != len(block)-1 {len(block) - 1}"
+        )
+    selected = {round(c, ROUND_DP) for c in block}
+    chosen = set()
+    new_exps = []
+    weak = [k for k, value in enumerate(superdiagonal) if value < threshold]
+    if not weak:
+        return ([], True, "converged")
+    for k in weak:
+        lo_exp, hi_exp = sorted((block[k], block[k + 1]))
+        ideal_exp = (lo_exp + hi_exp) / 2.0
+        new_con = snap_to_pool(lo_exp, hi_exp, ideal_exp, pool, selected | chosen)
+        if (
+            new_con is None                                  # no free pool candidate in this gap
+            or not (lower_bound < new_con < upper_bound)     # anchor protection
+            or round(new_con, ROUND_DP) in (selected | chosen)
+        ):
+            continue
+        chosen.add(round(new_con, ROUND_DP))
+        new_exps.append(round(new_con, ROUND_DP))
+    if not new_exps:
+        # weak pairs remain but none fillable (all already at pool spacing) -> floor reached
+        return ([], True, "pool-exhausted")
+    return (sorted(new_exps), False, "")
+
+
+def prune_schedule(overlap_matrix, threshold):
+    """Select the MINIMAL subset of an ordered, fully-connected window ladder whose CONSECUTIVE members
+    still clear ``threshold`` — from the FULL pairwise overlap matrix (greedy farthest-reachable jump).
+
+    Precondition: call this only after the dense pilot has converged so every *adjacent* pair already
+    passes (``min_direction_superdiagonal(overlap_matrix)`` all >= the adjacency threshold). The
+    off-diagonal entries then reveal redundancy: if a far window is still reachable (overlap >= threshold)
+    from the current one, the windows in between can be dropped. Greedy "jump as far as still-connected"
+    gives the minimum window count for a ladder whose overlap is monotone in index-distance (the restraint
+    case); for a non-monotone leg it still returns a valid connected subset (BFS/min-nodes is the robust
+    optimum, a future refinement). The two end windows (indices 0 and N-1, the pinned anchors) are always
+    kept.
+
+    Pass a MARGINED ``threshold`` here (e.g. ~2x the production 0.04): the pilot (~50 ps) over-estimates
+    overlap vs. production (~10 ns), so prune conservatively, then verify at production length. The edge
+    test is the min-direction overlap ``min(O[i][j], O[j][i])`` (consistent with the insertion engine).
+
+    Returns the sorted list of kept indices (always includes 0 and N-1).
+    """
+    n = len(overlap_matrix)
+    if n <= 2:
+        return list(range(n))
+
+    def edge(i, j):
+        return min(float(overlap_matrix[i][j]), float(overlap_matrix[j][i]))
+
+    kept = [0]
+    i = 0
+    while i < n - 1:
+        # Farthest j > i still connected to i; fall back to i+1 (never drop a window we can't bridge —
+        # guaranteed reachable by the adjacency precondition, so the walk always advances and terminates).
+        farthest = i + 1
+        for j in range(n - 1, i, -1):
+            if edge(i, j) >= threshold:
+                farthest = j
+                break
+        kept.append(farthest)
+        i = farthest
+    return kept
+
+
+def prune_restraint_exponents(
+    overlap_matrix, conformational_exps, orientational_exps, system_type, threshold
+):
+    """Prune a converged dense restraint ladder to its minimal connected subset, returning the kept
+    ``(conformational, orientational)`` exponents (both sorted ascending).
+
+    Uses the FULL pairwise band overlap matrix the pilot already computed (``compute_mbar(band=
+    "restraint")`` -> ``compute_overlap()``). Its rows/cols are in the same order as
+    ``build_selected_block(conformational_exps, system_type)`` — the alignment the insertion engine
+    already relies on (pinned in ``tests/test_real_cyclesteps_complex_band_alignment``) — so
+    ``prune_schedule``'s kept indices map straight onto the block exponents. The two anchors (pinned max
+    + weakest, ``block[0]``/``block[-1]``) are always retained; orientational exponents track
+    conformational by the constant seed offset. Pass a MARGINED ``threshold`` (e.g. ``min_degree_overlap
+    * prune_margin``) since the short pilot over-estimates overlap vs. production. Raises ``ValueError``
+    on a block/matrix size mismatch (fail loud rather than silently corrupt the schedule).
+    """
+    block = build_selected_block(conformational_exps, system_type)
+    if len(block) != len(overlap_matrix):
+        raise ValueError(
+            f"prune: block length {len(block)} != overlap-matrix dim {len(overlap_matrix)} "
+            f"({system_type}) — refusing to prune on a misaligned matrix"
+        )
+    offset = derive_offset(conformational_exps, orientational_exps)
+    kept_idx = prune_schedule(overlap_matrix, threshold)
+    kept_con = sorted(round(float(block[i]), ROUND_DP) for i in kept_idx)
+    kept_orient = [round(c + offset, ROUND_DP) for c in kept_con]
+    return kept_con, kept_orient
+
+
 # ---------------------------------------------------------------------------
 # Band-slice adapter: pymbar overlap matrix -> R-ADD decision
 # ---------------------------------------------------------------------------
@@ -414,6 +530,7 @@ def compute_mbar(
     disk="3G",
     restraint_band: bool = False,
     band: Optional[str] = None,
+    log=print,
 ):
     """Execute MBAR analysis.
 
@@ -623,6 +740,7 @@ def run_compute_mbar(
         temperature=config.intermediate_args.temperature,
         matrix_order=cycle_steps,
         system=system_type,
+        log=job.log,
     )
 
 def adaptive_lambda_windows(
@@ -705,6 +823,7 @@ def adaptive_lambda_windows(
         matrix_order=cycle_steps,
         system=system_type,
         band=band,
+        log=job.log,
     )
     job.log(f"SYSTEM TYPE {system_type}; ALS band={band}")
     overlap_matrix = results[0][-1].compute_overlap()["matrix"]
@@ -753,6 +872,53 @@ def adaptive_lambda_windows(
                 f"[ALS][{system_type}]   pair (con {block[k]} <-> {block[k + 1]}): "
                 f"overlap={band_sd[k]:.4f}  [{flag}]"
             )
+
+        # BATCH mode (flag-gated): insert a window in EVERY weak gap this round and run them in parallel,
+        # converging a many-window leg in ~log rounds instead of one round per window. Default (flag off)
+        # falls through to the one-at-a-time R-ADD below — byte-identical to today.
+        if updated_config.intermediate_args.batch_insertion:
+            new_cons, converged, reason = plan_batch_insertion(
+                block, band_sd, pool, threshold,
+                lower_bound=min(block), upper_bound=max(block),
+            )
+            if converged or max_iterations <= 0:
+                if converged and reason == "pool-exhausted":
+                    job.log(
+                        f"[ALS][{system_type}] WARNING: candidate pool exhausted with weak gaps "
+                        f"remaining — emitting best schedule {sorted(con_list)}"
+                    )
+                elif converged:
+                    job.log(
+                        f"[ALS][{system_type}] restraint schedule converged ({len(con_list)} "
+                        f"windows): {sorted(con_list)}"
+                    )
+                else:
+                    job.log(
+                        f"[ALS][{system_type}] round cap reached; stopping with {len(con_list)} "
+                        f"windows: {sorted(con_list)}"
+                    )
+                return (results, updated_config, system_runner)
+            offset = derive_offset(con_list, orient_list)
+            pairs = [(c, round(c + offset, ROUND_DP)) for c in new_cons]
+            job.log(
+                f"[ALS][{system_type}] BATCH inserting {len(pairs)} restraint windows "
+                f"con={[p[0] for p in pairs]} ({max_iterations - 1} rounds left)"
+            )
+            improve_job = job.addChildJobFn(
+                improve_restraints_overlap_batch,
+                system_runner,
+                pairs,
+                updated_config,
+                system_type,
+            )
+            return improve_job.addFollowOnJobFn(
+                adaptive_lambda_windows,
+                improve_job.rv(0),
+                improve_job.rv(1),
+                system_type=system_type,
+                restraints_scaling=True,
+                max_iterations=max_iterations - 1,
+            ).rv()
 
         new_con, new_orient, converged, reason = plan_restraint_insertion(
             overlap_matrix=overlap_matrix,
@@ -1022,6 +1188,94 @@ def improve_restraints_overlap(
     )
 
 
+def improve_restraints_overlap_batch(
+    job,
+    runner: IntermidateRunner,
+    con_orient_pairs: list,
+    config: Config,
+    system_type: str,
+):
+    """Insert a BATCH of restraint windows (one per weak gap) and run them via ONE two-phase sub-runner.
+
+    The batch analogue of :func:`improve_restraints_overlap` (gated by
+    ``intermediate_args.batch_insertion``). ``con_orient_pairs`` is the full set of ``(con, orient)``
+    exponent pairs chosen this round by ``plan_batch_insertion`` (the midpoint of every weak adjacent
+    pair). All new windows are added, then their MD runs in a SINGLE ``new_runner(post_only=False)``
+    sub-runner so Toil schedules them across GPUs/cores in parallel — converging a many-window leg in
+    ~log rounds instead of one round per window. A single post-analysis pass then re-scores the full
+    N×N grid (same cross-evaluation contract as the one-at-a-time path). Returns
+    ``(post_runner_promise, config)`` exactly like :func:`improve_restraints_overlap`.
+    """
+    pilot_mdin = config.inputs.get("pilot_mdin") or config.inputs["default_mdin"]
+    restraints_job = job.addChildJobFn(initilized_jobs)
+    before = len(runner.simulations)
+
+    for new_con, new_orient in con_orient_pairs:
+        new_con = float(round(new_con, ROUND_DP))
+        new_orient = float(round(new_orient, ROUND_DP))
+        new_con_force = float(np.exp2(new_con))
+        new_orient_force = float(np.exp2(new_orient))
+        job.log(
+            f"[ALS][{system_type}] writing restraint window con_exp={new_con} "
+            f"(force={new_con_force:.5g}) orient_exp={new_orient} (force={new_orient_force:.5g})"
+        )
+        if system_type == "complex":
+            runner._add_complex_simulation(
+                conformational=new_con,
+                orientational=new_orient,
+                mdin=pilot_mdin,
+                restraint_file=restraints_job.addChildJobFn(
+                    write_restraint_forces,
+                    conformational_template=runner.restraints.complex_conformational_restraints,
+                    orientational_template=runner.restraints.boresch.boresch_template,
+                    conformational_force=new_con_force,
+                    orientational_force=new_orient_force,
+                ),
+            )
+        elif system_type == "ligand":
+            runner._add_ligand_simulation(
+                conformational=new_con,
+                mdin=pilot_mdin,
+                restraint_file=restraints_job.addChildJobFn(
+                    write_restraint_forces,
+                    conformational_template=runner.restraints.ligand_conformational_restraints,
+                    conformational_force=new_con_force,
+                ),
+            )
+        else:
+            runner._add_receptor_simulation(
+                conformational=new_con,
+                mdin=pilot_mdin,
+                restraint_file=restraints_job.addChildJobFn(
+                    write_restraint_forces,
+                    conformational_template=runner.restraints.receptor_conformational_restraints,
+                    conformational_force=new_con_force,
+                ),
+            )
+        # Canonical schedule (R1): the adapter and CycleSteps read these lists, so record each pair here.
+        config.intermediate_args.exponent_conformational_forces_list.append(new_con)
+        config.intermediate_args.exponent_orientational_forces_list.append(new_orient)
+
+    # ALL newly-added windows this round; their MD runs together in one sub-runner (parallel via Toil).
+    new_sims = runner.simulations[before:]
+
+    restraints_done = restraints_job.addFollowOnJobFn(initilized_jobs)
+    md_runner = restraints_done.addChild(
+        runner.new_runner(config, runner.__dict__, post_only=False, simulations=new_sims)
+    )
+    # POST pass over the FULL window list (MBAR needs the complete N×N grid; the shared _loaded_dataframe
+    # cache skips already-computed cells, so this adds only the new cross terms). Same contract as the
+    # one-at-a-time path — passing only new_sims here would give pymbar a ragged matrix.
+    post_runner = md_runner.addFollowOn(
+        runner.new_runner(config, runner.__dict__, post_only=True)
+    )
+
+    return (
+        post_runner.rv(),
+        config,
+    )
+
+
 def improve_dielectric_overlap(
     job,
     runner: IntermidateRunner,
@@ -1109,7 +1363,7 @@ def improve_dielectric_overlap(
 # one). Charge + restraint bands stay single-leg (complex) via adaptive_lambda_windows.
 
 
-def _dielectric_band_ascending(runner, config, system_type):
+def _dielectric_band_ascending(runner, config, system_type, log=print):
     """Return ``(coords, superdiagonal)`` for one leg's dielectric band, normalized to ASCENDING lambda.
 
     Both legs span the SAME lambda interval [0, ~0.987] with the SAME interior windows, so normalizing to
@@ -1129,6 +1383,7 @@ def _dielectric_band_ascending(runner, config, system_type):
         matrix_order=cycle_steps,
         system=system_type,
         band="dielectric",
+        log=log,
     )
     overlap = results[0][-1].compute_overlap()["matrix"]
     coords = [lambda_of_state(s) for s in results[1].columns]
@@ -1156,8 +1411,8 @@ def pilot_dielectric_scheduler(
         max_iterations = updated_config.intermediate_args.max_adaptive_iterations
     threshold = updated_config.intermediate_args.min_degree_overlap
 
-    c_coords, c_sd = _dielectric_band_ascending(complex_runner, updated_config, "complex")
-    r_coords, r_sd = _dielectric_band_ascending(receptor_runner, updated_config, "receptor")
+    c_coords, c_sd = _dielectric_band_ascending(complex_runner, updated_config, "complex", log=job.log)
+    r_coords, r_sd = _dielectric_band_ascending(receptor_runner, updated_config, "receptor", log=job.log)
 
     # Both legs share the lambda axis; the combined superdiagonal is the per-pair min (worse leg governs).
     n = min(len(c_sd), len(r_sd))
@@ -1401,6 +1656,7 @@ def run_exponential_averaging(
         temperature=temperature,
         matrix_order=None,
         system="free_flat_bottom",
+        log=job.log,
     )
 
 
