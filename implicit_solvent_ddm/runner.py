@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from email import message
 from importlib.metadata import files
 from pathlib import Path
@@ -345,12 +346,24 @@ class IntermidateRunner(Job):
                     fileStore.logToMaster(
                         f"Loading the Energy post-analysis results in the directory {post_process_job.output_dir}\n"
                     )
+                _pa_t0 = time.perf_counter()
                 self.post_output.append(
                     pd.read_parquet(
                         os.path.join(
                             post_process_job.output_dir, "simulation_mdout.parquet.gzip"
                         ),
                     )
+                )
+                # Cache-load timing record (parsed by timing_report.py). The imin=5 re-scoring for this
+                # window was computed in a PRIOR run; here we only re-read its cached parquet, so this
+                # counts as ~0 compute for the post_analysis phase (vs. the full sander re-score that
+                # simulations.Calculation.run times on a COLD run). Emitting it keeps the phase VISIBLE
+                # on warm/resumed runs (jobs=N, cpu_h~=load cost) instead of vanishing. Routed through
+                # logToMaster so it lands in the same leader log as every other phase.
+                fileStore.logToMaster(
+                    f"[TIMING] phase=post_analysis wall_s={time.perf_counter() - _pa_t0:.2f} "
+                    f"cores={post_process_job.num_cores} gpu=0 end={time.time():.0f} "
+                    f"| post_analysis cache-load {post_process_job.directory_args.get('state_label', '')}"
                 )
             self._loaded_dataframe.append(post_process_job.output_dir)
     

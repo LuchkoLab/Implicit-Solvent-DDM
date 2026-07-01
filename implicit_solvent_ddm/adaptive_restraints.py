@@ -4,6 +4,7 @@ A collection of functions that performs simple iterative proceess to improve spa
 
 import copy
 import math
+import time
 from typing import Optional
 
 import numpy as np
@@ -577,8 +578,21 @@ def compute_mbar(
 
     df_subsampled = pdmbar.subsample_correlated_data(df_mbar, equil_info=equil_info)
 
-    print("performing MBAR")
-    return pdmbar.mbar(df_subsampled), df_mbar
+    log("performing MBAR")
+    # MBAR timing record (parsed by timing_report.py). A band-sliced solve is a pilot pass
+    # (-> "adaptive"); a full-cycle solve (band is None) is the production Phase-7 MBAR (-> "mbar").
+    # `log` defaults to print() but every Toil call site passes job.log so the record reaches the
+    # LEADER log -- the file timing_report.py parses. A raw print() goes only to the worker's stdout,
+    # which Toil does not surface for successful jobs, so the mbar phase was invisible to the report
+    # even on a cold run.
+    _mbar_t0 = time.perf_counter()
+    _mbar_result = pdmbar.mbar(df_subsampled)
+    log(
+        f"[TIMING] phase={'adaptive' if band else 'mbar'} "
+        f"wall_s={time.perf_counter() - _mbar_t0:.2f} cores=1 gpu=0 end={time.time():.0f} "
+        f"| mbar system={system} band={band}"
+    )
+    return _mbar_result, df_mbar
 
     # return pdmbar.mbar(df_subsampled), df_mbar
 
