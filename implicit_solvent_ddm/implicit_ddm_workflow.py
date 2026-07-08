@@ -22,9 +22,9 @@ from implicit_solvent_ddm.workflow_phases import (
     run_endstate_simulations,
     decompose_system_and_generate_restraints,
     setup_intermediate_simulations,
-    run_post_analysis_intermediate_simulations,
     compute_free_energy_and_consolidate,
-    run_intermediate_simulations,
+    run_intermediate_and_post,
+    _aggregate_post_output,
     adaptive_restraint_pilot,
     merge_pilot_windows,
     initilized_jobs,
@@ -153,48 +153,46 @@ def ddm_workflow(
         )
         phase4_tail = setup_source
 
-    # Phase 5: Run intermediate state simulations
-    run_intermediate_jobs = phase4_tail.addFollowOnJobFn(
-        run_intermediate_simulations,
+    # Phases 5 + 6 (merged): submit all intermediate MD windows first and couple each window's
+    # post-analysis row to its OWN MD job -- dissolving the global Phase5->Phase6 barrier so the
+    # dominant N^2 CPU post-analysis backfills cores as trajectories land. Returns
+    # (complex, receptor, ligand, flat_bottom) post-output bundles.
+    merged_jobs = phase4_tail.addFollowOnJobFn(
+        run_intermediate_and_post,
         setup_source.rv(0), # config
         setup_source.rv(1), # complex simulations
         setup_source.rv(2), # receptor simulations
         setup_source.rv(3), # ligand simulations
         setup_source.rv(4), # flat bottom simulations
     )
-    run_intermediate_jobs.addFollowOnJobFn(
+    merged_jobs.addFollowOnJobFn(
         initilized_jobs,
-        message="✓ Phase 5 Complete: Intermediate state simulations finished"
+        message="✓ Phases 5-6 Complete: Intermediate MD + energy post-processing finished"
     )
-    run_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 6: Energy post-processing and analysis"
+
+    # Aggregate: flatten each system's per-window post rows into one .post_output bundle. Wired as a
+    # FOLLOW-ON of the merged dispatcher, so it waits for the dispatcher's entire MD+post subtree
+    # (every post_runner.rv() in merged_jobs.rv(0..3) is resolved before it runs).
+    aggregate_jobs = merged_jobs.addFollowOnJobFn(
+        _aggregate_post_output,
+        merged_jobs.rv(0), # complex per-window post rows
+        merged_jobs.rv(1), # receptor per-window post rows
+        merged_jobs.rv(2), # ligand per-window post rows
+        merged_jobs.rv(3), # flat bottom per-window post rows
     )
-    # Phase 6: Post-processing and Analysis (depends on intermediate)
-    analysis_jobs = run_intermediate_jobs.addFollowOnJobFn(
-        run_post_analysis_intermediate_simulations,
-        setup_source.rv(0), # config
-        setup_source.rv(1), # complex simulations
-        setup_source.rv(2), # receptor simulations
-        setup_source.rv(3), # ligand simulations
-        setup_source.rv(4), # flat bottom simulations
-    )
-    analysis_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 6 Complete: Energy post-processing and analysis finished"
-    )
-    post_analysis_complete = analysis_jobs.addFollowOnJobFn(
+    aggregate_jobs.addFollowOnJobFn(
         initilized_jobs,
         message="--> Moving to phase 7: Free energy computation and consolidation"
     )
 
-    # Phase 7: Compute Free Energy and Consolidate Results
-    free_energy_difference_jobs = analysis_jobs.addFollowOnJobFn(
+    # Phase 7: Compute Free Energy and Consolidate Results. Follow-on of the AGGREGATOR (consumes its
+    # rv), so Phase 7 waits for aggregation -> the .post_output bundles are resolved.
+    free_energy_difference_jobs = aggregate_jobs.addFollowOnJobFn(
         compute_free_energy_and_consolidate,
-        analysis_jobs.rv(0), # complex post-analysis results
-        analysis_jobs.rv(1), # receptor post-analysis results
-        analysis_jobs.rv(2), # receptor post-analysis results
-        analysis_jobs.rv(3), # ligand post-analysis results
+        aggregate_jobs.rv(0), # complex post-output bundle
+        aggregate_jobs.rv(1), # receptor post-output bundle
+        aggregate_jobs.rv(2), # ligand post-output bundle
+        aggregate_jobs.rv(3), # flat bottom post-output bundle
         setup_source.rv(0), # config
     )
 
@@ -367,7 +365,6 @@ def main():
     )
     options = parser.parse_args()
     options.clean = "onSuccess"
-    options.logLevel = "INFO"
     config_file = options.config_file[0]
     ignore_receptor = options.ignore_receptor
 
@@ -404,7 +401,7 @@ def main():
         f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
     ).touch()
 
-    options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
+    #options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
     # Pin one GPU window per Slurm-allocated GPU and stop the leader environment
     # from clobbering each worker's per-job GPU assignment (Toil single_machine).
     _confine_single_machine_to_allocated_gpus(options)

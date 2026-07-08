@@ -64,9 +64,17 @@ class SimulationSetup:
             self.topology = endstate_files.ligand_parameter_filename
             self.num_cores = ncores_map.ligand_ncores
 
-        # Reduce CPU usage for GPU-bound receptor/complex jobs
+        # GPU-bound receptor/complex MD requests ZERO core fractions (not 0.1) so it never draws from
+        # Toil single_machine's core pool. [review H1] Once MD and post-analysis share one queue
+        # (merged run_intermediate_and_post), ~1-CPU-hr `sander imin=5` post jobs (cores=1) can drain
+        # the whole core pool; with cores=0.1 a freed GPU would then idle up to ~1 hr waiting for its
+        # sliver of a core. Accelerators are a SEPARATE ResourceSet, so a 0-core GPU job is always
+        # startable the instant a GPU frees -- pmemd.cuda saturates the GPU regardless of `cores`.
+        # NOTE: verify Toil 8.2.0 accepts a 0-core request on the cluster (int(0/minCores)=0,
+        # acquireNow(0)->True suggests yes). If it rejects/coerces 0, revert to 0.1 and instead bound
+        # post concurrency to (maxCores - nGPU) of headroom.
         if self.config.system_settings.CUDA and self.system_type in {"complex", "receptor"}:
-            self.num_cores = 0.1
+            self.num_cores = 0
  
 
     def setup_post_endstate_simulation(self, flat_bottom: bool = False):

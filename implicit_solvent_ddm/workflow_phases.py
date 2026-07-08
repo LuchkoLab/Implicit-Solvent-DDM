@@ -7,6 +7,7 @@ providing a clean separation of concerns and improved maintainability.
 
 import copy
 import logging
+from dataclasses import dataclass, field
 import numpy as np
 from toil.job import JobFunctionWrappingJob
 
@@ -20,7 +21,7 @@ from implicit_solvent_ddm.restraints import (
 )
 from implicit_solvent_ddm.alchemical import alter_topology, split_complex_system
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
-from implicit_solvent_ddm.runner import IntermidateRunner
+from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
 from implicit_solvent_ddm.adaptive_restraints import (
     run_exponential_averaging,
     run_compute_mbar,
@@ -466,171 +467,200 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
 
 
 
-def run_intermediate_simulations(job, config: Config, complex_simulations, receptor_simulations, ligand_simulations, flat_bottom_setup):
-
+@dataclass
+class HamiltonianSpec:
+    """Lightweight, picklable stand-in for a ``Simulation`` carrying ONLY the read-only fields that
+    ``IntermidateRunner.run(post_only=True)`` / ``only_post_analysis`` read off each
+    ``self.simulations`` element. The merged MD->post dispatcher gives every per-window post-runner
+    this spec list instead of the live ``Simulation`` Job objects, which otherwise drag Toil
+    framework state plus a ``sim -> _followOns -> post_runner`` pickle cycle and blow up to N^2
+    tangled deep-pickles at the leader. ``only_post_analysis`` builds a FRESH post ``Simulation``
+    from these fields and never re-schedules the element, so behaviour is byte-identical; the spec
+    just duck-types ``Simulation`` for the handful of attributes touched (see the field list).
     """
-    Phase 5: Run intermediate state simulations.
-    
-    This phase:
-    1. Runs intermediate MD simulations with restraints
-    2. Runs flat bottom simulation
-    Parameters
-    ----------
-    job : JobFunctionWrappingJob
-        Current Toil job
-    config : Config
-        Configuration object
-    complex_simulations : SimulationSetup
-        Complex simulation setup
-    receptor_simulations : SimulationSetup
-        Receptor simulation setup
-    ligand_simulations : SimulationSetup
-        Ligand simulation setup
-    flat_bottom_simulations : SimulationSetup
-        Flat bottom simulation setup
-    """
-    job.fileStore.logToMaster(f"Calling run_intermediate_simulations")
 
+    directory_args: dict
+    output_dir: str
+    prmtop: object
+    incrd: object
+    restraint_file: object
+    restraint_key: object
+    working_directory: object
+    system_type: object
+    mpi_command: object
+    inptraj: object = None
 
-    # Setup flat bottom contribution analysis
-    flat_bottom_analysis = job.addChild(
-        IntermidateRunner(
-            flat_bottom_setup.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=config.workflow.post_analysis_only,
-            config=config,
+    @classmethod
+    def from_simulation(cls, sim):
+        return cls(
+            directory_args=dict(sim.directory_args),
+            output_dir=sim.output_dir,
+            prmtop=sim.prmtop,
+            incrd=sim.incrd,
+            restraint_file=sim.restraint_file,
+            restraint_key=sim.restraint_key,
+            working_directory=sim.working_directory,
+            system_type=sim.system_type,
+            mpi_command=sim.mpi_command,
+            inptraj=sim.inptraj,
         )
+
+
+class PostOutputBundle:
+    """Minimal picklable holder exposing ``.post_output`` -- the only attribute
+    ``run_compute_mbar`` / ``run_exponential_averaging`` read off the per-system runner object. The
+    merged dispatcher's per-system aggregator hands Phase 7 one of these (a flat list of the window
+    rows) instead of re-pickling a whole ``IntermidateRunner``.
+    """
+
+    def __init__(self, post_output):
+        self.post_output = post_output
+
+
+def _needs_md(sim, is_flat_bottom, config: Config) -> bool:
+    """Per-window replacement for the legacy Phase-5 MD skip logic: True -> run MD then score its
+    trajectory; False -> score an EXISTING trajectory directly (no MD parent).
+
+    * ``inptraj`` preset (endstate post-process windows) -> score only, NEVER MD. These are
+      ``post_analysis=True`` jobs whose ``run()`` returns a scalar mdout FileID, so ``md.rv(1)``
+      would be garbage -- and MBAR's ``_ordered()`` requires their ``endstate`` column.
+    * MD already on disk (warm resume) -> score only.
+    * flat-bottom leg under ``post_analysis_only`` -> score only (mirrors the legacy ``flat_bottom``
+      ``post_only=post_analysis_only`` gate; complex/receptor/ligand always attempt MD, skipping only
+      on-disk-complete windows).
+    """
+    if sim.inptraj is not None:
+        return False
+    if IntermidateRunner._check_mdout(sim):
+        return False
+    if is_flat_bottom and config.workflow.post_analysis_only:
+        return False
+    return True
+
+
+def _post_row_runner(config: Config, spec_list, distruct, restrict, traj_map):
+    """One per-window post-analysis runner: a ``post_only`` pass over the full Hamiltonian
+    ``spec_list``, restricted (``restrict_completed``) to a single completed window and fed that
+    window's trajectory via ``traj_map`` (or the window's own preset ``inptraj`` / on-disk file when
+    ``traj_map`` is empty). Its ``.post_output`` is that window's ROW of the MBAR matrix.
+    """
+    return IntermidateRunner(
+        spec_list,
+        config.inputs["restraints"],
+        post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
+        post_process_mdin=config.inputs["post_mdin"],
+        post_process_distruct=distruct,
+        post_only=True,
+        config=config,
+        traj_map=traj_map,
+        restrict_completed=restrict,
     )
 
-    
-    # Run complex intermediate simulations
-    intermediate_complex = job.addChild(
-        IntermidateRunner(
-            complex_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=False,
-            config=config,
-        )
-    )
-    
-    # Run receptor intermediate simulations
-    intermediate_receptor = job.addChild(
-        IntermidateRunner(
-            receptor_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_apo",
-            post_only=False,
-            config=config,
-        )
-    )
 
-    # Run ligand intermediate simulations
-    intermediate_ligand = job.addChild(
-        IntermidateRunner(
-            ligand_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_apo",
-            post_only=False,
-            config=config,
-        )
-    )
-    
+def run_intermediate_and_post(
+    job, config: Config, complex_simulations, receptor_simulations, ligand_simulations, flat_bottom_setup
+):
+    """Phases 5 + 6 merged (dissolves the global Phase5->Phase6 barrier).
 
-def run_post_analysis_intermediate_simulations(job, config: Config, complex_simulations, receptor_simulations, ligand_simulations, flat_bottom_simulations):
+    All intermediate MD windows are submitted first, in ``complex -> receptor -> ligand ->
+    flat_bottom`` order (front of Toil single_machine's FIFO queue). Each window's post-analysis ROW
+    -- its trajectory re-scored under every Hamiltonian in the leg -- is attached as a **follow-on of
+    that window's OWN MD job**, so the dominant N^2 CPU post-analysis backfills free cores as each
+    trajectory lands (chiefly the cores idle while complex/receptor MD runs on the GPU) instead of
+    waiting for every MD window to finish. Endstate / warm-resume windows (no MD parent) are scored
+    directly. Per-system aggregators flatten the rows into the ``.post_output`` list Phase 7 already
+    consumes. Same N^2 post ``Simulation`` jobs as the legacy path -> byte-identical energies; only
+    the scheduling edges change. Replaces ``run_intermediate_simulations`` +
+    ``run_post_analysis_intermediate_simulations``.
+
+    Returns ``(complex, receptor, ligand, flat_bottom)`` post-output bundles for
+    ``compute_free_energy_and_consolidate``.
     """
-    Phase 6: Run Energy post-processing with sander imin=5
-    This phase:
-    1. Runs post-analysis for complex, ligand, and receptor systems
-    2. Runs post-analysis for flat bottom simulation
+    job.fileStore.logToMaster("Calling run_intermediate_and_post (merged MD->post pipeline)")
 
-    Parameters
-    ----------
-    job : JobFunctionWrappingJob
-        Current Toil job
-    config : Config
-        Configuration object
-    complex_simulations : SimulationSetup
-        Complex simulation setup
-    receptor_simulations : SimulationSetup
-        Receptor simulation setup
-    ligand_simulations : SimulationSetup
-        Ligand simulation setup
-    flat_bottom_simulations : SimulationSetup
-        Flat bottom simulation setup
-    
-    Returns
-    -------
-    post_analyses_intermediate_complex : JobFunctionWrappingJob
-        Complex energy post-analysis results
-    post_analyses_intermediate_receptor : JobFunctionWrappingJob
-        Receptor energy post-analysis results
-    post_analyses_intermediate_ligand : JobFunctionWrappingJob
-        Ligand energy post-analysis results
-    flat_bottom_analysis : JobFunctionWrappingJob
-        Flat bottom energy post-analysis results
+    export = config.system_settings.export_intermediate_files
+    # Expensive-first system order so MD enters the FIFO queue ahead of any post job.
+    systems = [
+        (complex_simulations, "post_process_halo", False),
+        (receptor_simulations, "post_process_apo", False),
+        (ligand_simulations, "post_process_apo", False),
+        (flat_bottom_setup, "post_process_halo", True),
+    ]
+
+    rows_by_system = []
+    for setup, distruct, is_flat_bottom in systems:
+        # Hamiltonian COLUMN list built ONCE per system (ALL windows, incl. no_flat_bottom), as
+        # lightweight specs -- shared read-only by every per-window row runner in this leg.
+        spec_list = [HamiltonianSpec.from_simulation(s) for s in setup.simulations]
+        # C2: per-system scope. A global set would false-positive because flat_bottom_setup is a
+        # second system_type="complex" setup that shares complex's endstate output_dir.
+        seen = set()
+        system_rows = []
+        for sim in setup.simulations:
+            # no_flat_bottom stays a Hamiltonian COLUMN (kept in spec_list) but is never a completed
+            # trajectory-ROW -- matches the legacy run() outer-loop skip.
+            if sim.directory_args.get("state_label") == "no_flat_bottom":
+                continue
+            assert (
+                sim.output_dir not in seen
+            ), f"duplicate MD-window output_dir within system: {sim.output_dir}"
+            seen.add(sim.output_dir)
+            sim.export_network = export
+
+            if _needs_md(sim, is_flat_bottom, config):
+                md = job.addChild(sim)  # MD window enters the FIFO queue in system order
+                post_runner = _post_row_runner(
+                    config,
+                    spec_list,
+                    distruct,
+                    restrict={sim.output_dir},
+                    traj_map={sim.output_dir: md.rv(1)},  # trajectory FileID promise
+                )
+                md.addFollowOn(post_runner)  # post ROW couples to THIS window's MD (back of queue)
+            else:
+                # endstate (preset inptraj) / warm-resume: no MD parent. Trajectory flows from the
+                # window's own inptraj or from disk via _get_md_traj (export-on).
+                post_runner = _post_row_runner(
+                    config, spec_list, distruct, restrict={sim.output_dir}, traj_map={}
+                )
+                job.addChild(post_runner)
+            system_rows.append(post_runner.rv())
+        rows_by_system.append(system_rows)
+
+    # Return the 4 per-system lists of per-window post-row runner promises. The aggregator is wired
+    # as a FOLLOW-ON of this dispatcher (in ddm_workflow), not inside it: a follow-on waits for this
+    # dispatcher's ENTIRE children-subtree (all MD windows + their coupled post rows + the score-only
+    # rows + the create_mdout follow-ons), so every post_runner.rv() below is resolved by aggregation
+    # time. This mirrors the proven Phase6->Phase7 pattern (consumer follow-on waits for the
+    # rv-producing subtree). Order: complex, receptor, ligand, flat_bottom.
+    return (
+        rows_by_system[0],
+        rows_by_system[1],
+        rows_by_system[2],
+        rows_by_system[3],
+    )
+
+
+def _aggregate_post_output(job, complex_rows, receptor_rows, ligand_rows, flat_rows):
+    """Flatten each system's per-window post rows (each a resolved post-runner carrying
+    ``.post_output``) into one flat list, wrapped in a ``PostOutputBundle`` for Phase 7. Toil
+    resolves the nested ``create_mdout_dataframe`` dataframe promises on unpickle into this job
+    (same as today's single-runner -> MBAR path). Order is irrelevant: ``compute_mbar`` concatenates
+    and reindexes by state label.
     """
-    # Mark MD jobs as completed - this ensures all MD simulations finish before post-analysis
 
-    flat_bottom_analysis = job.addChild(
-        IntermidateRunner(
-            flat_bottom_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=True,
-            config=config,
-        )
-    ).rv()
+    def _flatten(rows):
+        flat = []
+        for runner in rows:
+            flat.extend(runner.post_output)
+        return PostOutputBundle(flat)
 
-    # Perform post-analysis on intermediate simulations (only after all MD jobs complete)
-    post_analyses_intermediate_complex = job.addChild(
-        IntermidateRunner(
-            complex_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_halo",
-            post_only=True,
-            config=config,
-        )
-    ).rv()
-    
-    post_analyses_intermediate_receptor = job.addChild(
-        IntermidateRunner(
-            receptor_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_apo",
-            post_only=True,
-            config=config,
-        )
-    ).rv()
-    
-    post_analyses_intermediate_ligand = job.addChild(
-        IntermidateRunner(
-            ligand_simulations.simulations,
-            config.inputs["restraints"],  # restraints
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_distruct="post_process_apo",
-            post_only=True,
-            config=config,
-        )
-    ).rv()
-    
-    return post_analyses_intermediate_complex, post_analyses_intermediate_receptor, post_analyses_intermediate_ligand, flat_bottom_analysis
+    return (
+        _flatten(complex_rows),
+        _flatten(receptor_rows),
+        _flatten(ligand_rows),
+        _flatten(flat_rows),
+    )
 
 
 
@@ -829,14 +859,14 @@ def _pilot_md_post_drive(job, pilot_config: Config, complex_setup, receptor_setu
     (``post_only=True``); a follow-on join then drives the per-band R-ADD passes in
     ``_pilot_band_passes``. ``run()`` returns the runner with a populated ``post_output``.
     """
+    # Initial pilot legs: MD pass then post pass. The post pass reads inptraj from the MD
+    # pass's traj_map (jobStore) instead of the network output_dir. Because producer
+    # (c_md) != consumer, the post runner is built off c_md.rv() via run_post_pass_with_traj
+    # (runner and md_runner are the same c_md here -- it is both the first MD and the map source).
     c_md = job.addChild(_pilot_runner(complex_setup.simulations, pilot_config, "post_process_halo", False))
-    c_post = c_md.addFollowOn(
-        _pilot_runner(complex_setup.simulations, pilot_config, "post_process_halo", True)
-    )
+    c_post = c_md.addFollowOnJobFn(run_post_pass_with_traj, c_md.rv(), pilot_config, c_md.rv())
     r_md = job.addChild(_pilot_runner(receptor_setup.simulations, pilot_config, "post_process_apo", False))
-    r_post = r_md.addFollowOn(
-        _pilot_runner(receptor_setup.simulations, pilot_config, "post_process_apo", True)
-    )
+    r_post = r_md.addFollowOnJobFn(run_post_pass_with_traj, r_md.rv(), pilot_config, r_md.rv())
 
     # The band passes run after BOTH legs' post-analysis (a follow-on of `job` waits on all its children).
     drive = job.addFollowOnJobFn(

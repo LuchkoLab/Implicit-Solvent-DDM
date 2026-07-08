@@ -60,6 +60,11 @@ class Calculation(Job):
         self.calc_setup = False  # This means that the setup has run successfully
         self.post_analysis = post_analysis
         self.debug = debug
+        # Whether to export outputs to the (network) output_dir. Left True here so every
+        # existing construction site keeps current behavior; IntermidateRunner.run()
+        # overrides it from config.system_settings.export_intermediate_files before it
+        # schedules each MD / post-analysis job.
+        self.export_network = True
         self.exec_list = [self.mpi_command]
         # self.exec_list = []
         self.read_files = {}
@@ -140,8 +145,12 @@ class Calculation(Job):
                     output_file = fileStore.writeGlobalFile(name, cleanup=True)
                     restart_files.append(str(output_file))
                 elif re.match(r".*\.nc.*", name):
+                    # Keep the raw jobStore FileID (not str()): the MD run() returns
+                    # traj_files so a downstream post-analysis job can consume it as
+                    # inptraj via readGlobalFile -- the Toil-promise hand-off used when
+                    # export_network is off (no network trajectory copy).
                     output_file = fileStore.writeGlobalFile(name)  # cleanup=True
-                    traj_files.append(str(output_file))
+                    traj_files.append(output_file)
 
                 elif not self.debug and re.match(
                     r"(rem.log)|(equilibrate)?(remd)?\.mdout\.\d*", name
@@ -153,44 +162,50 @@ class Calculation(Job):
 
                 else:
                     output_file = fileStore.writeGlobalFile(name, cleanup=True)
-                fileStore.export_file(
-                    output_file,
-                    "file://"
-                    + os.path.abspath(
-                        os.path.join(output_directory, os.path.basename(name))
-                    ),
-                )
-        # export parameter files
-        fileStore.export_file(
-            self.read_files["prmtop"],
-            "file://"
-            + os.path.abspath(
-                os.path.join(
-                    self.output_dir, os.path.basename(self.read_files["prmtop"])
-                )
-            ),
-        )
-        # export coordinate file
-        if "incrd" in self.read_files.keys():
+                # writeGlobalFile above always lands the file in the jobStore (local
+                # workDir) so the DAG/promises still work; export_file is the extra copy
+                # to the (network) output_dir -- skip it entirely when export is off.
+                if self.export_network:
+                    fileStore.export_file(
+                        output_file,
+                        "file://"
+                        + os.path.abspath(
+                            os.path.join(output_directory, os.path.basename(name))
+                        ),
+                    )
+        if self.export_network:
+            # export parameter files
             fileStore.export_file(
-                self.read_files["incrd"],
+                self.read_files["prmtop"],
                 "file://"
                 + os.path.abspath(
                     os.path.join(
-                        self.output_dir, os.path.basename(self.read_files["incrd"])
+                        self.output_dir, os.path.basename(self.read_files["prmtop"])
                     )
                 ),
             )
-        # export restraint File
-        fileStore.export_file(
-            self.read_files["restraint_file"],
-            "file://"
-            + os.path.abspath(
-                os.path.join(
-                    self.output_dir, os.path.basename(self.read_files["restraint_file"])
+            # export coordinate file
+            if "incrd" in self.read_files.keys():
+                fileStore.export_file(
+                    self.read_files["incrd"],
+                    "file://"
+                    + os.path.abspath(
+                        os.path.join(
+                            self.output_dir, os.path.basename(self.read_files["incrd"])
+                        )
+                    ),
                 )
-            ),
-        )
+            # export restraint File
+            fileStore.export_file(
+                self.read_files["restraint_file"],
+                "file://"
+                + os.path.abspath(
+                    os.path.join(
+                        self.output_dir,
+                        os.path.basename(self.read_files["restraint_file"]),
+                    )
+                ),
+            )
         # fileStore.logToMaster(f"the current trajectory files {traj_files}")
         # fileStore.logToMaster(f"the restart files: {restart_files}")
 
@@ -287,7 +302,12 @@ class Calculation(Job):
         # = wall*cores). end= is an absolute epoch so the parser can recover parallel-adjusted wall-clock.
         _wall = time.perf_counter() - start
         _rt = self.directory_args.get("runtype", "")
-        if "_pilot" in str(self.output_dir):
+        # Detect the ALS pilot tree by a PATH SEGMENT ending in "_pilot" (the pilot sets
+        # output_directory_name = <name> + "_pilot", e.g. "mdgb_pilot"), NOT a substring of the whole
+        # path. A substring check mislabels every production job as "adaptive" when the working/scratch
+        # dir merely contains "_pilot" (e.g. SCRATCH=cb7_pilot_run), which hid intermediate_md /
+        # post_analysis from timing_report.py.
+        if any(seg.endswith("_pilot") for seg in str(self.output_dir).split(os.sep)):
             _phase = "adaptive"
         elif self.post_analysis:
             _phase = "post_analysis"
@@ -300,23 +320,23 @@ class Calculation(Job):
             f"gpu={int(bool(self.CUDA))} end={time.time():.0f} | runtype={_rt}"
         )
 
-        # if post analysis simulation just export the mdout file
+        # Post-analysis re-score only needs its `mdout`: the follow-on create_mdout_dataframe
+        # reads {output_dir}/mdout to build simulation_mdout.parquet.gzip. The re-score's
+        # trajectory / restart / parameter files are never read by anything downstream, so the
+        # old full export_files() call streamed ~4188 jobs' worth of trajectories to the network
+        # for nothing. Export just the mdout (restores the intent of the code below).
         if self.post_analysis:
-            # for not don't export any data
-            # return fileStore.writeGlobalFile("mdout", cleanup=True),
-
-            # fileStore.export_file(
-            #     fileStore.writeGlobalFile("mdout", cleanup=True),
-            #     "file://"
-            #     + os.path.abspath(
-            #         os.path.join(self.output_dir, os.path.basename("mdout"))
-            #     ),
-            # )
-            # Export all ouput files from MD simulation
-            restart_ID, trajectory_ID = self.export_files(
-                fileStore, self.output_dir, files_in_current_directory
-            )
-            return
+            # Always land the mdout in the jobStore and RETURN its FileID so the
+            # follow-on create_mdout_dataframe can read it via a Toil promise
+            # (readGlobalFile) with no network access. The export_file copy to the
+            # network output_dir is only for archival/warm-resume, so skip it when off.
+            mdout_ID = fileStore.writeGlobalFile("mdout")
+            if self.export_network:
+                fileStore.export_file(
+                    mdout_ID,
+                    "file://" + os.path.abspath(os.path.join(self.output_dir, "mdout")),
+                )
+            return mdout_ID
 
         else:
             # Export all ouput files from MD simulation

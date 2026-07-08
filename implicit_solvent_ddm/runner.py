@@ -114,6 +114,8 @@ class IntermidateRunner(Job):
         adaptive: bool = False,
         loaded_dataframe: Optional[list] = None,
         post_output: Optional[Union[list, list[pd.DataFrame]]] = None,
+        traj_map: Optional[dict] = None,
+        restrict_completed: Optional[set] = None,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -149,6 +151,19 @@ class IntermidateRunner(Job):
         self.receptor_output = []
         self.complex_output = []
         self._loaded_dataframe = loaded_dataframe if loaded_dataframe is not None else []
+        # {output_dir -> trajectory FileID promise}. Shared by reference across pilot
+        # passes (threaded via new_runner) exactly like post_output / _loaded_dataframe, so
+        # each post pass can set inptraj straight from the jobStore and never read the
+        # network output_dir. Accumulates every window's trajectory across pilot iterations.
+        self.traj_map = traj_map if traj_map is not None else {}
+        # Per-window post-analysis scoping (merged MD->post pipeline). When set, the post_only pass
+        # scores ONLY the completed window(s) whose output_dir is in this set -- the trajectory-row
+        # for that window -- leaving the inner Hamiltonian loop (every state's re-score of that
+        # trajectory) intact. None (default) preserves the legacy whole-list behaviour, so the ALS
+        # pilot / new_runner paths are byte-identical. Robust to on-disk state: unlike a lone
+        # traj_map entry, this filter holds even on warm/export-on runs where other windows' mdouts
+        # exist on disk.
+        self.restrict_completed = restrict_completed
         self.post_process_distruct = post_process_distruct
 
     def run(self, fileStore):
@@ -193,6 +208,21 @@ class IntermidateRunner(Job):
                 continue
 
             if self.post_only:
+                # Per-window scoping (merged MD->post pipeline): this runner is the trajectory-row
+                # for exactly one completed window, so skip every OTHER window as a completed_sim.
+                # The inner Hamiltonian loop in only_post_analysis is unaffected -- the surviving
+                # window is still re-scored under every state. None -> legacy whole-list behaviour.
+                if (
+                    self.restrict_completed is not None
+                    and simulation.output_dir not in self.restrict_completed
+                ):
+                    continue
+                # No-network hand-off: if this window's trajectory was produced with export
+                # off, its FileID is in the shared traj_map -> set inptraj straight from the
+                # jobStore so the guard below is satisfied and _get_md_traj/os.listdir (the
+                # network read) is never reached. Covers production Phase 6 and every pilot pass.
+                if simulation.inptraj is None and simulation.output_dir in self.traj_map:
+                    simulation.inptraj = self.traj_map[simulation.output_dir]
                 # Post-analysis logic
                 if self._check_mdout(simulation) or simulation.inptraj is not None:
                     if simulation.inptraj is None:
@@ -234,8 +264,18 @@ class IntermidateRunner(Job):
         # Toil coordinates GPU usage globally across every runner.
         if md_jobs:
             fileStore.logToMaster(f"Submitting {len(md_jobs)} MD job(s) to the Toil scheduler")
+        _export = self.config.system_settings.export_intermediate_files
+        # Map output_dir -> trajectory FileID promise. sim.run() returns
+        # (restart_ID, trajectory_ID); rv(1) is the trajectory FileID list. The
+        # post-analysis pass (Phase 6) reads this map and sets each window's inptraj
+        # so it re-scores straight from the jobStore -- the Toil-promise hand-off used
+        # when export is off (no network trajectory copy). Carried on `self` and read
+        # off the resolved runner exactly like self.post_output reaches MBAR. MERGE (do not
+        # reset) so it accumulates every window's trajectory across pilot passes.
         for sim in md_jobs:
+            sim.export_network = _export
             self.addChild(sim)
+            self.traj_map[sim.output_dir] = sim.rv(1)
 
         return self
     
@@ -308,7 +348,16 @@ class IntermidateRunner(Job):
                     f"Using trajectory from {completed_sim.output_dir}\n"
                 )
 
-            if not self.has_post_analysis_data(post_process_job.output_dir):    
+            # In-memory dedup (authoritative): skip any cell whose output_dir was already
+            # scored/scheduled this run. Dedup previously hung off has_post_analysis_data (the
+            # NETWORK parquet check); with export_intermediate_files=False that parquet never
+            # exists, so without this guard the same cell (repeated labels, or the same cell
+            # re-encountered across pilot passes that share _loaded_dataframe by reference) would
+            # be recomputed and re-appended -> duplicate MBAR rows ("Index contains duplicates").
+            if post_process_job.output_dir in self._loaded_dataframe:
+                continue
+
+            if not self.has_post_analysis_data(post_process_job.output_dir):
                 fileStore.logToMaster(
                     f"simulations_mdout.parquet is not found in  {post_process_job.output_dir} or is empty\n"
                 )
@@ -322,6 +371,8 @@ class IntermidateRunner(Job):
                 )
                 # fileStore.logToMaster(f"state args: {post_simulation.directory_args}")
 
+                _export = self.config.system_settings.export_intermediate_files
+                post_process_job.export_network = _export
                 self.addChild(post_process_job)
 
                 data_frame = post_process_job.addFollowOnJobFn(
@@ -329,18 +380,20 @@ class IntermidateRunner(Job):
                     post_process_job.directory_args,
                     post_process_job.dirstruct,
                     post_process_job.output_dir,
+                    # When export is off the mdout is never written to the network;
+                    # read it from the jobStore via the post job's returned FileID
+                    # promise, and skip the parquet cache write (compress=False) so
+                    # nothing touches output_dir. The dataframe still reaches MBAR via rv().
+                    compress=_export,
+                    mdout_id=(None if _export else post_process_job.rv()),
                 )
 
                 self.post_output.append(data_frame.rv())
 
-            elif post_process_job.output_dir in self._loaded_dataframe:
-                fileStore.logToMaster(f"Energy post-analysis already completed and already loaded the results")
-                fileStore.logToMaster(
-                    f"Already loaded the Energy post-analysis results in the directory {post_process_job.output_dir}\n"
-                )
-                continue
-
             else:
+                # Warm/resume: the parquet exists on disk (export was on in a prior run); load
+                # it instead of re-scoring. The top-of-loop guard already handled the
+                # already-loaded-this-run case, so this only runs once per cell.
                 if post_simulation.directory_args["state_label"] == "lambda_window":
                     fileStore.logToMaster(f"Energy post-analysis already completed and loading the results") 
                     fileStore.logToMaster(
@@ -598,6 +651,7 @@ class IntermidateRunner(Job):
             post_only=post_only,
             post_output=obj["post_output"],
             loaded_dataframe=obj["_loaded_dataframe"],
+            traj_map=obj["traj_map"],
         )
 
     @staticmethod
@@ -668,5 +722,25 @@ class IntermidateRunner(Job):
             return "post_process_apo"
 
         return "post_process_halo"
+
+
+def run_post_pass_with_traj(job, runner, config, md_runner, simulations=None):
+    """Follow-on of an ALS-pilot MD pass: run its post-analysis pass with NO network read.
+
+    The MD pass (``md_runner``) and the post pass are different Toil jobs, so the freshly-run
+    window's trajectory FileID(s) live in ``md_runner.traj_map`` and are NOT in the pre-MD
+    ``runner``'s dict. Fold them into ``runner``'s shared, accumulated ``traj_map`` (which
+    already carries every EARLIER pass's windows), then build the ``post_only=True`` runner
+    from ``runner.__dict__`` so it shares that merged map by reference. ``run(post_only=True)``
+    sets ``inptraj`` from ``traj_map`` (jobStore) instead of listing the network ``output_dir``.
+    Returns the post runner (rv) carrying ``post_output`` + the accumulated ``traj_map`` for the
+    next pass. Mirrors the production Phase 5->6 seam (workflow_phases.run_post_analysis_...).
+    """
+    runner.traj_map.update(md_runner.traj_map)
+    post_runner = runner.new_runner(
+        config, runner.__dict__, post_only=True, simulations=simulations
+    )
+    job.addChild(post_runner)
+    return post_runner.rv()
 
     # /nas0/ayoub/sampl9_runs/sampl9_extend_windows_diel/WP6_G2_Hmass/lambda_window/1.0/78.5/-0.2857142857142864/3.7142857142857135/WP6_G2_Hmass_state_8_0.8203353560076375_13.1253656961222_prod_traj.nc
