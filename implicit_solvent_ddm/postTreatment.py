@@ -373,13 +373,26 @@ def create_mdout_dataframe(
     dirstruct: str,
     output_dir: str,
     compress: bool = True,
+    mdout_id=None,
 ) -> pd.DataFrame:
     sim = Dirstruct("mdgb", directory_args, dirstruct=dirstruct)
 
-    mdout = f"{output_dir}/mdout"
-
-    job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
-    run_args = sim.dirStruct.fromPath2Dict(mdout)
+    # run_args are parsed from the LOGICAL output_dir path (state labels etc.), which is
+    # just string parsing and needs no file on disk. The mdout CONTENT comes either from
+    # the network output_dir (default) or, when export is off, from the jobStore via the
+    # promised FileID (mdout_id) -- so post-analysis never reads the network.
+    # Parse labels from the DIRECTORY path directly. Do NOT append "/mdout": fromPath2Dict
+    # only strips a trailing component when os.path.isfile() is true, so with export off (the
+    # mdout lives only in the jobStore, never written to output_dir) the "mdout" segment would
+    # NOT be stripped -> every field shifts by one -> state_label lands in traj_igb (dropped
+    # from the MBAR index) -> distinct windows collapse into duplicate rows. output_dir is the
+    # directory, so this is correct whether or not the mdout file exists on disk.
+    run_args = sim.dirStruct.fromPath2Dict(output_dir)
+    if mdout_id is not None:
+        mdout = job.fileStore.readGlobalFile(mdout_id)
+    else:
+        mdout = f"{output_dir}/mdout"
+        job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
     data = min_to_dataframe(mdout)
 
     # data["traj_state_label"] = run_args["traj_state_label"]

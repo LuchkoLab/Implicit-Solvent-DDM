@@ -160,8 +160,15 @@ class SystemSettings:
     mbar_accelerators: int = field(default=0)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
-    
-    
+    export_intermediate_files: bool = field(default=True)
+    # When False, intermediate MD / post-analysis outputs are kept ONLY in the Toil
+    # jobStore and never exported to the (network) output_dir. Data flows between
+    # phases via Toil promises instead of the filesystem: MD jobs return their
+    # trajectory FileID, post-analysis consumes it as inptraj, and create_mdout_dataframe
+    # reads the mdout from the jobStore. Only final results are written. Used to measure
+    # workflow timing with the network read/write cost removed.
+
+
     def __post_init__(self):
         self.working_directory = os.path.abspath(self.working_directory)
         self.cache_directory_output = os.path.abspath(self.cache_directory_output)

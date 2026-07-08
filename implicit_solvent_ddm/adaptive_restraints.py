@@ -15,7 +15,7 @@ from implicit_solvent_ddm.alchemical import alter_topology
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.matrix_order import CycleSteps
 from implicit_solvent_ddm.restraints import write_restraint_forces
-from implicit_solvent_ddm.runner import IntermidateRunner
+from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
 from implicit_solvent_ddm.mdin import generate_extdiel_mdin
 
 AVAGADRO = 6.0221367e23
@@ -1178,8 +1178,10 @@ def improve_restraints_overlap(
     # the shared _loaded_dataframe cache skips the already-computed cells, so this adds exactly the
     # ~2N missing cross terms. Passing only new_sims here yields a ragged matrix (one new×new cell) and
     # pymbar fails with "sum of all N_k must equal the total number of samples".
-    post_runner = md_runner.addFollowOn(
-        runner.new_runner(config, runner.__dict__, post_only=True)
+    # Post pass reads inptraj from the accumulated traj_map (jobStore), not the network
+    # output_dir. Delivered via md_runner.rv() because producer (md_runner) != consumer.
+    post_runner = md_runner.addFollowOnJobFn(
+        run_post_pass_with_traj, runner, config, md_runner.rv()
     )
 
     return (
@@ -1266,8 +1268,8 @@ def improve_restraints_overlap_batch(
     # POST pass over the FULL window list (MBAR needs the complete N×N grid; the shared _loaded_dataframe
     # cache skips already-computed cells, so this adds only the new cross terms). Same contract as the
     # one-at-a-time path — passing only new_sims here would give pymbar a ragged matrix.
-    post_runner = md_runner.addFollowOn(
-        runner.new_runner(config, runner.__dict__, post_only=True)
+    post_runner = md_runner.addFollowOnJobFn(
+        run_post_pass_with_traj, runner, config, md_runner.rv()
     )
 
     return (
@@ -1346,8 +1348,8 @@ def improve_dielectric_overlap(
     md_runner = setup_done.addChild(
         runner.new_runner(config, runner.__dict__, post_only=False, simulations=new_sims)
     )
-    post_runner = md_runner.addFollowOn(
-        runner.new_runner(config, runner.__dict__, post_only=True)
+    post_runner = md_runner.addFollowOnJobFn(
+        run_post_pass_with_traj, runner, config, md_runner.rv()
     )
     return (post_runner.rv(), config)
 
@@ -1541,14 +1543,14 @@ def improve_dielectric_overlap_both(
     c_md = setup_done.addChild(
         complex_runner.new_runner(config, complex_runner.__dict__, post_only=False, simulations=c_sims)
     )
-    c_post = c_md.addFollowOn(
-        complex_runner.new_runner(config, complex_runner.__dict__, post_only=True)
+    c_post = c_md.addFollowOnJobFn(
+        run_post_pass_with_traj, complex_runner, config, c_md.rv()
     )
     r_md = setup_done.addChild(
         receptor_runner.new_runner(config, receptor_runner.__dict__, post_only=False, simulations=r_sims)
     )
-    r_post = r_md.addFollowOn(
-        receptor_runner.new_runner(config, receptor_runner.__dict__, post_only=True)
+    r_post = r_md.addFollowOnJobFn(
+        run_post_pass_with_traj, receptor_runner, config, r_md.rv()
     )
     return (c_post.rv(), r_post.rv(), config)
 
@@ -1620,8 +1622,8 @@ def improve_charge_overlap(
     md_runner = setup_done.addChild(
         runner.new_runner(config, runner.__dict__, post_only=False, simulations=new_sims)
     )
-    post_runner = md_runner.addFollowOn(
-        runner.new_runner(config, runner.__dict__, post_only=True)
+    post_runner = md_runner.addFollowOnJobFn(
+        run_post_pass_with_traj, runner, config, md_runner.rv()
     )
     return (post_runner.rv(), config)
 
