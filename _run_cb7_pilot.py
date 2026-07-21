@@ -53,7 +53,7 @@ with open("implicit_solvent_ddm/tests/input_files/config.yaml") as fh:
 config = Config.from_config(cfg_dict)
 
 # --- enable the ALS pilot (Phase 4.5) ---
-config.workflow.adaptive_lambda = True
+#config.workflow.adaptive_lambda = True
 config.intermediate_args.pilot_nstlim = PILOT_NSTLIM
 # Export MBAR overlap figures (PDFs) for all 3 legs in production .cache (raw .h5 always written).
 config.workflow.plot_overlap_matrix = True

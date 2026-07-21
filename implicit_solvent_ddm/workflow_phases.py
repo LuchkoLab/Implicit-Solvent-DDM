@@ -7,6 +7,9 @@ providing a clean separation of concerns and improved maintainability.
 
 import copy
 import logging
+import os
+import shutil
+import time
 from dataclasses import dataclass, field
 import numpy as np
 from toil.job import JobFunctionWrappingJob
@@ -557,6 +560,51 @@ def _post_row_runner(config: Config, spec_list, distruct, restrict, traj_map):
     )
 
 
+def _gate_and_pass_traj(job, started_dir, n_cpu_md, timeout_s, poll_s, traj):
+    """MD-priority start-gate + trajectory relay, fused into one per-window join job.
+
+    Blocks until every CPU-consuming MD job has STARTED (marker count >= ``n_cpu_md``) -- i.e. the MD
+    queue has drained -- OR ``timeout_s`` elapses, then returns ``traj`` (the MD ``rv(1)`` trajectory,
+    or ``None`` for score-only windows). The window's post row reads its trajectory from THIS job's
+    rv, so post is not issued to the batch queue until the gate opens AND the MD finished. On a
+    CPU-only run that keeps post from stealing cores from still-queued MD -- post only backfills the
+    straggler tail. The timeout is a mandatory backstop: if an MD job dies before writing its marker,
+    the gate opens anyway so post can never deadlock. ``n_cpu_md == 0`` opens immediately.
+
+    The wait lives HERE, in the join, rather than in one shared gate job: a shared gate would have to
+    promise its rv to joins that are follow-ons of their own MD, i.e. to non-successors, which Toil
+    rejects (JobPromiseConstraintError). Each join is already a successor of its own MD, so folding
+    the poll in keeps every promise edge inside the parent->successor chain Toil allows.
+
+    MUST be issued with ``cores=0``: these joins sleep while MD is still queued, so holding a core
+    would starve the very MD jobs they are waiting on.
+    """
+    if n_cpu_md > 0:
+        try:
+            os.makedirs(started_dir, exist_ok=True)
+        except OSError:
+            pass
+        t0 = time.time()
+        while True:
+            try:
+                started = len(os.listdir(started_dir))
+            except OSError:
+                started = 0
+            if started >= n_cpu_md:
+                job.fileStore.logToMaster(
+                    f"[GATE] all {n_cpu_md} CPU-MD jobs started -> releasing post-analysis"
+                )
+                break
+            if time.time() - t0 >= timeout_s:
+                job.fileStore.logToMaster(
+                    f"[GATE] timeout after {timeout_s}s with {started}/{n_cpu_md} started "
+                    f"-> releasing post-analysis anyway"
+                )
+                break
+            time.sleep(poll_s)
+    return traj
+
+
 def run_intermediate_and_post(
     job, config: Config, complex_simulations, receptor_simulations, ligand_simulations, flat_bottom_setup
 ):
@@ -587,15 +635,58 @@ def run_intermediate_and_post(
         (flat_bottom_setup, "post_process_halo", True),
     ]
 
-    rows_by_system = []
+    # MD-priority start-gate: hold every post row until all CPU-consuming MD jobs have STARTED (the
+    # MD queue drained), so post never steals a core from a still-queued MD job -- it only backfills
+    # the straggler tail. On CPU-only runs (MD and post share cores) this is the win; on GPU runs the
+    # CPU-MD set is just the ligand leg, so the gate opens ~immediately and matches the ungated path.
+    ss = config.system_settings
+    use_gate = getattr(ss, "md_start_gate", True)
+    started_dir = os.path.join(ss.working_directory, ".md_started")
+    gate_args = None
+    if use_gate:
+        # n_cpu_md must EXACTLY equal the set of MD jobs that (a) run and (b) write a start marker
+        # (Calculation.run guard: not post_analysis and num_cores>0). GPU MD (num_cores==0) excluded.
+        n_cpu_md = 0
+        for _setup, _d, _fb in systems:
+            for _sim in _setup.simulations:
+                if _sim.directory_args.get("state_label") == "no_flat_bottom":
+                    continue
+                if _needs_md(_sim, _fb, config) and getattr(_sim, "num_cores", 0) and _sim.num_cores > 0:
+                    n_cpu_md += 1
+        # Clear stale markers from a prior run in the same working_directory (fresh-run only -- on
+        # --restart this dispatcher has already completed and won't re-run, so markers persist).
+        try:
+            shutil.rmtree(started_dir, ignore_errors=True)
+            os.makedirs(started_dir, exist_ok=True)
+        except OSError:
+            pass
+        gate_args = (
+            started_dir,
+            n_cpu_md,
+            getattr(ss, "md_gate_timeout_s", 3600),
+            getattr(ss, "md_gate_poll_s", 2.0),
+        )
+        job.fileStore.logToMaster(
+            f"[GATE] MD-priority start-gate armed: post released after {n_cpu_md} CPU-MD jobs start"
+        )
+
+    # cores=0 is load-bearing: gated joins sleep until the CPU-MD queue drains, so a join holding a
+    # core would starve the MD jobs it waits on (and, for score-only joins issued up front, deadlock
+    # until the timeout backstop fires). Memory/disk are kept tiny for the same reason -- the
+    # score-only joins are all issued at t=0 and sleep together, and single_machine throttles on
+    # memory as well as cores. A join only sleeps and returns its traj promise, so it needs nothing.
+    gate_res = dict(cores=0, memory="64M", disk="16M")
+
+    # Per-system prep: build the Hamiltonian COLUMN spec_list ONCE, and collect the trajectory-ROW
+    # windows (dropping the no_flat_bottom columns and deduping within the system). Kept per-system so
+    # the ROW grouping in rows_by_system is byte-identical -- only the child-ISSUE order changes below.
+    per_system = []
     for setup, distruct, is_flat_bottom in systems:
-        # Hamiltonian COLUMN list built ONCE per system (ALL windows, incl. no_flat_bottom), as
-        # lightweight specs -- shared read-only by every per-window row runner in this leg.
         spec_list = [HamiltonianSpec.from_simulation(s) for s in setup.simulations]
         # C2: per-system scope. A global set would false-positive because flat_bottom_setup is a
         # second system_type="complex" setup that shares complex's endstate output_dir.
         seen = set()
-        system_rows = []
+        windows = []
         for sim in setup.simulations:
             # no_flat_bottom stays a Hamiltonian COLUMN (kept in spec_list) but is never a completed
             # trajectory-ROW -- matches the legacy run() outer-loop skip.
@@ -606,26 +697,69 @@ def run_intermediate_and_post(
             ), f"duplicate MD-window output_dir within system: {sim.output_dir}"
             seen.add(sim.output_dir)
             sim.export_network = export
+            windows.append(sim)
+        per_system.append(
+            {
+                "spec_list": spec_list,
+                "distruct": distruct,
+                "is_flat_bottom": is_flat_bottom,
+                "windows": windows,
+                "rows": [],
+            }
+        )
 
-            if _needs_md(sim, is_flat_bottom, config):
-                md = job.addChild(sim)  # MD window enters the FIFO queue in system order
-                post_runner = _post_row_runner(
-                    config,
-                    spec_list,
-                    distruct,
-                    restrict={sim.output_dir},
-                    traj_map={sim.output_dir: md.rv(1)},  # trajectory FileID promise
+    def _issue_window(ctx, sim):
+        """Issue one window's MD (when needed) + its post-analysis ROW, returning the row's rv().
+        Identical per-window logic to the legacy path; only the ORDER in which we call it changes."""
+        spec_list = ctx["spec_list"]
+        distruct = ctx["distruct"]
+        is_flat_bottom = ctx["is_flat_bottom"]
+        if _needs_md(sim, is_flat_bottom, config):
+            md = job.addChild(sim)  # MD window enters the FIFO queue in interleaved system order
+            if gate_args is not None:
+                # Gate the post row: `join` is a follow-on of this window's MD (so md.rv(1) is a legal
+                # promise) and blocks until the gate opens, then relays the trajectory.
+                join = md.addFollowOnJobFn(
+                    _gate_and_pass_traj, *gate_args, md.rv(1), **gate_res
                 )
-                md.addFollowOn(post_runner)  # post ROW couples to THIS window's MD (back of queue)
+                post_runner = _post_row_runner(
+                    config, spec_list, distruct,
+                    restrict={sim.output_dir}, traj_map={sim.output_dir: join.rv()},
+                )
+                join.addFollowOn(post_runner)
             else:
-                # endstate (preset inptraj) / warm-resume: no MD parent. Trajectory flows from the
-                # window's own inptraj or from disk via _get_md_traj (export-on).
                 post_runner = _post_row_runner(
-                    config, spec_list, distruct, restrict={sim.output_dir}, traj_map={}
+                    config, spec_list, distruct,
+                    restrict={sim.output_dir}, traj_map={sim.output_dir: md.rv(1)},
                 )
+                md.addFollowOn(post_runner)  # ungated: post couples straight to its MD
+        else:
+            # endstate (preset inptraj) / warm-resume: no MD parent. Trajectory flows from the
+            # window's own inptraj or from disk via _get_md_traj (export-on).
+            post_runner = _post_row_runner(
+                config, spec_list, distruct, restrict={sim.output_dir}, traj_map={}
+            )
+            if gate_args is not None:
+                join = job.addChildJobFn(_gate_and_pass_traj, *gate_args, None, **gate_res)
+                join.addFollowOn(post_runner)
+            else:
                 job.addChild(post_runner)
-            system_rows.append(post_runner.rv())
-        rows_by_system.append(system_rows)
+        return post_runner.rv()
+
+    # System-PRIORITY issue order: issue each system's whole window block in turn -- complex first,
+    # then receptor, then ligand, then flat_bottom. single_machine's FIFO fills the cores with the
+    # highest-priority system first and spills to the next as cores free: complex windows load first,
+    # receptor fills the remainder, ligand last. This spill was previously BLOCKED by the MD-start
+    # gate -- its sleeping cores=0 join-workers clogged the queue so the complex block ran but never
+    # spilled to receptor/ligand (only ~complex-count windows ran, cores idle). With the gate off
+    # (md_start_gate default False) there are no join-workers, so the FIFO spills cleanly and all 64
+    # cores fill. Post rows are follow-ons issued only as each MD finishes, so they enter the queue
+    # BEHIND every still-queued MD window -> MD keeps core priority and post backfills freed cores.
+    for ctx in per_system:
+        for sim in ctx["windows"]:
+            ctx["rows"].append(_issue_window(ctx, sim))
+
+    rows_by_system = [ctx["rows"] for ctx in per_system]
 
     # Return the 4 per-system lists of per-window post-row runner promises. The aggregator is wired
     # as a FOLLOW-ON of this dispatcher (in ddm_workflow), not inside it: a follow-on waits for this

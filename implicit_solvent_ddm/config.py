@@ -167,6 +167,15 @@ class SystemSettings:
     # trajectory FileID, post-analysis consumes it as inptraj, and create_mdout_dataframe
     # reads the mdout from the jobStore. Only final results are written. Used to measure
     # workflow timing with the network read/write cost removed.
+    md_start_gate: bool = field(default=False)
+    # MD-priority start-gate (merged MD->post pipeline). When True, post-analysis is held until
+    # every CPU-consuming MD job (num_cores>0) has STARTED -- i.e. the MD queue has drained -- so
+    # post never steals a core from a still-queued MD job; it only backfills the straggler tail.
+    # Matters on CPU-only runs (MD and post share cores); on GPU runs the CPU-MD set is just the
+    # ligand leg, so the gate opens almost immediately and behaviour matches the ungated pipeline.
+    # Set False to fall back to the ungated per-window coupling.
+    md_gate_timeout_s: int = field(default=3600)   # gate opens anyway after this (dead-MD backstop)
+    md_gate_poll_s: float = field(default=2.0)      # marker-count poll interval
 
 
     def __post_init__(self):

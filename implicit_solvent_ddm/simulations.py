@@ -2,6 +2,7 @@
 Classes to setup different types of simulations (i.e. remd, basic md).
 """
 
+import hashlib
 import os
 import re
 import shutil
@@ -218,6 +219,23 @@ class Calculation(Job):
         # fileStore.logToMaster(f"the self.directory_args {self.directory_args}")
         # self._output_directory()
         start = time.perf_counter()
+
+        # MD-priority start-gate signal: a CPU-consuming MD job (not post-analysis, num_cores>0)
+        # drops a marker the instant it begins running, so the gate (workflow_phases._gate_and_pass_traj)
+        # can release post-analysis only once the whole CPU-MD queue has STARTED -- keeping post from
+        # stealing cores from still-queued MD. GPU MD (num_cores==0) and post-analysis write nothing.
+        # Best-effort: the gate has a timeout backstop, so a failed marker can never deadlock post.
+        if not self.post_analysis and self.num_cores and self.num_cores > 0:
+            try:
+                started_dir = os.path.join(self.working_directory, ".md_started")
+                os.makedirs(started_dir, exist_ok=True)
+                marker = os.path.join(
+                    started_dir, hashlib.md5(str(self.output_dir).encode()).hexdigest()
+                )
+                open(marker, "w").close()
+            except OSError:
+                pass
+
         self._setLogging()
 
         self.logger.info(f"Run Type: {self.directory_args['runtype']}\n")
