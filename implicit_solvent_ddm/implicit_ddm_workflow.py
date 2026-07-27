@@ -365,6 +365,9 @@ def main():
     )
     options = parser.parse_args()
     options.clean = "onSuccess"
+    # INFO is what carries the per-job [TIMING] records into the leader log that
+    # timing_report.py parses; without it the timing breakdown is empty.
+    options.logLevel = "INFO"
     config_file = options.config_file[0]
     ignore_receptor = options.ignore_receptor
 
@@ -401,7 +404,7 @@ def main():
         f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
     ).touch()
 
-    #options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
+    options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
     # Pin one GPU window per Slurm-allocated GPU and stop the leader environment
     # from clobbering each worker's per-job GPU assignment (Toil single_machine).
     _confine_single_machine_to_allocated_gpus(options)
