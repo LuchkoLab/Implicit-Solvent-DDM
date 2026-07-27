@@ -143,6 +143,7 @@ def make_mdin_file(
     nstlim=None,
     ntwx=None,
     saltcon=None,
+    score_igb=None,
 ):
     """Rewrite users AMBER mdin file for specific thermodynamic states
 
@@ -156,6 +157,10 @@ def make_mdin_file(
         Set igb=6 if turn_off_solvent=True
     post_process: bool
         Set imin=5 and ntx=5 if post_process=True
+    score_igb: int, optional
+        If provided, override the GB model (``igb=<score_igb>``) in the mdin. No-op when ``None`` so
+        the four production mdins stay byte-identical; used only by the standalone cross-GB-model
+        re-scoring analysis (gb_ddG_bar.py) to score a trajectory under an explicit igb.
     nstlim: int, optional
         If provided, override the MD step count (``nstlim``) in the mdin. No-op when ``None`` so the
         production mdins stay byte-identical; set only for the short ALS pilot.
@@ -210,6 +215,11 @@ def make_mdin_file(
         # lambda = 1 - 1/eps. No-op when None (production/other mdins keep the user's saltcon).
         if saltcon is not None:
             line = re.sub(r"saltcon\s*=\s*[0-9.]+", f"saltcon={saltcon}", line)
+        # Cross-GB-model re-scoring: override igb with an explicit model (OBC=2, OBC2=5, GBn=7,
+        # GBn2=8, ...). No-op when None so production mdins are unaffected. Mirrors the gas igb=6
+        # swap above; applied last so an explicit score_igb wins.
+        if score_igb is not None:
+            line = re.sub(r"igb\s*=\s*\d+", f"igb={score_igb}", line)
         new_mdin += line
 
     with open(mdin_name, "w") as output:
