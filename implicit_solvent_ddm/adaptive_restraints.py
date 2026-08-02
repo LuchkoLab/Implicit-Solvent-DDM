@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import implicit_solvent_ddm.pandasmbar as pdmbar
+from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.alchemical import alter_topology
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.matrix_order import CycleSteps
@@ -530,6 +531,7 @@ def compute_mbar(
     disk="3G",
     restraint_band: bool = False,
     band: Optional[str] = None,
+    block_size: Optional[int] = None,
     log=print,
 ):
     """Execute MBAR analysis.
@@ -546,6 +548,10 @@ def compute_mbar(
         Arranges the MBAR matrix in chronological order depending on the system.
     system: str
         Denoting the chronogical order of the matrix (i.e. complex, receptor or ligand).
+    block_size: int, optional
+        When set, solve the full cycle as a chain of ``block_size``-state MBAR blocks rather
+        than one dense solve (see block_mbar.py). Required when post-analysis was run banded,
+        because ``df_mbar`` is then sparse. Ignored for band-sliced (ALS pilot) solves.
 
     Returns
     -------
@@ -703,11 +709,23 @@ def compute_mbar(
     # which Toil does not surface for successful jobs, so the mbar phase was invisible to the report
     # even on a cold run.
     _mbar_t0 = time.perf_counter()
-    _mbar_result = pdmbar.mbar(df_subsampled)
+    if block_size and band is None and matrix_order is not None:
+        # Banded post-analysis: df_mbar is legitimately sparse, so the cycle is solved as a
+        # chain of dense per-block MBARs. Only the full-cycle solve is banded -- the ALS band
+        # passes still get a dense sub-grid and a real pymbar object.
+        _mbar_result = block_mbar.chained_mbar_result(
+            df_subsampled,
+            order,
+            block_size,
+            block_mbar.band_boundaries(order),
+            log=log,
+        )
+    else:
+        _mbar_result = pdmbar.mbar(df_subsampled)
     log(
         f"[TIMING] phase={'adaptive' if band else 'mbar'} "
         f"wall_s={time.perf_counter() - _mbar_t0:.2f} cores=1 gpu=0 end={time.time():.0f} "
-        f"| mbar system={system} band={band}"
+        f"| mbar system={system} band={band} block_size={block_size}"
     )
     return _mbar_result, df_mbar
 
@@ -740,6 +758,9 @@ def run_compute_mbar(
         temperature=config.intermediate_args.temperature,
         matrix_order=cycle_steps,
         system=system_type,
+        block_size=getattr(
+            config.intermediate_args, "post_analysis_block_size", None
+        ),
         log=job.log,
     )
 

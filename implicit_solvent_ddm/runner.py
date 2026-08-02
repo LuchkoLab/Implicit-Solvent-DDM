@@ -12,7 +12,9 @@ from matplotlib.backend_bases import key_press_handler
 from toil.batchSystems import abstractBatchSystem
 from toil.job import FileID, Job, JobFunctionWrappingJob, PromisedRequirement
 
+from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.config import Config
+from implicit_solvent_ddm.matrix_order import CycleSteps
 from implicit_solvent_ddm.postTreatment import create_mdout_dataframe
 from implicit_solvent_ddm.restraints import RestraintMaker
 from implicit_solvent_ddm.simulations import Simulation
@@ -165,6 +167,56 @@ class IntermidateRunner(Job):
         # exist on disk.
         self.restrict_completed = restrict_completed
         self.post_process_distruct = post_process_distruct
+        # {system_type -> set of (traj_state, hamiltonian_state)} for banded post-analysis.
+        # Built lazily per system_type in _post_analysis_pairs, None when banding is off.
+        self._block_pairs_cache: dict = {}
+
+    def _post_analysis_pairs(self, system_type: str, fileStore) -> Optional[set]:
+        """Return the (trajectory, Hamiltonian) pairs post-analysis should evaluate.
+
+        Parameters
+        ----------
+        system_type : str
+            ``"complex"``, ``"ligand"`` or ``"receptor"``.
+        fileStore : FileStore-like
+            Used for logging.
+
+        Returns
+        -------
+        tuple of (set, set) or None
+            ``(required_pairs, known_states)`` for the configured block chain, or None when
+            banding is off and the full N^2 should be evaluated.
+        """
+        block_size = getattr(
+            self.config.intermediate_args, "post_analysis_block_size", None
+        )
+        if not block_size:
+            return None
+        if system_type in self._block_pairs_cache:
+            return self._block_pairs_cache[system_type]
+
+        cycle_steps = CycleSteps(
+            conformation_forces=self.config.intermediate_args.exponent_conformational_forces_list,
+            orientational_forces=self.config.intermediate_args.exponent_orientational_forces_list,
+            charges_windows=self.config.intermediate_args.charges_lambda_window,
+            external_dielectic=self.config.intermediate_args.gb_extdiel_windows,
+        )
+        cycle_steps.round(3)
+        order = {
+            "complex": cycle_steps.complex_order,
+            "ligand": cycle_steps.ligand_order,
+            "receptor": cycle_steps.receptor_order,
+        }[system_type]
+
+        bounds = block_mbar.band_boundaries(order)
+        pairs = block_mbar.required_pairs(order, block_size, bounds)
+        fileStore.logToMaster(
+            f"[block_mbar] {system_type}: block_size={block_size}, {len(order)} states -> "
+            f"{len(pairs)} evaluations instead of {len(order) ** 2} "
+            f"({len(order) ** 2 / len(pairs):.1f}x fewer sander jobs)"
+        )
+        self._block_pairs_cache[system_type] = (pairs, set(order))
+        return self._block_pairs_cache[system_type]
 
     def run(self, fileStore):
         """
@@ -310,7 +362,28 @@ class IntermidateRunner(Job):
         fileStore.logToMaster("RUNNING POST only\n")
         fileStore.logToMaster(f"loaded dataframe: {self._loaded_dataframe}")
 
+        # Banded post-analysis: evaluate only the cells a K-state block chain needs.
+        block_pairs = self._post_analysis_pairs(completed_sim.system_type, fileStore)
+        source_key = None
+        if block_pairs is not None:
+            pairs, known_states = block_pairs
+            source_key = block_mbar.state_key_from_dirargs(completed_sim.directory_args)
+            if source_key not in known_states:
+                # The completed window is not in the cycle order -- schedule/data drift, or a
+                # state this runner does not own. Fall back to the full row rather than
+                # silently dropping every evaluation for it.
+                fileStore.logToMaster(
+                    f"[block_mbar] WARNING trajectory state {source_key} is absent from the "
+                    f"{completed_sim.system_type} cycle order; scoring it against ALL states"
+                )
+                block_pairs = None
+
         for post_simulation in self.simulations:
+            if block_pairs is not None:
+                target_key = block_mbar.state_key_from_dirargs(post_simulation.directory_args)
+                if (source_key, target_key) not in pairs:
+                    continue
+
             directory_args = post_simulation.directory_args.copy()
             #fileStore.logToMaster(f"directory args before update: {directory_args}\n")
             # fileStore.logToMaster(f"args {completed_sim.directory_args} & {md_traj}")
