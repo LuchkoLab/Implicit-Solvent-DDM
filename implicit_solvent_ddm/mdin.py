@@ -50,12 +50,18 @@ def get_mdins(job, user_mdin_ID: FileID):
     user_mdin_args: str
         A user specified yaml file containing mdin arguments
 
-    Returns:
-    --------
-    default_mdin:
-    no_solvent_mdin:
-    post_mdin:
-    post_nosolv:
+    Returns
+    -------
+    default_mdin : FileID
+        Solvated MD.
+    no_solvent_mdin : FileID
+        Gas-phase MD (igb=6).
+    post_mdin : FileID
+        Single-point scoring (imin=5), user's saltcon.
+    post_nosolv : FileID
+        Single-point scoring for the gas-phase states.
+    post_saltfree : FileID
+        Single-point scoring at saltcon=0, for the GB-dielectric band.
     """
 
     mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
@@ -72,8 +78,14 @@ def get_mdins(job, user_mdin_ID: FileID):
             mdin_global, "post_nosolv_mdin", turn_off_solvent=True, post_process=True
         )
     )
+    # GB-dielectric band: its MD is written salt-free by generate_extdiel_mdin, so score it the same
+    # way. With salt the prefactor (1/intdiel - exp(-kappa*f)/extdiel) does not vanish at extdiel=1,
+    # so the band never reaches vacuum and leaves a ~350 kcal/mol cliff against the igb=6 gas anchor.
+    post_saltfree = job.fileStore.writeGlobalFile(
+        make_mdin_file(mdin_global, "post_saltfree_mdin", post_process=True, saltcon=0.0)
+    )
 
-    return (default_mdin, no_solvent_mdin, post_mdin, post_nosolv)
+    return (default_mdin, no_solvent_mdin, post_mdin, post_nosolv, post_saltfree)
 
 
 def pilot_md_steps(mdin_text, pilot_ps, pilot_frames, pilot_nstlim=None, dt_default=0.001):

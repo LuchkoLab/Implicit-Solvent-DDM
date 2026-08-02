@@ -69,15 +69,17 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
     # Store MDIN file references in config
     MDIN_TYPES = {
         'default': 0,
-        'no_solvent': 1, 
+        'no_solvent': 1,
         'post': 2,
-        'post_nosolv': 3
+        'post_nosolv': 3,
+        'post_saltfree': 4  # scoring mdin for the gb_dielectric band (saltcon=0, matching its MD)
     }
-    
+
     config.inputs["default_mdin"] = mdins.rv(MDIN_TYPES['default'])
     config.inputs["no_solvent_mdin"] = mdins.rv(MDIN_TYPES['no_solvent'])
     config.inputs["post_mdin"] = mdins.rv(MDIN_TYPES['post'])
     config.inputs["post_nosolv_mdin"] = mdins.rv(MDIN_TYPES['post_nosolv'])
+    config.inputs["post_saltfree_mdin"] = mdins.rv(MDIN_TYPES['post_saltfree'])
     
     # Create empty restraint file
     empty_restraint = mdins.addChildJobFn(write_empty_restraint)
@@ -549,6 +551,7 @@ def _post_row_runner(config: Config, spec_list, distruct, restrict, traj_map):
         config.inputs["restraints"],
         post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
         post_process_mdin=config.inputs["post_mdin"],
+        post_process_saltfree_mdin=config.inputs.get("post_saltfree_mdin"),
         post_process_distruct=distruct,
         post_only=True,
         config=config,
@@ -845,6 +848,7 @@ def _pilot_runner(simulations, pilot_config, distruct, post_only):
         pilot_config.inputs["restraints"],
         post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
         post_process_mdin=pilot_config.inputs["post_mdin"],
+        post_process_saltfree_mdin=pilot_config.inputs.get("post_saltfree_mdin"),
         post_process_distruct=distruct,
         post_only=post_only,
         config=pilot_config,

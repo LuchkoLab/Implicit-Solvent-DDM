@@ -48,6 +48,9 @@ class IntermidateRunner(Job):
         Input file for post-processing jobs that should exclude implicit solvent (e.g., for igb=6).
     post_process_mdin : FileID
         Standard input file for post-analysis energy evaluation (e.g., sander).
+    post_process_saltfree_mdin : FileID, optional
+        Scoring input file for gb_dielectric columns (saltcon=0). Falls back to
+        ``post_process_mdin`` when None, so resumed jobstores keep working.
     post_process_distruct : str
         Directory structure key or identifier used to organize post-processing job outputs.
     post_only : bool
@@ -113,6 +116,7 @@ class IntermidateRunner(Job):
         post_process_distruct: str,
         post_only: bool,
         config: Config,
+        post_process_saltfree_mdin: Optional[FileID] = None,
         adaptive: bool = False,
         loaded_dataframe: Optional[list] = None,
         post_output: Optional[Union[list, list[pd.DataFrame]]] = None,
@@ -142,6 +146,7 @@ class IntermidateRunner(Job):
         self.restraints = restraints
         self.no_solvent_mdin = post_process_no_solv_mdin
         self.mdin = post_process_mdin
+        self.saltfree_mdin = post_process_saltfree_mdin
         self.post_only = post_only
         self.config = config
         self.adaptive = adaptive
@@ -392,6 +397,14 @@ class IntermidateRunner(Job):
             mdin = self.mdin
             if post_simulation.directory_args["igb_value"] == 6:
                 mdin = self.no_solvent_mdin
+            elif (
+                post_simulation.directory_args.get("state_label") == "gb_dielectric"
+                and self.saltfree_mdin is not None
+            ):
+                # Score the band under the Hamiltonian its own MD used (generate_extdiel_mdin
+                # pins saltcon=0). Dispatch on state_label: setup_gb_external_dielectric sets
+                # igb_value to the string "igb_2" while the ALS path sets the int.
+                mdin = self.saltfree_mdin
 
             # run simulation if its not endstate with endstate
             post_dirstruct = self.get_system_dirs(post_simulation.system_type)
@@ -720,6 +733,7 @@ class IntermidateRunner(Job):
             post_process_distruct=obj["post_process_distruct"],
             post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
             post_process_mdin=config.inputs["post_mdin"],
+            post_process_saltfree_mdin=config.inputs.get("post_saltfree_mdin"),
             adaptive=True,
             post_only=post_only,
             post_output=obj["post_output"],
