@@ -66,7 +66,7 @@ jobs:
       shell: bash -l {0}
 
       run: |
-        pytest -v --cov=implicit_solvent_ddm --cov-report=xml --color=yes  implicit_solvent_ddm/tests/test_implicit_solvent_ddm.py implicit_solvent_ddm/tests/test_mdin_file.py implicit_solvent_ddm/tests/test_pilot_mdin.py implicit_solvent_ddm/tests/test_block_mbar.py implicit_solvent_ddm/tests/test_adaptive_insertion.py
+        pytest -v --cov=implicit_solvent_ddm --cov-report=xml --color=yes  implicit_solvent_ddm/tests/test_implicit_solvent_ddm.py implicit_solvent_ddm/tests/test_mdin_file.py implicit_solvent_ddm/tests/test_pilot_mdin.py implicit_solvent_ddm/tests/test_block_mbar.py implicit_solvent_ddm/tests/test_adaptive_insertion.py implicit_solvent_ddm/tests/test_post_column_dispatch.py
 
     - name: CodeCov
       uses: codecov/codecov-action@v4

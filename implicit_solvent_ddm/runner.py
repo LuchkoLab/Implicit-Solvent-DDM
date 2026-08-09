@@ -223,6 +223,63 @@ class IntermidateRunner(Job):
         self._block_pairs_cache[system_type] = (pairs, set(order))
         return self._block_pairs_cache[system_type]
 
+    @staticmethod
+    def _column_is_required(source_key, target_key, pairs) -> bool:
+        """Should this (trajectory, Hamiltonian) cell be evaluated under a block chain?
+
+        Parameters
+        ----------
+        source_key : tuple
+            Canonical state tuple of the completed trajectory.
+        target_key : tuple or None
+            Canonical state tuple of the Hamiltonian, or None when it resolves to no state
+            in the cycle order.
+        pairs : set of tuple
+            Pairs the block chain needs, from ``_post_analysis_pairs``.
+
+        Returns
+        -------
+        bool
+            True to evaluate. An unresolved ``target_key`` returns True: skipping it would
+            punch a hole in a block the chained solve later requires, surfacing as a
+            ValueError in ``chained_mbar_result`` long after the cheap sander job could
+            have filled it. One extra evaluation is the safe direction to err.
+        """
+        if target_key is None:
+            return True
+        return (source_key, target_key) in pairs
+
+    def _select_post_mdin(self, post_simulation):
+        """Pick the scoring mdin for one post-analysis column.
+
+        Parameters
+        ----------
+        post_simulation : Simulation
+            The window supplying the Hamiltonian this cell is scored under.
+
+        Returns
+        -------
+        FileID
+            ``no_solvent_mdin`` for gas (igb=6) columns; ``saltfree_mdin`` for
+            ``gb_dielectric`` columns, whose MD is written salt-free by
+            ``generate_extdiel_mdin`` so scoring must match it; ``mdin`` otherwise.
+
+        Notes
+        -----
+        The gb_dielectric branch dispatches on ``state_label``, not ``igb_value``:
+        ``setup_gb_external_dielectric`` sets the string ``"igb_2"`` while the ALS insertion
+        path sets the int. ``saltfree_mdin`` is None on jobstores predating that fix, in
+        which case this falls back to ``mdin`` (the original, salted behaviour).
+        """
+        if post_simulation.directory_args["igb_value"] == 6:
+            return self.no_solvent_mdin
+        if (
+            post_simulation.directory_args.get("state_label") == "gb_dielectric"
+            and self.saltfree_mdin is not None
+        ):
+            return self.saltfree_mdin
+        return self.mdin
+
     def run(self, fileStore):
         """
         Submits molecular dynamics (MD) or post-processing jobs based on configuration.
@@ -372,21 +429,38 @@ class IntermidateRunner(Job):
         source_key = None
         if block_pairs is not None:
             pairs, known_states = block_pairs
-            source_key = block_mbar.state_key_from_dirargs(completed_sim.directory_args)
-            if source_key not in known_states:
+            source_key = block_mbar.canonical_state_key(
+                completed_sim.directory_args, known_states
+            )
+            if source_key is None:
                 # The completed window is not in the cycle order -- schedule/data drift, or a
                 # state this runner does not own. Fall back to the full row rather than
                 # silently dropping every evaluation for it.
                 fileStore.logToMaster(
-                    f"[block_mbar] WARNING trajectory state {source_key} is absent from the "
-                    f"{completed_sim.system_type} cycle order; scoring it against ALL states"
+                    "[block_mbar] WARNING trajectory state "
+                    f"{block_mbar.state_key_from_dirargs(completed_sim.directory_args)} "
+                    f"is absent from the {completed_sim.system_type} cycle order; "
+                    "scoring it against ALL states"
                 )
                 block_pairs = None
 
         for post_simulation in self.simulations:
             if block_pairs is not None:
-                target_key = block_mbar.state_key_from_dirargs(post_simulation.directory_args)
-                if (source_key, target_key) not in pairs:
+                target_key = block_mbar.canonical_state_key(
+                    post_simulation.directory_args, known_states
+                )
+                if target_key is None:
+                    # Unrecognised Hamiltonian: evaluate it rather than skip. Skipping would
+                    # punch a hole in a block the chained solve later requires, and that
+                    # surfaces as a ValueError in chained_mbar_result long after the cheap
+                    # sander job could have filled it. One extra evaluation is the safe error.
+                    fileStore.logToMaster(
+                        "[block_mbar] WARNING Hamiltonian state "
+                        f"{block_mbar.state_key_from_dirargs(post_simulation.directory_args)} "
+                        f"is absent from the {completed_sim.system_type} cycle order; "
+                        "evaluating it rather than dropping the cell"
+                    )
+                if not self._column_is_required(source_key, target_key, pairs):
                     continue
 
             directory_args = post_simulation.directory_args.copy()
@@ -394,17 +468,7 @@ class IntermidateRunner(Job):
             # fileStore.logToMaster(f"args {completed_sim.directory_args} & {md_traj}")
             directory_args.update(self.update_postprocess_dirstruct(completed_sim.directory_args))  # type: ignore
             #fileStore.logToMaster(f"directory args after update: {directory_args}\n")
-            mdin = self.mdin
-            if post_simulation.directory_args["igb_value"] == 6:
-                mdin = self.no_solvent_mdin
-            elif (
-                post_simulation.directory_args.get("state_label") == "gb_dielectric"
-                and self.saltfree_mdin is not None
-            ):
-                # Score the band under the Hamiltonian its own MD used (generate_extdiel_mdin
-                # pins saltcon=0). Dispatch on state_label: setup_gb_external_dielectric sets
-                # igb_value to the string "igb_2" while the ALS path sets the int.
-                mdin = self.saltfree_mdin
+            mdin = self._select_post_mdin(post_simulation)
 
             # run simulation if its not endstate with endstate
             post_dirstruct = self.get_system_dirs(post_simulation.system_type)

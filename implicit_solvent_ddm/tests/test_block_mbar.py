@@ -164,6 +164,92 @@ def test_state_key_from_dirargs_halo_and_apo():
     assert bm.state_key_from_dirargs(apo) == ("lambda_window", "78.5", "1.0", "2.0")
 
 
+# --------------------------------------------------------------------------------------------------
+# canonical_state_key -- reconciling the apo spelling
+#
+# Production apo legs do NOT match the `apo` case above: setup_apply_restraint_windows builds its
+# args with copy(self.no_gb_args), which always sets orientational_restraints, and the
+# `exponent_orientational is None` branch never removes it. So a ligand/receptor lambda_window
+# carries a phantom 8.0 while CycleSteps.apply_restraints spells it with the conformational force
+# alone. Scoring dropped those cells silently until the chained solve rejected the block.
+# --------------------------------------------------------------------------------------------------
+APO_LIGAND_ORDER = (
+    [("endstate", "78.5", "1.0", "0.0")]
+    + [("lambda_window", "78.5", "1.0", f"{c}") for c in (-2.0, 0.0, 2.0, 4.0)]
+    + [("electrostatics", "0.0", f"{q}", "4.0") for q in (1.0, 0.5, 0.0)]
+)
+
+
+def _apo_dirargs(label, extdiel, charge, con, orient=8.0):
+    """An apo window as production actually builds it -- phantom orientational included."""
+    return {
+        "state_label": label,
+        "extdiel": extdiel,
+        "charge": charge,
+        "conformational_restraint": con,
+        "orientational_restraints": orient,
+    }
+
+
+def test_canonical_key_resolves_phantom_orientational_to_apo_spelling():
+    known = set(APO_LIGAND_ORDER)
+    args = _apo_dirargs("lambda_window", 78.5, 1.0, 4.0)
+    # the raw key is the one production emitted, and it is NOT in the cycle order
+    assert bm.state_key_from_dirargs(args) == ("lambda_window", "78.5", "1.0", "4.0_8.0")
+    assert bm.state_key_from_dirargs(args) not in known
+    assert bm.canonical_state_key(args, known) == ("lambda_window", "78.5", "1.0", "4.0")
+
+
+def test_canonical_key_leaves_a_genuine_halo_key_untouched():
+    """The complex leg is really halo -- remove_restraints/complex_charges are compound."""
+    known = {("lambda_window", "78.5", "1.0", "2.0_6.0")}
+    args = _apo_dirargs("lambda_window", 78.5, 1.0, 2.0, orient=6.0)
+    assert bm.canonical_state_key(args, known) == ("lambda_window", "78.5", "1.0", "2.0_6.0")
+
+
+def test_canonical_key_returns_none_for_a_genuinely_absent_state():
+    known = set(APO_LIGAND_ORDER)
+    args = _apo_dirargs("lambda_window", 78.5, 1.0, 99.0)
+    assert bm.canonical_state_key(args, known) is None
+
+
+def test_canonical_key_does_not_invent_a_match_from_a_bare_conformational_key():
+    """No underscore -> nothing to strip; an unknown apo key stays unknown."""
+    known = set(APO_LIGAND_ORDER)
+    args = {
+        "state_label": "lambda_window",
+        "extdiel": 78.5,
+        "charge": 1.0,
+        "conformational_restraint": 99.0,
+    }
+    assert bm.canonical_state_key(args, known) is None
+
+
+def test_block14_junction_cell_resolves_in_both_directions():
+    """Regression for MCL-1_ligand-1_md_78746: the isolated lambda_window<->electrostatics block.
+
+    The electrostatics row keyed cleanly (ligand_charge_args never sets orientational) so it took
+    the banded path, then dropped every lambda_window column because those keys carried the
+    phantom 8.0. Both directions must now land inside required_pairs.
+    """
+    order = APO_LIGAND_ORDER
+    known = set(order)
+    pairs = bm.required_pairs(order, 4, bm.band_boundaries(order))
+
+    lam = bm.canonical_state_key(_apo_dirargs("lambda_window", 78.5, 1.0, 4.0), known)
+    ele = bm.canonical_state_key(
+        {
+            "state_label": "electrostatics",
+            "extdiel": 0.0,
+            "charge": 1.0,
+            "conformational_restraint": 4.0,
+        },
+        known,
+    )
+    assert (ele, lam) in pairs  # the cell that was silently skipped
+    assert (lam, ele) in pairs
+
+
 def test_parm_and_traj_keys_read_their_own_sides():
     run_args = {
         "state_label": "electrostatics",

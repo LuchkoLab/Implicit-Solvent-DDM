@@ -9,7 +9,7 @@ more states per solve.
 from __future__ import annotations
 
 import math
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -102,6 +102,46 @@ def state_key_from_dirargs(directory_args: dict) -> tuple:
         directory_args["conformational_restraint"],
         directory_args.get("orientational_restraints"),
     )
+
+
+def canonical_state_key(directory_args: dict, known_states) -> Optional[tuple]:
+    """Return the cycle-order spelling of a state, or None if it is genuinely absent.
+
+    ``state_key_from_dirargs`` appends the orientational force whenever
+    ``orientational_restraints`` is present. Apo legs carry that key even though they have
+    no orientational restraint: ``setup_apply_restraint_windows`` builds its args with
+    ``copy(self.no_gb_args)``, which always sets it, and the ``exponent_orientational is
+    None`` branch never removes it (``apo_endstate_dirstruct`` hardcodes it too). But
+    ``CycleSteps.apply_restraints`` / ``ligand_charges`` / ``no_gb`` spell apo states with
+    the conformational force ALONE, and so does the MBAR dataframe. So an apo trajectory
+    keys as ``('lambda_window','78.5','1.0','-2.0_8.0')`` while its cycle-order twin is
+    ``('lambda_window','78.5','1.0','-2.0')``.
+
+    Prefer the exact key; fall back to the conformational-only spelling. The complex leg is
+    genuinely halo (``remove_restraints`` / ``complex_charges`` are compound) and matches on
+    the first try, so it never reaches the fallback.
+
+    Parameters
+    ----------
+    directory_args : dict
+        Simulation directory arguments.
+    known_states : container of tuple
+        The cycle order's state tuples, as returned by ``_post_analysis_pairs``.
+
+    Returns
+    -------
+    tuple of str or None
+        The spelling present in ``known_states``, or None when neither form is.
+    """
+    key = state_key_from_dirargs(directory_args)
+    if key in known_states:
+        return key
+    label, extdiel, charge, restraints = key
+    if "_" in restraints:
+        short = (label, extdiel, charge, restraints.split("_", 1)[0])
+        if short in known_states:
+            return short
+    return None
 
 
 def parm_key(run_args: dict) -> tuple:
@@ -516,9 +556,21 @@ def chained_mbar_result(
         states = [order[i] for i in block]
         sub = slice_block(df, states)
         if sub.isna().any().any():
+            # Name the cells, not just the block endpoints: an unevaluated cell means the
+            # scoring side and this solve disagree about which (trajectory, Hamiltonian)
+            # pairs are required, and the specific row/column is what identifies the
+            # disagreement (e.g. a state spelled two different ways -- see
+            # canonical_state_key).
+            rows, cols = np.where(sub.isna().values)
+            missing = sorted(
+                {(str(sub.index[i]), str(sub.columns[j])) for i, j in zip(rows, cols)}
+            )
+            shown = "; ".join(f"traj={r} scored under {c}" for r, c in missing[:5])
+            more = f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""
             raise ValueError(
-                f"block_mbar: block {b} ({states[0]} -> {states[-1]}) has unevaluated cells; "
-                f"post-analysis data does not match block_size={block_size}"
+                f"block_mbar: block {b} ({states[0]} -> {states[-1]}) has "
+                f"{len(missing)} unevaluated cells; post-analysis data does not match "
+                f"block_size={block_size}. Missing: {shown}{more}"
             )
         import pymbar
         from pymbar import mbar_solvers
