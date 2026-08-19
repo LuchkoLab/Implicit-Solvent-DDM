@@ -18,6 +18,7 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `gb_junction_overlap.py` | **GB-band ↔ gas junction overlap, with and without the scoring-`saltcon` fix** — re-scores the two trajectories straddling the junction and reports BAR ΔG + MBAR overlap both ways | yes |
 | `gb_endpoint_probe.py` | Re-scores a whole GB ladder under both scoring salt concentrations plus the gas endpoint (the full N×N version of the above) | yes |
 | `gb_endpoint_analyze.py` | Builds two MBAR problems from `gb_endpoint_probe.py` output that differ only in scoring `saltcon`, and compares their overlap matrices | no |
+| `endstate_window_rmsd.py` | **Is the endstate in the same basin as the weakest restraint window?** — cross-RMSD between the endstate and a `lambda_window` trajectory, to tell a structural mismatch (which ALS cannot fix) from a stiffness gap (which it can) | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
 
 ---
@@ -315,6 +316,53 @@ ships `rgbmax=0, saltcon=0.3, cut=9999`, all three wrong for this system.) It wr
 junction states share a byte-identical `restraint.RST`, so the restraint energy cancels in every
 difference. The production *scoring* `saltcon` is **assumed 0.3** — it is not recorded in the MD
 `mdout`; grep it from `post_processing/.../mdout` and pass `--saltcon-prod` if yours differs.
+
+---
+
+## `endstate_window_rmsd.py` — is the endstate in the same basin as the weakest restraint window?
+
+**Question.** On MCL-1 rep1 the receptor `endstate → lambda_window(-14.0)` transition has an MBAR
+overlap of 0.0039 — worst in the cycle, ~60× below the median — with ΔG = +5.96 kT and an error of
+0.352 kT, 60× the next step's 0.006.
+
+That shouldn't happen. Force constants are `2**exponent` (`workflow_phases.py:920`), so the −14.0
+window runs at k = 6.1e-5 kcal/mol/Å² — the restraint is off. The ladder itself behaves (ΔG roughly
+doubles as k doubles), and −14.0 is the *best*-connected state going forward (overlap 0.528 to
+−13.0). But the endstate seam has the **smallest** change in k of any step and costs **more than
+double** the next one. So the endstate is not the k→0 limit of the ladder — it's a different
+ensemble. The receptor endstate is built by a separate phase (`user_defined_endstate` /
+`run_endstate`, trajectory `*_basicMD_traj.nc`) and `apo_endstate_dirstruct` sets `runtype: "remd"`.
+
+**Why it matters.** The two diagnoses have opposite fixes. A stiffness gap is solved by inserting
+windows (ALS). A basin mismatch is not — subdividing 0 → 6.1e-5 gives sub-windows that all inherit
+the same mismatch. This script tells them apart before you spend a schedule on it.
+
+**Method.** No MD, no MBAR — four `cpptraj` passes over two existing trajectories:
+
+1. average structure of each ensemble;
+2. per-frame RMSD of both to the **restraint reference** (the coordinates the restraint pulls
+   toward), showing whether either has drifted off it;
+3. cross RMSD — each ensemble against the *other's* average;
+4. the separation: average-to-average.
+
+Verdict compares separation to within-basin spread: `≥2×` → different basins (ALS won't help);
+`<1×` → same basin, so look at the restraint definition and at what the endstate Hamiltonian
+actually is instead.
+
+The mask defaults to the atoms the restraint file really restrains, parsed from the `iat=` records
+of `restraint.RST` and collapsed to ranges — on the MCL-1 receptor that is all 2,444 atoms
+(`@1-2444`), which is itself worth knowing: it explains why the low-k ladder still costs ~119
+kcal/mol despite per-atom force constants near zero.
+
+```bash
+module load amber        # or export CPPTRAJ=$AMBERHOME/bin/cpptraj
+python scripts/endstate_window_rmsd.py \
+    --leg-root <run>/mcl1_rep1/MCL-1_receptor-ligand-1_with_mcl1_uxU_uxU \
+    --endstate-traj <path>/MCL-1_receptor-ligand-1_with_mcl1_uxU_uxU_basicMD_traj.nc
+```
+
+`--window` picks a different exponent (compare against a healthy seam), `--stride` subsamples,
+`--dry-run` prints the cpptraj input without running it.
 
 ---
 
