@@ -144,6 +144,14 @@ class SystemSettings:
         GPU-free so it can run in a CPU-only allocation (allowing the GPUs to be
         released back to the scheduler during the analysis tail). Set to 1 only
         once MBAR is JAX/GPU-accelerated. Values > 1 are clamped to 1.
+    remd_accelerators : int
+        Number of GPUs to request *per REMD job*. Unlike ``num_accelerators`` this is NOT
+        clamped: one REMD job runs all ``ngroups`` replicas at once, so it legitimately needs
+        many devices. AMBER binds one GPU per MPI rank, so the natural value is
+        ``len(temperatures)``; a smaller value means replicas share devices, which requires
+        CUDA MPS (``nvidia-cuda-mps-control -d``) to run concurrently rather than serialize.
+        Defaults to 0, which requests no GPU and preserves the behaviour of configs written
+        before this option existed.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -158,6 +166,7 @@ class SystemSettings:
     CUDA: bool = field(default=False)
     num_accelerators: int = field(default=0)
     mbar_accelerators: int = field(default=0)
+    remd_accelerators: int = field(default=0)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
     export_intermediate_files: bool = field(default=True)

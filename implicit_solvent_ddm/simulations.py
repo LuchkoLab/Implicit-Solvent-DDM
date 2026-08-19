@@ -570,17 +570,22 @@ class REMDSimulation(Calculation):
         inptraj=None,
         memory: Optional[Union[int, str]] = None,
         disk: Optional[Union[int, str]] = None,
+        accelerators: Optional[int] = None,
         preemptable: Optional[Union[bool, int, str]] = None,
         unitName: Optional[str] = "",
         checkpoint: Optional[bool] = False,
         displayName: Optional[str] = "",
         descriptionClass: Optional[str] = None,
     ):
+        # accelerators is the GPU request for THIS job, which runs every replica in the chain --
+        # unlike Simulation, where one job is one window on one device. AMBER binds one device per
+        # MPI rank, so the natural value is ngroups; fewer means replicas share devices.
         Job.__init__(
             self,
             memory=memory,
             cores=num_cores,
             disk=disk,
+            accelerators=accelerators,
             preemptible="false",
             unitName=unitName,
             checkpoint=checkpoint,

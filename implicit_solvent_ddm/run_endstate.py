@@ -63,6 +63,7 @@ def run_remd(job, user_config: Config):
     equilibrate_complex = minimization_complex.addFollowOn(
         REMDSimulation(
             executable=user_config.system_settings.executable,
+            accelerators=user_config.system_settings.remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -88,6 +89,7 @@ def run_remd(job, user_config: Config):
     remd_complex = equilibrate_complex.addFollowOn(
         REMDSimulation(
             executable=user_config.system_settings.executable,
+            accelerators=user_config.system_settings.remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -145,18 +147,26 @@ def run_remd(job, user_config: Config):
             disk=user_config.system_settings.disk,
         )
     )
-    # check to see if PMEMD is specified
+    # The ligand endstate runs on CPU. A 17-atom fragment never justifies a GPU, and
+    # pmemd.cuda.MPI binds one device per MPI rank -- with one rank per replica that would tie up
+    # the whole node's GPUs on the cheapest leg. Test on ".MPI" rather than "pmemd.MPI": the latter
+    # is NOT a substring of "pmemd.cuda.MPI", so CUDA builds used to slip through and run on GPU.
     num_ligand_cores = int(user_config.endstate_method.remd_args.nthreads_ligand)
     ligand_endstate_exe = user_config.system_settings.executable
-    if "pmemd.MPI" in user_config.system_settings.executable:
-        num_ligand_cores = int(
-            user_config.endstate_method.remd_args.nthreads_ligand / 2
-        )
+    if ".MPI" in ligand_endstate_exe:
         ligand_endstate_exe = "sander.MPI"
+        if "cuda" not in user_config.system_settings.executable.lower():
+            # Legacy pmemd.MPI behaviour, preserved.
+            num_ligand_cores = int(num_ligand_cores / 2)
+    # AMBER multisander requires -n to be an exact multiple of -ng; otherwise it refuses to start.
+    # The halving above produces -n 5 against -ng 10 for a 10-rung ladder, which is invalid.
+    if num_ligand_cores % user_config.endstate_method.remd_args.ngroups != 0:
+        num_ligand_cores = user_config.endstate_method.remd_args.ngroups
 
     equilibrate_ligand = minimization_ligand.addFollowOn(
         REMDSimulation(
             executable=ligand_endstate_exe,
+            accelerators=0,  # CPU leg: sander.MPI, no device
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=num_ligand_cores,
             CUDA=user_config.system_settings.CUDA,
@@ -182,6 +192,7 @@ def run_remd(job, user_config: Config):
     remd_ligand = equilibrate_ligand.addFollowOn(
         REMDSimulation(
             executable=ligand_endstate_exe,
+            accelerators=0,  # CPU leg: sander.MPI, no device
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=num_ligand_cores,
             CUDA=user_config.system_settings.CUDA,
@@ -241,6 +252,7 @@ def run_remd(job, user_config: Config):
         equilibrate_receptor = minimization_receptor.addFollowOn(
             REMDSimulation(
                 executable=user_config.system_settings.executable,
+                accelerators=user_config.system_settings.remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,
@@ -266,6 +278,7 @@ def run_remd(job, user_config: Config):
         remd_receptor = equilibrate_receptor.addFollowOn(
             REMDSimulation(
                 executable=user_config.system_settings.executable,
+                accelerators=user_config.system_settings.remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,
