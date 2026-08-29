@@ -454,9 +454,12 @@ class SimulationSetup:
         Returns:
             _type_: _description_
         """
+        # Names the method that produced this trajectory, so a vanilla-MD and a REMD
+        # endstate cannot share a post-analysis directory (and therefore a warm cache).
+        endstate_label = self.config.endstate_method.endstate_state_label
         return {
             "topology": self.topology,
-            "state_label": "endstate",
+            "state_label": endstate_label,
             "charge": 1.0,
             "extdiel": 78.5,
             "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
@@ -464,7 +467,7 @@ class SimulationSetup:
             "conformational_restraint": 0.0,
             "orientational_restraints": 0.0,
             "runtype": "remd",
-            "traj_state_label": "endstate",
+            "traj_state_label": endstate_label,
             "traj_charge": 1.0,
             "traj_extdiel": 78.5,
             "topdir": self.config.system_settings.top_directory_path,

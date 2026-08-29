@@ -747,6 +747,7 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                     ligand_filename=config.endstate_files.ligand_parameter_filename,
                     receptor_filename=config.endstate_files.receptor_parameter_filename,
                     working_path=config.system_settings.cache_directory_output,
+                    endstate_label=config.endstate_method.endstate_state_label,
                     plot_overlap_matrix=config.workflow.plot_overlap_matrix,
                 )
             )

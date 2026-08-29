@@ -88,6 +88,7 @@ class ConsolidateData(Job):
         complex_filename,
         ligand_filename,
         receptor_filename,
+        endstate_label: str = "endstate",
         plot_overlap_matrix: bool = False,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
@@ -116,6 +117,8 @@ class ConsolidateData(Job):
         self.flat_botton_run = flat_botton_run
         self.max_con_force = str(max_conformation_force)
         self.max_orien_force = str(max_orientational_force)
+        # Matches the endstate row's state_label, which names the endstate method.
+        self.endstate_label = endstate_label
         self.boresch = boresch_df
         self.complex_name = re.sub(r"\..*", "", os.path.basename(complex_filename))
         self.ligand_name = re.sub(r"\..*", "", os.path.basename(ligand_filename))
@@ -187,7 +190,7 @@ class ConsolidateData(Job):
     def _get_ligand_deltaG(self):
         """Get the ligand free energy contribution for DeltaG"""
         return self.ligand_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
+            (self.endstate_label, "78.5", "1.0", "0.0"),
             [("electrostatics", "0.0", "0.0", self.max_con_force)],
         ].values[0]
 
@@ -195,7 +198,7 @@ class ConsolidateData(Job):
     def _get_receptor_deltaG(self):
         """Get the receptor free energy contribution for DeltaG"""
         return self.receptor_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
+            (self.endstate_label, "78.5", "1.0", "0.0"),
             [("no_gb", "0.0", "1.0", self.max_con_force)],
         ].values[0]
 
@@ -209,7 +212,7 @@ class ConsolidateData(Job):
                 "0.0",
                 f"{self.max_con_force}_{self.max_orien_force}",
             ),
-            [("endstate", "78.5", "1.0", "0.0_0.0")],
+            [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
         ].values[0]
 
     @property
@@ -218,7 +221,7 @@ class ConsolidateData(Job):
         return self.flat_bottom_fe.loc[
             (
                 ("no_flat_bottom", "78.5", "1.0", "0.0_0.0"),
-                [("endstate", "78.5", "1.0", "0.0_0.0")],
+                [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
             )
         ].values[0]
 

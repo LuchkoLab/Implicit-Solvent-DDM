@@ -644,6 +644,21 @@ class EndStateMethod:
                 f"'{self.endstate_method_type}' is not a valid endstate method. "
                 f"Valid options are: {valid_options}"
             )
+
+    # Method -> state label. The endstate row's label is BOTH its post-analysis directory
+    # segment and its MBAR index key, so a bare "endstate" let a vanilla-MD parquet satisfy
+    # has_post_analysis_data() for a REMD run and the re-score was skipped.
+    _STATE_LABELS = {
+        "remd": "remd_endstate",
+        "basic_md": "vanillaMD_endstate",
+        0: "user_provided_endstate",
+    }
+
+    @property
+    def endstate_state_label(self) -> str:
+        """Label for the endstate row, naming the method that produced its trajectory."""
+        return self._STATE_LABELS[self.endstate_method_type]
+
     @classmethod
     def from_config(cls: Type["EndStateMethod"], obj: dict) -> "EndStateMethod":
         """

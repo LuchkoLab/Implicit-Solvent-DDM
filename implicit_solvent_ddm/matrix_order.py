@@ -12,6 +12,9 @@ class CycleSteps:
     orientational_forces: list[Union[int, float]]
     charges_windows: list[float]
     external_dielectic: list[float]
+    # Must match setup_simulations.apo_endstate_dirstruct's state_label: that value is the
+    # MBAR index key, so a mismatch makes every endstate .loc[] lookup raise KeyError.
+    endstate_label: str = "endstate"
     endstate: list[tuple[str, str, str, str]] = field(default_factory=list, init=False)
     no_gb: list[tuple[str, str, str, str]] = field(init=False)
     no_interactions: list[tuple[str, str, str, str]] = field(init=False)
@@ -28,7 +31,7 @@ class CycleSteps:
             float(force) for force in self.orientational_forces
         ]
 
-        self.endstate = [("endstate", "78.5", "1.0", "0.0")]
+        self.endstate = [(self.endstate_label, "78.5", "1.0", "0.0")]
 
         self.no_gb = [("no_gb", "0.0", "1.0", f"{max(self.conformation_forces)}")]
 
@@ -156,7 +159,7 @@ class CycleSteps:
             + self.complex_GB_exl_windows
             + self.complex_charges
             + self.remove_restraints
-            + [("endstate", "78.5", "1.0", "0.0_0.0")]
+            + [(self.endstate_label, "78.5", "1.0", "0.0_0.0")]
         )
 
     @property

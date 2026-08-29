@@ -205,6 +205,7 @@ class IntermidateRunner(Job):
             orientational_forces=self.config.intermediate_args.exponent_orientational_forces_list,
             charges_windows=self.config.intermediate_args.charges_lambda_window,
             external_dielectic=self.config.intermediate_args.gb_extdiel_windows,
+            endstate_label=self.config.endstate_method.endstate_state_label,
         )
         cycle_steps.round(3)
         order = {

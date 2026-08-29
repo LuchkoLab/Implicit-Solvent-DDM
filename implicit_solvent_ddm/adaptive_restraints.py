@@ -646,7 +646,8 @@ def compute_mbar(
                 states = order[matrix_order.halo_restraint_matrix:]
             else:
                 states = order[1 : matrix_order.apo_end_restraint_matrix + 1]
-            return [state for state in states if state[0] != "endstate"]
+            endstate_label = config.endstate_method.endstate_state_label
+            return [state for state in states if state[0] != endstate_label]
         if band_name == "dielectric":
             if system == "complex":
                 return order[
@@ -750,6 +751,7 @@ def run_compute_mbar(
         orientational_forces=config.intermediate_args.exponent_orientational_forces_list,
         charges_windows=config.intermediate_args.charges_lambda_window,
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
+        endstate_label=config.endstate_method.endstate_state_label,
     )
     cycle_steps.round(3)
     
@@ -816,6 +818,7 @@ def adaptive_lambda_windows(
         orientational_forces=updated_config.intermediate_args.exponent_orientational_forces_list,
         charges_windows=updated_config.intermediate_args.charges_lambda_window,
         external_dielectic=updated_config.intermediate_args.gb_extdiel_windows,
+        endstate_label=updated_config.endstate_method.endstate_state_label,
     )
     # round all restraint forces values to 3 sig. figs for readable dataframes.
     cycle_steps.round(3)
@@ -1398,6 +1401,7 @@ def _dielectric_band_ascending(runner, config, system_type, log=print):
         orientational_forces=config.intermediate_args.exponent_orientational_forces_list,
         charges_windows=config.intermediate_args.charges_lambda_window,
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
+        endstate_label=config.endstate_method.endstate_state_label,
     )
     cycle_steps.round(3)
     results = compute_mbar(
