@@ -144,6 +144,12 @@ class SystemSettings:
         GPU-free so it can run in a CPU-only allocation (allowing the GPUs to be
         released back to the scheduler during the analysis tail). Set to 1 only
         once MBAR is JAX/GPU-accelerated. Values > 1 are clamped to 1.
+    remd_executable : Optional[str]
+        AMBER executable for the REMD endstate legs only, when it must differ from
+        ``executable``. REMD needs an MPI build (``-ng``) and many AMBER installs ship
+        ``pmemd.cuda`` without ``pmemd.cuda.MPI``; set this to ``pmemd.MPI`` (with
+        ``remd_accelerators: 0``) to run the replica ladder on CPU while the alchemical
+        windows stay on GPU. Defaults to None, i.e. derive it from ``executable``.
     remd_accelerators : int
         Number of GPUs to request *per REMD job*. Unlike ``num_accelerators`` this is NOT
         clamped: one REMD job runs all ``ngroups`` replicas at once, so it legitimately needs
@@ -162,6 +168,7 @@ class SystemSettings:
     working_directory: str = WORKDIR
     cache_directory_output: str = WORKDIR
     executable: str = "sander"
+    remd_executable: Optional[str] = field(default=None)
     output_directory_name: str = "mdgb"
     CUDA: bool = field(default=False)
     num_accelerators: int = field(default=0)

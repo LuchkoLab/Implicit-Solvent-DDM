@@ -26,6 +26,20 @@ def run_remd(job, user_config: Config):
         job (_type_): _description_
         user_config (Config): _description_
     """
+    # REMD needs an MPI build; the windows may be running a serial pmemd.cuda.
+    remd_executable = (
+        user_config.system_settings.remd_executable
+        or user_config.system_settings.executable
+    )
+    remd_accelerators = user_config.system_settings.remd_accelerators
+    ngroups = user_config.endstate_method.remd_args.ngroups
+    if user_config.system_settings.CUDA and 0 < remd_accelerators < ngroups:
+        job.log(
+            f"[REMD] {ngroups} replicas share {remd_accelerators} GPU(s). AMBER binds one "
+            "device per MPI rank, so the extra ranks serialize unless the CUDA MPS daemon "
+            "(nvidia-cuda-mps-control -d) is running on the node."
+        )
+
     equil_mdins = job.addChildJobFn(
         generate_replica_mdin,
         user_config.endstate_method.remd_args.equil_template_mdin,
@@ -62,8 +76,8 @@ def run_remd(job, user_config: Config):
     # config.endstate_method.remd_args.nthreads
     equilibrate_complex = minimization_complex.addFollowOn(
         REMDSimulation(
-            executable=user_config.system_settings.executable,
-            accelerators=user_config.system_settings.remd_accelerators,
+            executable=remd_executable,
+            accelerators=remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -88,8 +102,8 @@ def run_remd(job, user_config: Config):
 
     remd_complex = equilibrate_complex.addFollowOn(
         REMDSimulation(
-            executable=user_config.system_settings.executable,
-            accelerators=user_config.system_settings.remd_accelerators,
+            executable=remd_executable,
+            accelerators=remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -149,13 +163,14 @@ def run_remd(job, user_config: Config):
     )
     # The ligand endstate runs on CPU. A 17-atom fragment never justifies a GPU, and
     # pmemd.cuda.MPI binds one device per MPI rank -- with one rank per replica that would tie up
-    # the whole node's GPUs on the cheapest leg. Test on ".MPI" rather than "pmemd.MPI": the latter
-    # is NOT a substring of "pmemd.cuda.MPI", so CUDA builds used to slip through and run on GPU.
+    # the whole node's GPUs on the cheapest leg. Decide on the CUDA flag, not on a ".MPI"
+    # substring: `executable: pmemd.cuda` (the serial name the windows use) contains neither
+    # "pmemd.MPI" nor ".MPI", so a substring test lets CUDA builds slip through onto the GPU.
     num_ligand_cores = int(user_config.endstate_method.remd_args.nthreads_ligand)
-    ligand_endstate_exe = user_config.system_settings.executable
-    if ".MPI" in ligand_endstate_exe:
+    ligand_endstate_exe = remd_executable
+    if user_config.system_settings.CUDA or ".MPI" in ligand_endstate_exe:
         ligand_endstate_exe = "sander.MPI"
-        if "cuda" not in user_config.system_settings.executable.lower():
+        if not user_config.system_settings.CUDA:
             # Legacy pmemd.MPI behaviour, preserved.
             num_ligand_cores = int(num_ligand_cores / 2)
     # AMBER multisander requires -n to be an exact multiple of -ng; otherwise it refuses to start.
@@ -251,8 +266,8 @@ def run_remd(job, user_config: Config):
 
         equilibrate_receptor = minimization_receptor.addFollowOn(
             REMDSimulation(
-                executable=user_config.system_settings.executable,
-                accelerators=user_config.system_settings.remd_accelerators,
+                executable=remd_executable,
+                accelerators=remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,
@@ -277,8 +292,8 @@ def run_remd(job, user_config: Config):
 
         remd_receptor = equilibrate_receptor.addFollowOn(
             REMDSimulation(
-                executable=user_config.system_settings.executable,
-                accelerators=user_config.system_settings.remd_accelerators,
+                executable=remd_executable,
+                accelerators=remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,

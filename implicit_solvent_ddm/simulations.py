@@ -22,6 +22,16 @@ import logging
 import time
 
 
+def serial_executable(executable: str) -> str:
+    """Single-replica AMBER binary: pmemd.cuda.MPI -> pmemd.cuda."""
+    return re.sub(r"\.MPI$", "", executable)
+
+
+def mpi_executable(executable: str) -> str:
+    """Multi-replica (-ng) AMBER binary: pmemd.cuda -> pmemd.cuda.MPI."""
+    return executable if executable.endswith(".MPI") else f"{executable}.MPI"
+
+
 class Calculation(Job):
     """Base calculation class. All other calculation classes should be inherited
     from this class.
@@ -294,6 +304,19 @@ class Calculation(Job):
         fileStore.logToMaster(f"amber_stdout: {amber_stdout}")
         fileStore.logToMaster(f"amber_stderr: {amber_stderr}")
 
+        # Stop here on a failed AMBER run. export_files() below just collects whatever
+        # landed in the working directory, so a dead simulation used to "succeed" with an
+        # empty restart list and the run only fell over in the follow-on job that consumed
+        # it (REMD's `KeyError: 'incrd'`), pointing at the wrong job.
+        if amber_output.returncode != 0:
+            raise RuntimeError(
+                f"AMBER exited {amber_output.returncode} running "
+                f"{self.directory_args.get('runtype', '?')} in {self.output_dir}\n"
+                f"  command: {' '.join(str(arg) for arg in self.exec_list)}\n"
+                f"  stderr: {amber_stderr.strip()[-2000:]}\n"
+                f"  stdout: {amber_stdout.strip()[-2000:]}"
+            )
+
         # Per-job timing record -> parsed by research/timing_report.py into a phase breakdown.
         # Phase is inferred from the output dir / runtype: the ALS pilot writes under a *_pilot tree
         # (-> "adaptive"), post-analysis jobs carry post_analysis=True (-> "post_analysis"), endstate
@@ -431,20 +454,24 @@ class Simulation(Calculation):
 
 
         if self.CUDA and self.system_type in ["complex", "receptor"]:
-            if self.mpi_command == None:
-                self.exec_list.pop(0)
-            self.exec_list.append(self.executable)
+            # One window, one GPU -> serial CUDA build, no MPI launcher. exec_list[0] is
+            # always the launcher, so drop it: keeping it gave `mpirun pmemd.cuda.MPI`
+            # with no -np, which is not a single-replica launch.
+            self.exec_list.pop(0)
+            self.exec_list.append(serial_executable(self.executable))
             # self.exec_list.append("--cuda")
             # self.exec_list.append("--gpu")
             # self.exec_list.append("--gpu_id")
             # self.exec_list.append("0")
             # self.exec_list.append("--gpu_mem")
 
-        
+
         elif self.num_cores == 1 or self.mpi_command == None:
+            # Serial CPU leg (the ligand endstate, by design): strip at the first dot so a
+            # CUDA build name becomes the plain CPU binary, pmemd.cuda.MPI -> pmemd.
             self.exec_list.pop(0)
             self.exec_list.append(re.sub(r"\..*", "", self.executable))
-        
+
         else:
             if self.mpi_command in ["mpiexec", "mpirun"]:
 
@@ -619,8 +646,35 @@ class REMDSimulation(Calculation):
         necessary command-line arguments
         """
 
-        self.exec_list.extend(("-n", str(self.num_cores)))
-        self.exec_list.append(self.executable)
+        if self.mpi_command is None:
+            raise RuntimeError(
+                "REMD runs every replica as an MPI rank, so it needs a launcher: set "
+                "hardware_parameters.mpi_command (mpirun / mpiexec / srun) in the config."
+            )
+
+        # Only multipmemd / multisander understand -ng, so spawn the MPI build even when
+        # the config names the serial binary its alchemical windows use.
+        executable = mpi_executable(self.executable)
+
+        # `-n` is the MPI RANK count, not the Toil `cores` reservation -- a GPU REMD
+        # reserves a fraction of a core the way the pmemd.cuda windows do. Snap to one
+        # rank per replica unless nthreads is a whole multiple of -ng, which AMBER
+        # requires to start at all.
+        ranks = int(self.nthreads) if float(self.nthreads).is_integer() else 0
+        if ranks < self.ng or ranks % self.ng != 0:
+            ranks = self.ng
+
+        if shutil.which(executable) is None:
+            raise RuntimeError(
+                f"REMD executable {executable!r} is not on PATH on this node. Load the "
+                "AMBER module that provides it (a CUDA REMD needs AMBER built with -cuda "
+                "AND -mpi), or point hardware_parameters.remd_executable at an MPI build "
+                "that exists -- e.g. pmemd.MPI / sander.MPI to run the replica ladder on "
+                "CPU while the alchemical windows stay on GPU."
+            )
+
+        self.exec_list.extend(("-n", str(ranks)))
+        self.exec_list.append(executable)
         self.exec_list.extend(("-ng", str(self.ng)))
         self.exec_list.extend(("-groupfile", self.read_files["groupfile"]))
 
@@ -672,6 +726,12 @@ class REMDSimulation(Calculation):
                     fileStore.logToMaster(f"count: {count}")
                     fileStore.logToMaster(f"single_coordinate: {single_coordinate}")
 
+                    if not single_coordinate:
+                        raise RuntimeError(
+                            f"REMD replica {count:03} has no equilibration restart among "
+                            f"{self.incrd}: the equilibration wrote fewer than -ng {self.ng} "
+                            "restarts. Check equilibrate.mdout.* in its output directory."
+                        )
                     read_coordinate = fileStore.readGlobalFile(
                         single_coordinate[0],
                         userPath=os.path.join(
@@ -710,7 +770,19 @@ class REMDSimulation(Calculation):
             userPath=os.path.join(tempDir, os.path.basename(self.restraint_file)),
         )
         # The case in running REMD possible many equilibration restart files
-        if len(self.incrd) == 1:
+        if not self.incrd:
+            raise RuntimeError(
+                f"No input coordinates for the {self.runtype} REMD job in "
+                f"{self.output_dir}: the upstream "
+                f"{'minimization' if self.runtype == 'equil' else 'equilibration'} "
+                "returned an empty restart list, meaning its AMBER run produced no "
+                "restart file. Read that job's mdout / simulations.log -- the fault is "
+                "there, not here."
+            )
+        # Equilibration starts every replica from the same minimized restart. Take the
+        # first rather than demanding len == 1, which left read_files['incrd'] unset and
+        # sent _groupfile() into `KeyError: 'incrd'`.
+        if self.runtype == "equil" or len(self.incrd) == 1:
             self.read_files["incrd"] = fileStore.readGlobalFile(
                 self.incrd[0],
                 userPath=os.path.join(tempDir, os.path.basename(self.incrd[0])),
