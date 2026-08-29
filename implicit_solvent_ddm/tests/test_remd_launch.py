@@ -178,11 +178,13 @@ def test_remd_names_the_missing_binary(monkeypatch):
         _remd()._setup()
 
 
-def test_remd_reports_an_empty_upstream_restart_list():
+def test_remd_reports_an_empty_upstream_restart_list(monkeypatch, tmp_path):
     """The old `len(incrd) == 1` guard turned this into `KeyError: 'incrd'` naming the wrong job."""
+    # Job.tempDir is a read-only property on Toil's Job, so it cannot be set per instance;
+    # shadow it on the subclass, which comes first in the MRO.
+    monkeypatch.setattr(REMDSimulation, "tempDir", str(tmp_path))
     job = _make(
         REMDSimulation,
-        tempDir="/tmp",
         prmtop="top.parm7",
         restraint_file="empty.restraint",
         input_file=["mdin.relax.001"],
