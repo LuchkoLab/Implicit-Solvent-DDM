@@ -10,7 +10,10 @@ hardware_parameters:
   memory: "2G"
   disk: "3G"
   output_directory_name: mdgb
-  export_intermediate_files: false  # production MD/post/parquet stay in the jobStore
+  # test_completed_workflow / test_complex_exclusions read mdout and parm7 from the output
+  # tree, and those only get there via fileStore.export_file, which this flag gates. With it
+  # off the windows all ran but wrote nothing but simulations.log, so the tests saw 0 mdouts.
+  export_intermediate_files: true
 
 endstate_parameter_files:
   complex_parameter_filename: implicit_solvent_ddm/tests/structs/cb7-mol01.parm7 # list of topology file of a complex
