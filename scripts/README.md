@@ -19,6 +19,7 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `gb_endpoint_probe.py` | Re-scores a whole GB ladder under both scoring salt concentrations plus the gas endpoint (the full N×N version of the above) | yes |
 | `gb_endpoint_analyze.py` | Builds two MBAR problems from `gb_endpoint_probe.py` output that differ only in scoring `saltcon`, and compares their overlap matrices | no |
 | `endstate_window_rmsd.py` | **Is the endstate in the same basin as the weakest restraint window?** — cross-RMSD between the endstate and a `lambda_window` trajectory, to tell a structural mismatch (which ALS cannot fix) from a stiffness gap (which it can) | yes |
+| `extract_remd_temperature.py` | **Pull the target-temperature trajectory out of a finished REMD leg** — cpptraj `remdtraj` over the `remd.nc.00*` replica set, one output per solute under a `remd/` tree, plus first/last-frame restarts. Also handles the `-rem 0` equilibration leg, where each replica is already a fixed rung and only the endpoints are written (standalone form of `simulations.ExtractTrajectories`) | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
 
 ---
