@@ -281,6 +281,36 @@ class ParameterFiles:
         """
         return cls(**obj)
 
+    def set_receptor_initial_coordinate(self) -> Optional[str]:
+        """
+        Extract frame 0 of the receptor endstate trajectory into a single-frame restart.
+
+        A reused receptor ensemble is multi-frame, which sander cannot parse as a ``-c``
+        inpcrd, so give the post-processing leg its own starting coordinate and leave
+        ``receptor_coordinate_filename`` free to stay the ``-y`` ensemble.
+
+        Returns
+        -------
+        str or None
+            Path to the restart, the existing value when one was set in the config file, or
+            None when there is no receptor pair to extract from.
+        """
+        if self.receptor_initial_coordinate is not None:
+            return self.receptor_initial_coordinate
+
+        if not (self.receptor_coordinate_filename and self.receptor_parameter_filename):
+            return None
+
+        traj = pt.iterload(
+            str(self.receptor_coordinate_filename),
+            str(self.receptor_parameter_filename),
+        )
+        basename = re.sub(r"\..*", "", Path(str(self.receptor_coordinate_filename)).name)
+        output_path = Path(self.tempdir.name) / f"{basename}_.ncrst"
+        pt.write_traj(str(output_path), traj, frame_indices=[0])
+        self.receptor_initial_coordinate = str(output_path.with_suffix(".ncrst.1"))
+        return self.receptor_initial_coordinate
+
     def get_inital_coordinate(self):
         """
         Extract and write the first frame from complex, receptor, and ligand trajectories
@@ -302,12 +332,10 @@ class ParameterFiles:
         self.complex_initial_coordinate = _write_initial_frame(complex_traj, base_complex)
 
 
-        # Receptor (optional)
-        if self.receptor_coordinate_filename and self.receptor_parameter_filename:
-            receptor_traj = pt.iterload(str(self.receptor_coordinate_filename), str(self.receptor_parameter_filename))
-            base_receptor = _get_basename(self.receptor_coordinate_filename)
-            self.receptor_initial_coordinate = _write_initial_frame(receptor_traj, base_receptor, "_")
-        
+        # Receptor (optional). Guarded so a path set in the config file survives.
+        self.set_receptor_initial_coordinate()
+
+
         # Ligand (optional)
         if self.ligand_coordinate_filename and self.ligand_parameter_filename:
             ligand_traj = pt.iterload(str(self.ligand_coordinate_filename), str(self.ligand_parameter_filename))
@@ -1035,12 +1063,20 @@ class Config:
     def __post_init__(self):
         self._config_sanity_check()
 
+        # A supplied receptor is reused as-is and may be a multi-frame ensemble; a generated
+        # one is already a single frame. Read before get_receptor_ligand_topologies() fills in
+        # the missing receptor and makes the two indistinguishable.
+        user_supplied_receptor = self.endstate_files.receptor_parameter_filename is not None
+
         # Decide on endstate procedure based on method type
         if self.endstate_method.endstate_method_type != 0:
             self.get_receptor_ligand_topologies()
         else:
             self.endstate_files.get_inital_coordinate()
             self.workflow.run_endstate_method = False
+
+        if user_supplied_receptor:
+            self.endstate_files.set_receptor_initial_coordinate()
 
         # Disable GB dielectric scaling if no windows were specified
         if not self.intermediate_args.gb_extdiel_windows:
@@ -1210,7 +1246,8 @@ class Config:
             self.endstate_files.ligand_coordinate_filename = str(ligand_prefix.with_suffix(".ncrst.1").resolve())
 
         # Ensure filenames are unique if needed
-        self.endstate_files._create_unique_fileID()
+        if not self.endstate_files.ignore_unique_naming:
+            self.endstate_files._create_unique_fileID()
 
 
 def workflow(job, config: Config):
