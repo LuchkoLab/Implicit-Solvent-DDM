@@ -32,30 +32,17 @@ def _args(conformational=None, **overrides):
         igb_solvent=2,
         mdin_intermediate_file=MDIN,
         temperature=298,
-        # The knob defaults OFF, so the resolution tests below have to switch it on explicitly.
-        long_restraint_window_ns=10.0,
     )
     kwargs.update(overrides)
     return IntermediateStateArgs(**kwargs)
 
 
-def test_default_is_off():
-    # Built to rescue the endstate seam, and measured NOT to: a 10 ns floor window still had zero
-    # shared support with the endstate, because the window is seeded holo and the endstate is apo.
-    args = IntermediateStateArgs(
-        exponent_conformational_forces=list(LADDER),
-        exponent_orientational_forces=[e + 4.0 for e in LADDER],
-        restraint_type=1,
-        igb_solvent=2,
-        mdin_intermediate_file=MDIN,
-        temperature=298,
-    )
-    assert args.long_restraint_window_ns is None
-    assert args.long_restraint_window_exponent is None
-
-
-def test_resolves_the_ladder_floor_when_enabled():
-    assert _args().long_restraint_window_exponent == -14.0
+def test_default_is_ten_ns_on_the_ladder_floor():
+    # On by default. It does not fix the seam alone, but alongside unrestrained_receptor_mask it
+    # took the endstate overlap from 0.0404 at 2 ns (exactly the threshold) to 0.0819 at 10 ns.
+    args = _args()
+    assert args.long_restraint_window_ns == 10.0
+    assert args.long_restraint_window_exponent == -14.0
 
 
 def test_picks_the_minimum_not_a_hardcoded_value():

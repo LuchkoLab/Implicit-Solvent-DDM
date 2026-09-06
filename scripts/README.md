@@ -374,12 +374,13 @@ python scripts/endstate_window_rmsd.py \
 
 ## `stride_extended_window.py` — extend a window's sampling without changing its frame count
 
-> For a **fresh** run, `intermediate_states_arguments.long_restraint_window_ns` does this natively,
-> at the same frame count. It defaults to **off**: a 10 ns floor window was measured NOT to rescue
-> the endstate seam — on `mcl1_remd_2ns_rep2` its restraint energy still had zero shared support
-> with the endstate (3.46 ± 0.69 vs 34.73 ± 4.87 kcal/mol, disjoint ranges), because the window is
-> seeded from a holo structure while the endstate is apo. See `remd_ensemble_clusters.py` and
-> `unrestrained_receptor_mask`. This script stays for extending a run that has already finished.
+> For a **fresh** run, `intermediate_states_arguments.long_restraint_window_ns` (default 10.0) does
+> this natively, at the same frame count. It does **not** rescue the endstate seam on its own —
+> under the full whole-receptor network a 10 ns floor window still had zero shared support with the
+> endstate, because the window is seeded from a holo structure while the endstate is apo. It pays
+> off alongside `unrestrained_receptor_mask`: with `':22-32'` freed, endstate overlap was 0.0404 at
+> 2 ns (exactly the 0.04 threshold) and 0.0819 at 10 ns. This script stays for extending a run that
+> has already finished.
 
 **Question.** `endstate_window_rmsd.py` (above) asks whether the endstate seam's bad overlap is a
 *structural* mismatch. This asks the other half: is it a **sampling-time** gap? The two sides of

@@ -759,9 +759,10 @@ class IntermediateStateArgs:
         ``None``, restrain everything). Applied to the receptor network shared by both the receptor
         and complex restraint files.
     long_restraint_window_ns : float, optional
-        MD length (ns) for the lowest conformational-restraint window only (default ``None``, off).
-        Never shortens, preserves the frame count, and leaves the Hamiltonian and the user's
-        timestep untouched. Does not fix the endstate seam; see ``unrestrained_receptor_mask``.
+        MD length (ns) for the lowest conformational-restraint window only (default 10.0; ``None``
+        disables). Never shortens, preserves the frame count, and leaves the Hamiltonian and the
+        user's timestep untouched. Only helps once ``unrestrained_receptor_mask`` frees the floppy
+        regions that carry the endstate seam.
     guest_restraint_template, receptor_restraint_template, complex_conformational_template, complex_orientational_template : str, optional
         Restraint template file paths.
     guest_restraint_files, receptor_restraint_files, complex_restraint_files : list of str/FileID
@@ -780,7 +781,7 @@ class IntermediateStateArgs:
     min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
     post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
 
-    long_restraint_window_ns: Optional[float] = None  # MD length for the LOWEST restraint window only. Frame count is preserved (ntwx/ntpr rescaled) so the per-leg frames x states matrix stays rectangular; never shortens. DEFAULT OFF: this was built to rescue the endstate seam, and it does NOT -- a 10 ns floor window on mcl1_remd_2ns_rep2 still had ZERO shared support with the endstate (restraint energy 3.46 +/- 0.69 vs 34.73 +/- 4.87 kcal/mol, ranges disjoint), because the window is SEEDED from a holo structure while the endstate is apo. That is a seeding and restraint-selection problem, not a run-length one -- see unrestrained_receptor_mask. Kept because lengthening one window at a fixed frame count is independently useful.
+    long_restraint_window_ns: Optional[float] = 10.0  # MD length for the LOWEST restraint window only. Frame count is preserved (ntwx/ntpr rescaled) so the per-leg frames x states matrix stays rectangular; never shortens. It does NOT fix the endstate seam on its own -- under the full whole-receptor network a 10 ns floor window still had zero shared support with the endstate. It pays off once unrestrained_receptor_mask frees the floppy regions: on mcl1_remd_2ns_rep2 with ':22-32' freed, endstate overlap was 0.0404 at 2 ns (exactly the 0.04 threshold) vs 0.0819 at 10 ns, and the window was still relaxing toward the endstate at 10 ns. On by default because that is ~7 GPU-min on one window against a CPU-bound post-analysis, on the one MBAR link carrying no redundancy. None -> off.
 
     # --- Conformational-restraint selection ---
     unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
