@@ -134,7 +134,60 @@ def overlap(window_e, endstate_e, kt, subsample, label):
     print(f"  samples (e/w)     : {n_e} / {n_w}")
     print(f"  MBAR dG(end->win) : {dg:8.3f} +/- {err:.3f} kcal/mol")
     print(f"  MBAR overlap      : {ov[0, 1]:8.4f}  (reverse {ov[1, 0]:.4f}, diag {ov[0, 0]:.4f})")
-    return ov[0, 1]
+    return {
+        "label": label.strip("= "),
+        "window": we,
+        "endstate": ee,
+        "gap": gap,
+        "overlap": ov[0, 1],
+        "dg": dg,
+        "n_restraints": window_e.shape[1],
+        "disjoint": ee.min() >= we.max(),
+    }
+
+
+def make_figure(conditions, kt, path):
+    """One panel per condition, shared x-axis so the endstate distribution's collapse is visible."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    win_c, end_c = "#D55E00", "#0072B2"
+    hi = max(c["endstate"].max() for c in conditions) * 1.05
+    fig, axes = plt.subplots(
+        len(conditions), 1, figsize=(9, 3.4 * len(conditions)), sharex=True, squeeze=False
+    )
+    for ax, c in zip(axes.ravel(), conditions):
+        bins = np.linspace(0, hi, 120)
+        ax.hist(c["window"], bins=bins, color=win_c, alpha=0.75, label="window (\u221214.0)")
+        ax.hist(c["endstate"], bins=bins, color=end_c, alpha=0.75, label="endstate (apo)")
+        verdict = "NO shared support" if c["disjoint"] else f"overlap {c['overlap']:.4f}"
+        ax.set_title(
+            f"{c['label']}  \u2014  {c['n_restraints']:,} restraints  \u2014  "
+            f"gap {c['gap']:.1f} kcal/mol ({c['gap'] / kt:.0f} kT)  \u2014  {verdict}",
+            fontsize=11,
+        )
+        ax.set_ylabel("frames")
+        ax.legend(frameon=False, fontsize=10)
+        void = c["endstate"].min() - c["window"].max()
+        # Only mark a void that is actually a void; a hairline gap draws a degenerate 0 kcal/mol arrow.
+        if c["disjoint"] and void > kt:
+            # the void is the whole point -- mark it rather than leaving the reader to measure it
+            ax.annotate(
+                "", xy=(c["window"].max(), ax.get_ylim()[1] * 0.55),
+                xytext=(c["endstate"].min(), ax.get_ylim()[1] * 0.55),
+                arrowprops=dict(arrowstyle="<->", color="0.3", lw=1.4),
+            )
+            ax.text(
+                (c["window"].max() + c["endstate"].min()) / 2, ax.get_ylim()[1] * 0.60,
+                f"{void:.0f} kcal/mol\nno samples",
+                ha="center", va="bottom", fontsize=10, color="0.3",
+            )
+    axes.ravel()[-1].set_xlabel(r"restraint energy $\Delta U$ (kcal/mol)")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    print(f"\nwrote {path}")
 
 
 def main():
@@ -149,7 +202,13 @@ def main():
     ap.add_argument("--stride", type=int, default=10)
     ap.add_argument("--temperature", type=float, default=298.0)
     ap.add_argument("--subsample", action="store_true", help="thin by statistical inefficiency")
+    ap.add_argument("--plot", default=None, help="write a before/after figure to this path")
+    ap.add_argument("--compare-restraint", default=None, help="second condition: DISANG file")
+    ap.add_argument("--compare-window-traj", default=None, help="second condition: window trajectory")
+    ap.add_argument("--compare-label", default="freed selection", help="panel title for the second condition")
     args = ap.parse_args()
+    if bool(args.compare_restraint) != bool(args.compare_window_traj):
+        sys.exit("--compare-restraint and --compare-window-traj must be given together")
 
     kt = KB * args.temperature
     pairs, r2, r3, rk = parse_restraints(args.restraint)
@@ -160,7 +219,18 @@ def main():
     we = restraint_energy(args.parm, args.window_traj, args.stride, pairs, r2, r3, rk, "window  ")
     ee = restraint_energy(args.parm, args.endstate_traj, args.stride, pairs, r2, r3, rk, "endstate")
 
-    base = overlap(we, ee, kt, args.subsample, "=== AS-IS (all restraints) ===")
+    conditions = [overlap(we, ee, kt, args.subsample, "=== AS-IS (all restraints) ===")]
+    base = conditions[0]["overlap"]
+
+    if args.compare_restraint:
+        # A genuinely separate run: different restraint file AND a window trajectory sampled under
+        # it. Not the same thing as --free, which only re-scores the frames you already have.
+        print(f"\n--- second condition: {args.compare_restraint} ---")
+        cpairs, cr2, cr3, crk = parse_restraints(args.compare_restraint)
+        print(f"restraints: {len(cpairs)}   rk = {crk[0]:.6g}")
+        cwe = restraint_energy(args.parm, args.compare_window_traj, args.stride, cpairs, cr2, cr3, crk, "window  ")
+        cee = restraint_energy(args.parm, args.endstate_traj, args.stride, cpairs, cr2, cr3, crk, "endstate")
+        conditions.append(overlap(cwe, cee, kt, args.subsample, f"=== {args.compare_label} ==="))
 
     if args.free:
         import MDAnalysis as mda
@@ -173,10 +243,15 @@ def main():
         keep = np.array([p[0] not in fset and p[1] not in fset for p in pairs])
         print(f"\nfreeing {args.free!r}: {freed.n_atoms} atoms, "
               f"dropping {(~keep).sum()} of {len(pairs)} restraints ({(~keep).sum() / len(pairs):.1%})")
-        filt = overlap(we[:, keep], ee[:, keep], kt, args.subsample, f"=== FREED {args.free!r} ===")
-        print(f"\noverlap {base:.4f} -> {filt:.4f}   (min_degree_overlap = 0.04)")
+        filt = overlap(we[:, keep], ee[:, keep], kt, args.subsample, f"=== FREED {args.free!r} (re-scored) ===")
+        conditions.append(filt)
+        print(f"\noverlap {base:.4f} -> {filt['overlap']:.4f}   (min_degree_overlap = 0.04)")
         print("This is a LOWER BOUND: the window frames are still trapped in the holo basin they")
-        print("were seeded from. Re-run the MD with the freed selection to measure the real value.")
+        print("were seeded from. Re-run the MD with the freed selection to measure the real value,")
+        print("then pass it as --compare-restraint/--compare-window-traj.")
+
+    if args.plot:
+        make_figure(conditions, kt, args.plot)
 
 
 if __name__ == "__main__":
