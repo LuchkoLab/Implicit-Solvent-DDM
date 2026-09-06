@@ -147,7 +147,7 @@ def overlap(window_e, endstate_e, kt, subsample, label):
 
 
 def make_figure(conditions, kt, path):
-    """One panel per condition, shared x-axis so the endstate distribution's collapse is visible."""
+    """One panel per condition, sharing bins and BOTH axes so the panels compare directly by eye."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -156,10 +156,13 @@ def make_figure(conditions, kt, path):
     win_c, end_c = "#D55E00", "#0072B2"
     hi = max(c["endstate"].max() for c in conditions) * 1.05
     fig, axes = plt.subplots(
-        len(conditions), 1, figsize=(9, 3.4 * len(conditions)), sharex=True, squeeze=False
+        len(conditions), 1, figsize=(9, 3.4 * len(conditions)),
+        sharex=True, sharey=True, squeeze=False,
     )
+    # Identical bins AND identical axes, or the two panels cannot be compared by eye -- which is
+    # the entire point of putting them on one figure.
+    bins = np.linspace(0, hi, 120)
     for ax, c in zip(axes.ravel(), conditions):
-        bins = np.linspace(0, hi, 120)
         ax.hist(c["window"], bins=bins, color=win_c, alpha=0.75, label="window (\u221214.0)")
         ax.hist(c["endstate"], bins=bins, color=end_c, alpha=0.75, label="endstate (apo)")
         verdict = "NO shared support" if c["disjoint"] else f"overlap {c['overlap']:.4f}"
