@@ -720,6 +720,8 @@ class IntermidateRunner(Job):
         restraint_file,
         gb_extdiel=None,
     ):
+        # ALS only inserts INTERIOR windows, never the ladder floor, so the long-window dispatch in
+        # SimulationSetup._restraint_window_mdin does not apply here.
         con_force = float(round(conformational, 3))
 
         dirs_args = {

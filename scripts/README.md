@@ -16,9 +16,14 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `block_mbar_sweep.py` | Block-chained MBAR accuracy vs **block size K** — how much ΔG moves when the cycle is solved as a chain of K-state blocks instead of one dense N² solve (K=2 is the BAR chain) | no |
 | `gb_ddG_bar.py` | ΔΔG between two GB models (OBC / OBC2 / GBn2) by re-scoring end-state trajectories under both | yes |
 | `gb_junction_overlap.py` | **GB-band ↔ gas junction overlap, with and without the scoring-`saltcon` fix** — re-scores the two trajectories straddling the junction and reports BAR ΔG + MBAR overlap both ways | yes |
+| `endstate_seam_overlap.py` | **endstate ↔ `lambda_window` seam overlap, each side under its OWN `restraint.RST`** — the restraint-carrying sibling of the above: 4 `sander imin=5` jobs (both ensembles × both Hamiltonians, `nmropt=1` both sides), then a 2-state MBAR giving ΔG and the min-direction overlap. Use this and **not** `gb_junction_overlap.py` at this seam, which writes `nmropt=0` and would return overlap ≈ 1. Validates both DISANG files before running | yes |
 | `gb_endpoint_probe.py` | Re-scores a whole GB ladder under both scoring salt concentrations plus the gas endpoint (the full N×N version of the above) | yes |
 | `gb_endpoint_analyze.py` | Builds two MBAR problems from `gb_endpoint_probe.py` output that differ only in scoring `saltcon`, and compares their overlap matrices | no |
 | `endstate_window_rmsd.py` | **Is the endstate in the same basin as the weakest restraint window?** — cross-RMSD between the endstate and a `lambda_window` trajectory, to tell a structural mismatch (which ALS cannot fix) from a stiffness gap (which it can) | yes |
+| `stride_extended_window.py` | **Glue an extended `lambda_window` run back into 10,000 frames** — strides the finished trajectory and concatenates the extension, so a 2 ns window re-run to 5 ns or 10 ns still hands post-analysis the frame count the rest of the cycle carries | yes |
+| `remd_ensemble_clusters.py` | **Do the complex and apo receptor REMD ensembles share basins?** — strips the ligand, clusters both ensembles together, and cross-tabulates cluster membership by origin. Answers whether a REMD floor window could cross the holo↔apo barrier, and emits apo seed frames for a multi-seeded window. On MCL-1: 14 clusters, **0 mixed** | yes |
+| `filter_restraints.py` | **Drop restraints touching a selection from a DISANG file** — writes the kept `&rst` blocks through verbatim, terminator included. Used to free a floppy region whose restraint energy dominates the endstate seam without bearing on binding | no |
+| `two_state_overlap.py` | **MBAR overlap between the endstate and one restraint window, with and without a freed selection** — no sander: the two states differ only by the conformational restraint, so the reduced potential difference *is* the restraint energy, computed straight from coordinates and the DISANG file | no |
 | `extract_remd_temperature.py` | **Pull the target-temperature trajectory out of a finished REMD leg** — cpptraj `remdtraj` over the `remd.nc.00*` replica set, one output per solute under a `remd/` tree, plus first/last-frame restarts. Also handles the `-rem 0` equilibration leg, where each replica is already a fixed rung and only the endpoints are written (standalone form of `simulations.ExtractTrajectories`) | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
 
@@ -364,6 +369,70 @@ python scripts/endstate_window_rmsd.py \
 
 `--window` picks a different exponent (compare against a healthy seam), `--stride` subsamples,
 `--dry-run` prints the cpptraj input without running it.
+
+---
+
+## `stride_extended_window.py` — extend a window's sampling without changing its frame count
+
+> For a **fresh** run, `intermediate_states_arguments.long_restraint_window_ns` does this natively,
+> at the same frame count. It defaults to **off**: a 10 ns floor window was measured NOT to rescue
+> the endstate seam — on `mcl1_remd_2ns_rep2` its restraint energy still had zero shared support
+> with the endstate (3.46 ± 0.69 vs 34.73 ± 4.87 kcal/mol, disjoint ranges), because the window is
+> seeded from a holo structure while the endstate is apo. See `remd_ensemble_clusters.py` and
+> `unrestrained_receptor_mask`. This script stays for extending a run that has already finished.
+
+**Question.** `endstate_window_rmsd.py` (above) asks whether the endstate seam's bad overlap is a
+*structural* mismatch. This asks the other half: is it a **sampling-time** gap? The two sides of
+that seam are sampled for wildly different lengths of time —
+
+| | simulated time | frames | spacing |
+|---|---|---|---|
+| receptor endstate (`remd/*_298.0K.nc`) | 20 ns/replica | 10,000 | 2 ps (one per exchange) |
+| window `lambda_window/.../-14.0` | 2 ns | 10,000 | 0.2 ps (`ntwx=50`, `dt=0.004`) |
+
+Same sample count, 10× less simulated time on the window side — and at the −14.0 rung
+*k* = 2⁻¹⁴ = 6.1e-5 kcal/mol/Å², so the restraint is effectively off and that window is a free
+receptor given 2 ns to relax, compared against an endstate given 20 ns.
+
+**Why the frame count is fixed at 10,000.** Post-analysis stores one rectangular frames × states
+matrix per leg (`*_formatted.h5`, `postTreatment.py:296`), so every state has to contribute the same
+number of rows; a window carrying 25,000 or 50,000 frames cannot be scored alongside the ladder. So
+the finished 2 ns is strided down and the extension is written at a coarser `ntwx`:
+
+| target | keep from the 2 ns | extension | merged |
+|---|---|---|---|
+| 5 ns | every 2nd → 5,000 @ 0.4 ps | 3 ns, `nstlim=750000 ntwx=150` → 5,000 @ 0.6 ps | 10,000, 1.5× density step at the seam |
+| 10 ns | every 5th → 2,000 @ 1.0 ps | 8 ns, `nstlim=2000000 ntwx=250` → 8,000 @ 1.0 ps | 10,000 on one uniform 1.0 ps grid |
+
+The 5 ns case cannot be uniform: that would need 0.5 ps spacing, i.e. every 2.5th old frame. Both
+segments are equilibrium samples of the same ensemble, so the density step does not bias the
+ensemble average — it only makes the concatenated series non-uniform in time, which affects pymbar's
+statistical-inefficiency estimate and not the free energy.
+
+The stride is **derived from what `extend.mdin` says**, not hardcoded, so editing the extension's
+`nstlim`/`ntwx` keeps the arithmetic correct (and the script refuses splits that need a fractional
+stride).
+
+```bash
+module load amber
+W=<run>/MCL-1_receptor-...-IRN_IRN/lambda_window/1.0/78.5/-14.0
+
+# 1. run each extension from inside its own directory — DISANG is ../restraint.RST
+cd $W/5ns && pmemd.cuda -O -i extend.mdin -p ../*.parm7 -c ../*_prod_restrt.rst7 \
+                        -r ext_restrt.rst7 -x ext_traj.nc -o mdout
+
+# 2. build the 10,000-frame trajectories
+python scripts/stride_extended_window.py "$W" --target-ns 5 10
+```
+
+Writes `<base>_prod_traj.nc` into each `<N>ns/` directory and verifies the frame count, failing with
+a pointer at the extension's `mdout` if it came up short. The output directory is left looking like
+a window directory so `endstate_window_rmsd.py`, `gb_junction_overlap.py` and the scoring machinery
+find the files where they expect them. `--dry-run` prints the plan and the cpptraj input only.
+
+The `extend.mdin` files are the window's own mdin with `ntx=5`/`irest=1` (continue from the saved
+velocities) and the new `nstlim`/`ntwx`/`ntpr`; `igb`, `saltcon`, `extdiel`, `dt`, SHAKE and the
+`nmropt`/DISANG restraint block are untouched, and `ig=-1` keeps a fresh Langevin seed.
 
 ---
 

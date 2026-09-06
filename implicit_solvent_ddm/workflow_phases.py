@@ -12,7 +12,12 @@ import numpy as np
 from toil.job import JobFunctionWrappingJob
 
 from implicit_solvent_ddm.config import Config
-from implicit_solvent_ddm.mdin import get_mdins, generate_extdiel_mdin, get_pilot_mdin
+from implicit_solvent_ddm.mdin import (
+    get_mdins,
+    generate_extdiel_mdin,
+    get_pilot_mdin,
+    get_long_window_mdin,
+)
 from implicit_solvent_ddm.restraints import (
     BoreschRestraints,
     FlatBottom,
@@ -80,7 +85,19 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
     config.inputs["post_mdin"] = mdins.rv(MDIN_TYPES['post'])
     config.inputs["post_nosolv_mdin"] = mdins.rv(MDIN_TYPES['post_nosolv'])
     config.inputs["post_saltfree_mdin"] = mdins.rv(MDIN_TYPES['post_saltfree'])
-    
+
+    # Stretched mdin for the lowest restraint window (setup_simulations._restraint_window_mdin).
+    # Gated so a config with the knob off adds no job and no inputs key.
+    if config.intermediate_args.long_restraint_window_exponent is not None:
+        long_mdin = mdins.addChildJobFn(
+            get_long_window_mdin,
+            config.intermediate_args.mdin_intermediate_file,
+            config.intermediate_args.long_restraint_window_ns,
+        )
+        config.inputs["long_window_mdin"] = long_mdin.rv(0)
+        config.inputs["long_window_nstlim"] = long_mdin.rv(1)
+        config.inputs["long_window_ntwx"] = long_mdin.rv(2)
+
     # Create empty restraint file
     empty_restraint = mdins.addChildJobFn(write_empty_restraint)
     config.inputs["empty_restraint"] = empty_restraint.rv()
@@ -806,6 +823,8 @@ def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Con
     # default_mdin leaves the gas-phase states running at full production length.
     pilot_config.inputs["default_mdin"] = pilot_config.inputs["pilot_mdin"]
     pilot_config.inputs["no_solvent_mdin"] = pilot_config.inputs["pilot_no_solvent_mdin"]
+    # A pilot must be uniformly short; the als_pilot marker below already covers this.
+    pilot_config.inputs.pop("long_window_mdin", None)
     # The ALS restraint overlap is a banded MBAR over the restraint windows + their max-restraint
     # anchor only (adaptive_lambda_windows -> compute_mbar(restraint_band=True)); the endstate is not in
     # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate

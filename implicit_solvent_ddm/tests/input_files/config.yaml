@@ -39,6 +39,7 @@ workflow:
   
   intermediate_states_arguments:
     mdin_intermediate_file: implicit_solvent_ddm/tests/input_files/intermediate.mdin #intermidate mdins required states 3-8
+    long_restraint_window_ns: null # this ladder is 0.2 ps per window; a 10 ns floor window would never finish
     igb_solvent: 2 #igb [1,2,3,7,8]
     exponent_conformational_forces: [-8.0, -2.0, 4.0] # list exponent values 2**p 
     exponent_orientational_forces: [-4.0, 2.0, 8.0] # list exponent values 2**p 

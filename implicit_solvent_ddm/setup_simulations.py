@@ -11,6 +11,11 @@ from implicit_solvent_ddm.simulations import Simulation
 from toil.common import FileID
 from toil.job import Promise
 
+# Legs whose lowest restraint window runs intermediate_args.long_restraint_window_ns. Receptor only:
+# its endstate<->floor link is the one measured to collapse at short run length; the complex leg's
+# equivalent junction has never been measured.
+LONG_WINDOW_LEGS = ("receptor",)
+
 
 @dataclass
 class SimulationSetup:
@@ -25,6 +30,7 @@ class SimulationSetup:
     num_cores: float = field(init=False)
     max_conformational_exponent: float = field(init=False)
     max_orientational_exponent: float = field(init=False)
+    long_window_exponent: Optional[float] = field(init=False, default=None)
 
     def __post_init__(self):
         """
@@ -41,6 +47,11 @@ class SimulationSetup:
         self.max_orientational_exponent = round(
             max(self.config.intermediate_args.exponent_orientational_forces), 3
         )
+
+        if self.system_type in LONG_WINDOW_LEGS:
+            self.long_window_exponent = (
+                self.config.intermediate_args.long_restraint_window_exponent
+            )
 
         # Default values
         dirstruct_map = {
@@ -350,6 +361,33 @@ class SimulationSetup:
             )
         )
 
+    def _restraint_window_mdin(self, exponent_conformational: float) -> FileID:
+        """``default_mdin``, or the stretched mdin for this leg's lowest restraint window.
+
+        The ``als_pilot`` guard mirrors the GB-dielectric band's: ``adaptive_restraint_pilot`` swaps
+        ``default_mdin`` for the 50 ps ``pilot_mdin``, and a pilot must stay uniformly short. Missing
+        key falls back to ``default_mdin``, so a config predating this feature resumes unchanged.
+
+        Parameters
+        ----------
+        exponent_conformational: float
+            The window's conformational restraint exponent (log2 of the force constant).
+
+        Returns
+        -------
+        FileID
+            The mdin this window's MD should run.
+        """
+        long_mdin = self.config.inputs.get("long_window_mdin")
+        if (
+            long_mdin is not None
+            and self.long_window_exponent is not None
+            and not self.config.inputs.get("als_pilot")
+            and round(float(exponent_conformational), 3) == self.long_window_exponent
+        ):
+            return long_mdin
+        return self.config.inputs["default_mdin"]
+
     def setup_apply_restraint_windows(
         self,
         restraint_key: str,
@@ -396,7 +434,7 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=self.topology,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["default_mdin"],
+                input_file=self._restraint_window_mdin(exponent_conformational),
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,

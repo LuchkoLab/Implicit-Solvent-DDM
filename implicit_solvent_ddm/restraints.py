@@ -1091,6 +1091,7 @@ class RestraintMaker(Job):
             self.complex_binding_mode,
             self.config.amber_masks.receptor_mask,
             self.config.amber_masks.ligand_mask,
+            self.config.intermediate_args.unrestrained_receptor_mask,
         )
         self.conformational_restraints = conformational_restraints
 
@@ -1249,7 +1250,12 @@ class RestraintMaker(Job):
 
 
 def get_conformational_restraints(
-    job, complex_prmtop, complex_coordinate, receptor_mask, ligand_mask
+    job,
+    complex_prmtop,
+    complex_coordinate,
+    receptor_mask,
+    ligand_mask,
+    unrestrained_receptor_mask=None,
 ):
     """
      Purpose to create a series of conformational restraint template files.
@@ -1290,6 +1296,25 @@ def get_conformational_restraints(
 
     receptor_atom_neighbor_index = create_atom_neighbor_array(receptor.xyz[0])
     ligand_atom_neighbor_index = create_atom_neighbor_array(ligand.xyz[0])
+
+    if unrestrained_receptor_mask:
+        # create_atom_neighbor_array emits 1-based indices into the RECEPTOR topology, the same
+        # numbering the iat records carry, so the mask is selected against `receptor` not the complex.
+        freed = set((receptor.top.select(unrestrained_receptor_mask) + 1).tolist())
+        if not freed:
+            raise ValueError(
+                f"unrestrained_receptor_mask {unrestrained_receptor_mask!r} selected no receptor atoms"
+            )
+        before = len(receptor_atom_neighbor_index)
+        receptor_atom_neighbor_index = [
+            pair
+            for pair in receptor_atom_neighbor_index
+            if pair[0] not in freed and pair[1] not in freed
+        ]
+        job.fileStore.logToMaster(
+            f"unrestrained_receptor_mask {unrestrained_receptor_mask}: freed {len(freed)} atoms, "
+            f"dropped {before - len(receptor_atom_neighbor_index)} of {before} receptor restraints"
+        )
 
     ligand_template = conformational_restraints_template(ligand_atom_neighbor_index)
     receptor_template = conformational_restraints_template(receptor_atom_neighbor_index)

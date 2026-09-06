@@ -138,10 +138,52 @@ def test_ntxo_survives_the_ntx_rewrite(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("name", ["_mdin", "post_mdin"])
 def test_overrides_none_leaves_template_values(tmp_path, monkeypatch, name):
-    """Flag-off regression: no nstlim/ntwx/saltcon/score_igb override touches those lines."""
+    """Flag-off regression: no nstlim/ntwx/ntpr/saltcon/score_igb override touches those lines."""
     post = name == "post_mdin"
     out = build(tmp_path, monkeypatch, name, post_process=post)
     assert re.search(r"nstlim\s*=\s*100\b", out)
     assert re.search(r"ntwx\s*=\s*10\b", out)
+    assert re.search(r"ntpr\s*=\s*10\b", out)
     assert re.search(r"saltcon\s*=\s*0\.3", out)
     assert re.search(r"igb\s*=\s*2", out)
+
+
+# --------------------------------------------------------------------------------------------------
+# Long low-restraint window: length only, Hamiltonian and timestep untouched
+# --------------------------------------------------------------------------------------------------
+def test_ntpr_override_rewrites_the_print_interval(tmp_path, monkeypatch):
+    out = build(
+        tmp_path, monkeypatch, "long_window_mdin", nstlim=2500000, ntwx=250, ntpr=250
+    )
+    assert re.search(r"nstlim\s*=\s*2500000\b", out)
+    assert re.search(r"ntwx\s*=\s*250\b", out)
+    assert re.search(r"ntpr\s*=\s*250\b", out)
+    # the Hamiltonian is untouched
+    assert re.search(r"igb\s*=\s*2", out)
+    assert re.search(r"saltcon\s*=\s*0\.3", out)
+    assert "$restraint" in out
+
+
+def test_timestep_is_never_rewritten(tmp_path, monkeypatch):
+    """The user's dt is read to convert ns -> steps, never written."""
+    default = build(tmp_path, monkeypatch, "_mdin")
+    long_mdin = build(
+        tmp_path, monkeypatch, "long_window_mdin", nstlim=2500000, ntwx=250, ntpr=250
+    )
+    dt_of = lambda text: [l for l in text.splitlines() if re.search(r"\bdt\s*=", l)]
+    assert dt_of(long_mdin) == dt_of(default) != []
+
+
+def test_long_window_mdin_differs_from_default_only_in_the_length_lines(tmp_path, monkeypatch):
+    """Lengthening a window must not perturb anything the free energy depends on."""
+    default = build(tmp_path, monkeypatch, "_mdin").splitlines()
+    long_mdin = build(
+        tmp_path, monkeypatch, "long_window_mdin", nstlim=2500000, ntwx=250, ntpr=250
+    ).splitlines()
+
+    assert len(long_mdin) == len(default)
+    differing = [(a, b) for a, b in zip(default, long_mdin) if a != b]
+    assert len(differing) == 3
+    assert {"nstlim", "ntwx", "ntpr"} == {
+        re.search(r"\b(nstlim|ntwx|ntpr)\b", new).group(1) for _, new in differing
+    }
