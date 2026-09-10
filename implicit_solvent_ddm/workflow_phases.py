@@ -627,6 +627,12 @@ def run_intermediate_and_post(
             seen.add(sim.output_dir)
             sim.export_network = export
 
+            if config.workflow.md_only:
+                # Phases 5+6 are fused, so not creating the post row is the only way to run MD alone.
+                if _needs_md(sim, is_flat_bottom, config):
+                    job.addChild(sim)
+                continue
+
             if _needs_md(sim, is_flat_bottom, config):
                 md = job.addChild(sim)  # MD window enters the FIFO queue in system order
                 post_runner = _post_row_runner(

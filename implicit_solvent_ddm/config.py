@@ -54,6 +54,7 @@ class Workflow:
     run_post_analysis: bool = True
     plot_overlap_matrix: bool = False 
     post_analysis_only: bool = False
+    md_only: bool = False  # Run intermediate MD only -- no imin=5 scoring, no MBAR. Resume with it off against the same output_directory_name to score without re-running MD. Needs ignore_unique_naming: True.
     adaptive_lambda: bool = False  # ALS: run the adaptive restraint-window pilot before production (default off = static schedule)
     vina_dock: bool = False
     restart: bool = False

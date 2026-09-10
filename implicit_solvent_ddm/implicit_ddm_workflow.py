@@ -170,6 +170,15 @@ def ddm_workflow(
         message="✓ Phases 5-6 Complete: Intermediate MD + energy post-processing finished"
     )
 
+    if config.workflow.md_only:
+        # No post rows were created, so there is nothing to aggregate or solve.
+        merged_jobs.addFollowOnJobFn(
+            initilized_jobs,
+            message="✓ md_only: MD complete. Re-run with md_only off and the same "
+                    "output_directory_name to score the trajectories."
+        )
+        return merged_jobs
+
     # Aggregate: flatten each system's per-window post rows into one .post_output bundle. Wired as a
     # FOLLOW-ON of the merged dispatcher, so it waits for the dispatcher's entire MD+post subtree
     # (every post_runner.rv() in merged_jobs.rv(0..3) is resolved before it runs).
