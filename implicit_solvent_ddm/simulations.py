@@ -245,8 +245,19 @@ class Calculation(Job):
 
         self.logger.info(f"exec_list: {self.exec_list}")
 
+        # Inherit the LIVE worker environment rather than the snapshot captured
+        # in ``self.env`` at construction time. Toil's accelerator scheduler sets
+        # CUDA_VISIBLE_DEVICES on the worker right before this job runs to pin it
+        # to its assigned GPU; self.env predates that and would mask the pin,
+        # sending every window to the default device (GPU 0).
+        run_env = os.environ.copy()
+        if self.CUDA:
+            fileStore.logToMaster(
+                f"[GPU] {getattr(self, 'system_type', '?')} window pinned to "
+                f"CUDA_VISIBLE_DEVICES={run_env.get('CUDA_VISIBLE_DEVICES')!r}"
+            )
         # amber_output = sp.Popen(self.exec_list, stdout=sp.PIPE, stderr=sp.PIPE)
-        amber_output = sp.run(self.exec_list, stdout=sp.PIPE, stderr=sp.PIPE, env=self.env)
+        amber_output = sp.run(self.exec_list, stdout=sp.PIPE, stderr=sp.PIPE, env=run_env)
 
         amber_stdout = amber_output.stdout.decode("utf-8")
         amber_stderr = amber_output.stderr.decode("utf-8")

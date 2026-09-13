@@ -16,16 +16,12 @@ from implicit_solvent_ddm.postTreatment import create_mdout_dataframe
 from implicit_solvent_ddm.restraints import RestraintMaker
 from implicit_solvent_ddm.simulations import Simulation
 from itertools import islice
-from numba import cuda
 
 
 def chunked(iterable, size):
     """Yield successive chunks from iterable of given size."""
     it = iter(iterable)
     return iter(lambda: list(islice(it, size)), [])
-
-def get_gpu_count():
-    return len(cuda.gpus)
 
 
 class IntermidateRunner(Job):
@@ -185,10 +181,9 @@ class IntermidateRunner(Job):
         fileStore.logToMaster(f"IntermidateRunner: Running a total of {len(self.simulations)} simulations")
         fileStore.logToMaster(f"post only is {self.post_only}")
 
-        gpu_jobs = []
-        cpu_jobs = []
+        md_jobs = []
 
-        # Separate GPU and non-GPU simulations
+        # Collect simulations that still need to run
         for simulation in self.simulations:
             if simulation.directory_args.get("state_label") == "no_flat_bottom":
                 continue
@@ -218,46 +213,24 @@ class IntermidateRunner(Job):
                     fileStore.logToMaster(f"[SKIP] MD already complete for: {simulation.output_dir}")
                     continue
                 fileStore.logToMaster(f"Running MD for: {simulation.output_dir}")
-                
-                # Separate GPU and CPU jobs
-                if simulation.CUDA:
-                    gpu_jobs.append(simulation)
-                else:
-                    cpu_jobs.append(simulation)
+                md_jobs.append(simulation)
 
-        # Distribute GPU jobs across available devices
-        if gpu_jobs:
-            num_gpus = get_gpu_count()
-            fileStore.logToMaster(f"Detected {num_gpus} GPUs")
-            fileStore.logToMaster(f"Total GPU jobs: {len(gpu_jobs)}")
-
-            # Group jobs by GPU ID for sequential execution per GPU
-            gpu_batches = {}
-            for i, sim in enumerate(gpu_jobs):
-                gpu_id = i % num_gpus
-                sim.env = os.environ.copy()
-                sim.env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-                
-                if gpu_id not in gpu_batches:
-                    gpu_batches[gpu_id] = []
-                gpu_batches[gpu_id].append(sim)
-
-            # Start one job per GPU, then chain the rest sequentially per GPU
-            for gpu_id, jobs in gpu_batches.items():
-                if jobs:
-                    fileStore.logToMaster(f"GPU {gpu_id}: {len(jobs)} jobs")
-                    
-                    # Start first job in this GPU batch
-                    current_job = jobs[0]
-                    self.addChild(current_job)
-                    
-                    # Chain remaining jobs for this GPU (sequential execution)
-                    for next_job in jobs[1:]:
-                        current_job.addFollowOn(next_job)
-                        current_job = next_job
-
-        # Submit CPU-only jobs in parallel
-        for sim in cpu_jobs:
+        # Submit all MD jobs as children and let Toil schedule them.
+        #
+        # GPU simulations already declare ``accelerators=1`` (set in
+        # setup_simulations.py for complex/receptor systems), so Toil's
+        # accelerator-aware scheduler runs at most one GPU job per available GPU
+        # and pins each job to a distinct device through CUDA_VISIBLE_DEVICES.
+        #
+        # We deliberately do NOT assign CUDA_VISIBLE_DEVICES or chain jobs per-GPU
+        # by hand: run() executes once per system (complex, receptor, ligand,
+        # flat-bottom) and those runners execute CONCURRENTLY, so a per-runner
+        # round-robin (`gpu_id = i % num_gpus`) restarts at GPU 0 every time and
+        # double-books device 0 — the bottleneck this replaces. Delegating to
+        # Toil coordinates GPU usage globally across every runner.
+        if md_jobs:
+            fileStore.logToMaster(f"Submitting {len(md_jobs)} MD job(s) to the Toil scheduler")
+        for sim in md_jobs:
             self.addChild(sim)
 
         return self

@@ -174,6 +174,100 @@ def ddm_workflow(
     return free_energy_difference_jobs
 
 
+def _confine_single_machine_to_allocated_gpus(options):
+    """Place one GPU MD window per Slurm-allocated GPU under Toil's single_machine batch system.
+
+    When this workflow runs ``single_machine`` inside one Slurm allocation
+    (``--gres=gpu:N``), three behaviours in Toil 8.2.0 (still present in 9.5.0,
+    verified against the installed source) break GPU isolation, so every
+    ``pmemd.cuda`` window lands on the first GPU while the others idle:
+
+      1. ``toil/worker.py`` restores the leader's pickled ``os.environ`` onto each
+         worker and ``CUDA_VISIBLE_DEVICES`` is not in its ``env_reject`` set, so
+         the allocation-wide value the leader inherited from Slurm (e.g. ``"0,1"``)
+         overwrites the per-job pin the batch system set on the worker -- Amber
+         then defaults to device 0 for every window.
+      2. ``toil.lib.accelerators.get_individual_local_accelerators`` counts *all*
+         physical GPUs via ``nvidia-smi`` (ignores the allocation), so Toil would
+         place windows on GPUs we were never granted.
+      3. ``get_restrictive_environment_for_local_accelerators`` writes the bare
+         acquired slot index rather than the real allocated GPU id.
+
+    We correct all three at the leader, before the batch system is built, so Toil
+    keeps global ownership of GPU assignment.  (A per-runner round-robin would
+    double-book GPU 0 across concurrently-running runners -- see runner.py.)
+    """
+    if getattr(options, "batchSystem", None) not in (None, "single_machine"):
+        # Other batch systems (e.g. slurm) submit each job separately and let the
+        # scheduler pin GPUs per sub-job; this single-allocation fix-up is moot.
+        return
+
+    # Physical GPU ordinals for this allocation. Under Slurm, SLURM_STEP/JOB_GPUS
+    # are physical ordinals; if only a preset CUDA_VISIBLE_DEVICES is present we
+    # treat its entries as physical ordinals too (correct for Slurm allocations).
+    allocation = (
+        os.environ.get("SLURM_STEP_GPUS")
+        or os.environ.get("SLURM_JOB_GPUS")
+        or os.environ.get("CUDA_VISIBLE_DEVICES")
+        or ""
+    )
+    allocated_gpus = [part for part in allocation.split(",") if part.strip().isdigit()]
+    if not allocated_gpus:
+        # No GPU allocation visible (CPU-only run); leave Toil's defaults alone.
+        return
+
+    import toil.batchSystems.singleMachine as single_machine
+
+    # (1) Keep the allocation-wide pin out of environment.pickle so it cannot
+    #     clobber each worker's per-job CUDA_VISIBLE_DEVICES.
+    for _var in (
+        "CUDA_VISIBLE_DEVICES",
+        "SINGULARITYENV_CUDA_VISIBLE_DEVICES",
+        "GPU_DEVICE_ORDINAL",
+    ):
+        os.environ.pop(_var, None)
+
+    # (2) Advertise only the allocated GPUs so Toil runs one GPU window per GPU.
+    def _allocated_accelerators():
+        return [
+            {"kind": "gpu", "brand": "nvidia", "api": "cuda", "count": 1}
+            for _ in allocated_gpus
+        ]
+
+    # (3) Translate Toil's acquired slot back to the real allocated GPU id.
+    #     Safe because Toil's accelerator slot space is range(len(allocated_gpus))
+    #     -- it acquires from the same list advertised in _allocated_accelerators.
+    def _restrictive_environment(acquired):
+        try:
+            gpu_list = ",".join(allocated_gpus[i] for i in sorted(acquired))
+        except (IndexError, TypeError):
+            # Unreachable under the invariant above; warn loudly rather than
+            # silently emitting raw indices (which would re-introduce the GPU-0
+            # double-booking this patch exists to fix).
+            logger.warning(
+                "[GPU] unexpected accelerator slots %r for allocation %r; "
+                "using raw indices",
+                acquired,
+                allocated_gpus,
+            )
+            gpu_list = ",".join(str(i) for i in acquired)
+        return {
+            "CUDA_VISIBLE_DEVICES": gpu_list,
+            "SINGULARITYENV_CUDA_VISIBLE_DEVICES": gpu_list,
+        }
+
+    single_machine.get_individual_local_accelerators = _allocated_accelerators
+    single_machine.get_restrictive_environment_for_local_accelerators = (
+        _restrictive_environment
+    )
+
+    logger.info(
+        "[GPU] Toil single_machine confined to %d allocated GPU(s): %s",
+        len(allocated_gpus),
+        ",".join(allocated_gpus),
+    )
+
+
 def main():
     parser = Job.Runner.getDefaultArgumentParser()
     parser.add_argument(
@@ -228,6 +322,9 @@ def main():
     ).touch()
 
     options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
+    # Pin one GPU window per Slurm-allocated GPU and stop the leader environment
+    # from clobbering each worker's per-job GPU assignment (Toil single_machine).
+    _confine_single_machine_to_allocated_gpus(options)
     # setup toil workflow
     with Toil(options) as toil:
         config.workflow.ignore_receptor_endstate = ignore_receptor

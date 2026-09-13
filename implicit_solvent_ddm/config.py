@@ -2,6 +2,7 @@
 Dataclass to make life a little easier, which defines config properties, sub-properties, and types in a config.py file.
 Using a dataclass rather a dictionary ensures all key values pairs are read in (YAML config) before initiating the workflow.
 """
+import logging
 import os
 import random
 import re
@@ -20,6 +21,8 @@ from toil.common import FileID, Toil
 from toil.job import Job
 
 WORKDIR = os.getcwd()
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -127,7 +130,12 @@ class SystemSettings:
     CUDA : bool
         If True, run using GPU resources.
     num_accelerators : int
-        Number of GPUs requested. If 0 and CUDA is True, auto-detects available GPUs.
+        Number of GPUs to request *per simulation job* (per alchemical window) —
+        NOT the size of the GPU pool. This should be 1: AMBER's pmemd.cuda runs a
+        single simulation on a single GPU, and Toil schedules at most one such job
+        per available GPU, giving one window per GPU. The total number of GPUs is
+        auto-detected by Toil's batch system and is not set here. Defaults to 1
+        when CUDA is True and this is left at 0; values > 1 are clamped to 1.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -149,7 +157,20 @@ class SystemSettings:
         self.working_directory = os.path.abspath(self.working_directory)
         self.cache_directory_output = os.path.abspath(self.cache_directory_output)
         if self.CUDA and self.num_accelerators == 0:
-            # Set default to 1 GPU per job for better distribution
+            # Request one GPU per simulation job; Toil pins each window to a
+            # distinct device and auto-detects how many GPUs are available.
+            self.num_accelerators = 1
+        elif self.CUDA and self.num_accelerators > 1:
+            # num_accelerators is a PER-JOB request, not the GPU pool size.
+            # Reserving several GPUs for a single window re-introduces the
+            # oversubscription bottleneck (pmemd.cuda uses one GPU per
+            # simulation), so clamp it to one device per window.
+            logger.warning(
+                "system_settings.num_accelerators=%d requests that many GPUs per "
+                "alchemical window, but pmemd.cuda uses one GPU per simulation. "
+                "Clamping to 1; Toil auto-detects the total number of GPUs.",
+                self.num_accelerators,
+            )
             self.num_accelerators = 1
 
     @property

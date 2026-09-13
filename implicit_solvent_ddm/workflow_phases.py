@@ -612,35 +612,34 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
     # intermediate_jobs returns: [complex_post_analysis, receptor_post_analysis, ligand_post_analysis, flat_bottom_exp, restraints]
     
     
-    num_accelerators = config.system_settings.num_accelerators
     if config.workflow.run_post_analysis:
         # perform exponntial averaging -> flat bottom restraint contribution
         flat_bottom_exp = job.addChildJobFn(
             run_exponential_averaging,
             flat_bottom_analysis,  # flat bottom post-analysis results
             config.intermediate_args.temperature,
-            accelerators=num_accelerators,
+            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
         )
         complex_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_complex_analysis,  # complex post-analysis results
             config,
             "complex",
-            accelerators=num_accelerators,
+            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
         )
         ligand_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_ligand_analysis,  # ligand post-analysis results
             config,
             "ligand",
-            accelerators=num_accelerators,
+            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
         )
         receptor_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_receptor_analysis,  # receptor post-analysis results
             config,
             "receptor",
-            accelerators=num_accelerators,
+            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
         )
         
         # Consolidate output data if enabled
