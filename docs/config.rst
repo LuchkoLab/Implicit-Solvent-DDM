@@ -216,8 +216,29 @@ Intermidate arugments
             restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
             charges_lambda_window:  [0.5, 1.0]  # 50% 100%
             gb_extdiel_windows: [0.1, 0.2, 0.5] # 10%, 20%, 50%
+            restraint_reference: lastframe # lastframe (default) or pose_medoid
+            pose_cluster_cutoff: 2.0 # A, only read when restraint_reference is pose_medoid
+            pose_pocket_radius: 8.0 # A around the ligand
+            pose_cluster_stride: 0 # 0 -> auto
 
 Lets skip ``mdin_intermidate_config`` for now and look at the following keys. ``igb_solvent`` GB version for all calculation: GB-OBC (igb=2). ``temperature`` Temperature to run intermediate simulations if complete end-state simulations are provided. Note this temperature will be used for target temperature extraction if user wishes to run REMD at the end-states. ``exponent_conformational_forces`` Strength of harmonic conformational restraints are specified by a list of integers to calculate powers of 2, for example -8 gives a restraint coefficient of 2^-8 kcal/mol = 0.00390625 kcal/mol. ``exponent_orientational_forces`` Strength of harmonic orientational restraints are specified by a list of integers to calculate powers of 2. ``restraint_type`` Orientational restraint type to generate orientational based on center of mass of ligand and receptor. default:2. ``charges_lambda_window`` Values to use for linear scaling the ligand electrostatics such as 50% orginal ligand net charge to 100% fully charge. Lastly. ``gb_extdiel_windows`` Values to use when scaling the GB external dielectric.
+
+``restraint_reference`` picks the endstate frame the complex restraints are built from. The default
+``lastframe`` keeps the previous behaviour, taking the final frame of the endstate trajectory. That is
+a single random draw from the pose ensemble, so on a system whose ligand visits more than one basin it
+often lands outside the populated one, which costs restraint work and broadens the energy overlap at
+the endstate seam. Set it to ``pose_medoid`` to superpose every frame on the binding site, cluster the
+ligand pose, and anchor to the medoid of the most populated cluster instead. This is a variance fix,
+not a bias one -- the endstate is the full unrestrained ensemble either way, so the total free energy
+is correct under both settings and no multi-pose correction is applied. It affects the complex leg
+only. The remaining three keys are read only when ``pose_medoid`` is set. ``pose_cluster_cutoff`` is
+the average-linkage distance cutoff in Angstrom on the no-fit ligand RMSD. ``pose_pocket_radius`` is
+the radius in Angstrom around the ligand defining the pocket atoms every frame is superposed on:
+receptor C-alpha atoms when the receptor has a backbone, all receptor heavy atoms otherwise, so
+host-guest systems work too. ``pose_cluster_stride`` is the frame stride, where ``0`` sizes it
+automatically to keep the pairwise distance matrix near 2000 frames. When the flag is on the run also
+writes ``summary.txt``, ``assignments.csv``, ``pose_analysis.png`` and ``dendrogram.png`` next to the
+endstate trajectory, and logs a warning if no cluster holds a majority of the frames.
 
 Mdin intermidate config key
 ---------------------------

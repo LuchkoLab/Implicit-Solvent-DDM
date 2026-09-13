@@ -787,8 +787,14 @@ class IntermediateStateArgs:
     # --- Conformational-restraint selection ---
     unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
 
+    # --- Restraint reference frame ---
+    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid". Complex leg only. Variance fix, not a bias one: dG is correct either way.
+    pose_cluster_cutoff: float = 2.0  # A, average-linkage cutoff on no-fit ligand RMSD
+    pose_pocket_radius: float = 8.0  # A around the ligand defining the pocket atoms to superpose on
+    pose_cluster_stride: int = 0  # 0 -> auto, caps the O(n^2) matrix at ~2000 frames
+
     # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
-    pilot_ps: float = 50.0                       # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
+    pilot_ps: float = 50.0                     # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
     pilot_frames: int = 100                      # target trajectory frames written over the pilot window; pilot ntwx = round(nstlim / pilot_frames), so MBAR sampling is independent of dt and of the user's production ntwx (which is tuned for a much longer run)
     pilot_nstlim: Optional[int] = None          # explicit step-count override of pilot_ps (None -> derive from pilot_ps + dt); set only for tiny test systems where 50 ps is absurd
     max_adaptive_iterations: int = 12           # hard cap on R-ADD iterations per system (termination guard); with batch_insertion this caps ROUNDS, not windows
@@ -874,6 +880,12 @@ class IntermediateStateArgs:
             if float(self.long_restraint_window_ns) <= 0:
                 raise ValueError("long_restraint_window_ns must be > 0 ns (or None to disable)")
             self.long_restraint_window_exponent = min(self.exponent_conformational_forces_list)
+
+        if self.restraint_reference not in ("lastframe", "pose_medoid"):
+            raise ValueError(
+                f"restraint_reference must be 'lastframe' or 'pose_medoid', "
+                f"got {self.restraint_reference!r}"
+            )
 
         # Ensure mdin path is absolute
         self.mdin_intermediate_file = str(Path(self.mdin_intermediate_file).resolve())

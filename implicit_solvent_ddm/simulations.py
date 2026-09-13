@@ -22,6 +22,22 @@ import logging
 import time
 
 
+def resolve_output_dir(working_directory, directory_args, dirstruct="dirstruct"):
+    """The on-disk output directory for a job, creating it if needed.
+
+    Shared by Calculation (which owns directory_args) and ExtractTrajectories (which
+    is a plain Job and has to resolve the same path itself so its cluster artifacts
+    land alongside the REMD outputs).
+    """
+    dirs = Dirstruct("mdgb", directory_args, dirstruct=dirstruct)
+    output_dir = os.path.join(
+        working_directory, dirs.dirStruct.fromArgs(**dirs.parameters)
+    )
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    return output_dir
+
+
 def serial_executable(executable: str) -> str:
     """Single-replica AMBER binary: pmemd.cuda.MPI -> pmemd.cuda."""
     return re.sub(r"\.MPI$", "", executable)
@@ -91,15 +107,9 @@ class Calculation(Job):
 
     def _output_directory(self):
         print(self.dirstruct)
-        dirs = Dirstruct("mdgb", self.directory_args, dirstruct=self.dirstruct)
-
-        output_dir = os.path.join(
-            self.working_directory, dirs.dirStruct.fromArgs(**dirs.parameters)
+        self.output_dir = resolve_output_dir(
+            self.working_directory, self.directory_args, dirstruct=self.dirstruct
         )
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        self.output_dir = output_dir
         # self._path2dict(dirs)
 
     def _setLogging(self):
@@ -162,8 +172,9 @@ class Calculation(Job):
                     output_file = fileStore.writeGlobalFile(name)  # cleanup=True
                     traj_files.append(output_file)
 
+                # rem.log stays exported: it is the only record of whether the ladder mixed
                 elif not self.debug and re.match(
-                    r"(rem.log)|(equilibrate)?(remd)?\.mdout\.\d*", name
+                    r"(equilibrate)?(remd)?\.mdout\.\d*", name
                 ):
                     fileStore.logToMaster(
                         f"checking the name that is not exporting {name}"
@@ -806,19 +817,44 @@ class ExtractTrajectories(Job):
 
     """
 
-    def __init__(self, solute_topology, trajectory_files, target_temp=0.0):
+    def __init__(
+        self,
+        solute_topology,
+        trajectory_files,
+        target_temp=0.0,
+        pose_medoid=False,
+        ligand_mask=None,
+        receptor_mask=None,
+        cluster_cutoff=2.0,
+        pocket_radius=8.0,
+        cluster_stride=0,
+        working_directory=None,
+        directory_args=None,
+    ):
         Job.__init__(
             self,
-            memory="2G",
+            # clustering holds an O(n^2) distance matrix; a cpptraj one-liner does not
+            memory="8G" if pose_medoid else "2G",
             cores=1,
             disk="3G",
             preemptible="false",
         )
 
+        if pose_medoid and not ligand_mask:
+            raise ValueError("pose_medoid requires ligand_mask")
+
         self.solute_topology = solute_topology
         self.trajectory_files = trajectory_files
         self.target_temp = target_temp
         self.read_trajs = []
+        self.pose_medoid = pose_medoid
+        self.ligand_mask = ligand_mask
+        self.receptor_mask = receptor_mask
+        self.cluster_cutoff = cluster_cutoff
+        self.pocket_radius = pocket_radius
+        self.cluster_stride = cluster_stride
+        self.working_directory = working_directory
+        self.directory_args = directory_args
 
     def run(self, fileStore) -> tuple[FileID, FileID, FileID]:
         temp_dir = fileStore.getLocalTempDir()
@@ -876,6 +912,8 @@ class ExtractTrajectories(Job):
         lastframe_nc = f"{solu}_{self.target_temp}K_lastframe.ncrst"
         lastframe_rst7 = f"{solu}_{self.target_temp}K_lastframe.rst7"
 
+        frame_arg = self._pose_medoid_frame(fileStore, solu, read_target_traj)
+
         # get the last frame at the target temperature
         fileStore.logToMaster(f"read_target_traj {read_target_traj}")
         sp.run(
@@ -886,7 +924,7 @@ class ExtractTrajectories(Job):
                 "-y",
                 read_target_traj,
                 "-ya",
-                "lastframe",
+                frame_arg,
                 "-x",
                 lastframe_nc,
             ]
@@ -921,6 +959,83 @@ class ExtractTrajectories(Job):
         lastframe_rst7_ID = fileStore.writeGlobalFile(lastframe_rst7)
 
         return (target_trajectoryID, lastframe_nc_ID, lastframe_rst7_ID)
+
+    def _pose_medoid_frame(self, fileStore, solu, read_target_traj):
+        """cpptraj ``-ya`` argument for the restraint reference frame.
+
+        ``"lastframe"`` when the flag is off or the trajectory is too short to cluster,
+        otherwise ``"<N> <N>"`` for the dominant pose cluster's medoid.
+        """
+        if not self.pose_medoid:
+            return "lastframe"
+
+        from implicit_solvent_ddm import pose_clusters
+
+        traj = pose_clusters.load_trajectory(self.read_solute, read_target_traj)
+        if len(traj) < pose_clusters.MIN_CLUSTER_FRAMES:
+            fileStore.logToMaster(
+                f"[POSE] only {len(traj)} frames, too few to cluster; using lastframe"
+            )
+            return "lastframe"
+
+        result = pose_clusters.analyze(
+            traj,
+            self.ligand_mask,
+            self.receptor_mask,
+            cutoff=self.cluster_cutoff,
+            radius=self.pocket_radius,
+            stride=self.cluster_stride,
+        )
+        _, medoid_frame, fraction = pose_clusters.dominant_medoid(result["summary"])
+
+        if fraction < 0.5:
+            runner_up = (
+                f"{result['summary'][1]['fraction']:.1%}"
+                if len(result["summary"]) > 1
+                else "n/a"
+            )
+            fileStore.logToMaster(
+                f"[POSE] WARNING: no dominant basin for {solu} -- top cluster is only "
+                f"{fraction:.1%} (runner-up {runner_up}) of {len(result['frames'])} "
+                f"frames across {len(result['summary'])} clusters. Using the largest, "
+                f"but the restraint reference is not representative of the ensemble."
+            )
+
+        fileStore.logToMaster(
+            f"[POSE] {solu} restraint reference = frame {medoid_frame} "
+            f"(medoid of cluster 1, {fraction:.1%} of {len(result['frames'])} frames, "
+            f"stride {result['stride']})"
+        )
+
+        self._export_cluster_artifacts(fileStore, solu, result)
+
+        # cpptraj trajin is 1-based
+        start_stop = medoid_frame + 1
+        return f"{start_stop} {start_stop}"
+
+    def _export_cluster_artifacts(self, fileStore, solu, result):
+        if self.working_directory is None or self.directory_args is None:
+            fileStore.logToMaster(
+                "[POSE] no output directory configured; cluster artifacts not exported"
+            )
+            return
+
+        from implicit_solvent_ddm import pose_clusters
+
+        output_dir = resolve_output_dir(self.working_directory, self.directory_args)
+        paths = pose_clusters.write_artifacts(
+            result,
+            self.tempdir,
+            prefix=f"{solu}_{self.target_temp}K_pose_clusters_",
+            cutoff=self.cluster_cutoff,
+        )
+        for path in paths.values():
+            fileStore.export_file(
+                fileStore.writeGlobalFile(path, cleanup=True),
+                "file://" + os.path.abspath(
+                    os.path.join(output_dir, os.path.basename(path))
+                ),
+            )
 
     @property
     def extract_target_temperature(self) -> FileID:

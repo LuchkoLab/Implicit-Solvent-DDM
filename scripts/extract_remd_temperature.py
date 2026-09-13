@@ -83,11 +83,12 @@ def replica_instant_temp(solute_dir, index):
 def ladder_temperatures(trajs):
     """The ladder rungs, read from the trajectories' per-frame ``temp0``.
 
-    The mdout files are NOT available here: Calculation.export_files drops remd.mdout.* and
-    rem.log unless the run was in debug mode, and mdinfo only holds the last instantaneous
-    temperature of a replica mid-ladder. The trajectories themselves are the only exported
-    record of the rungs. Best-effort: returns [] if neither reader is installed, in which
-    case the empty-output check after cpptraj runs is what catches a bad temperature.
+    The mdout files are NOT available here: Calculation.export_files drops remd.mdout.*
+    unless the run was in debug mode, and mdinfo only holds the last instantaneous
+    temperature of a replica mid-ladder. rem.log IS exported now, but it records exchange
+    attempts rather than the rung list, so the trajectories remain the record of the rungs.
+    Best-effort: returns [] if neither reader is installed, in which case the empty-output
+    check after cpptraj runs is what catches a bad temperature.
     """
     for reader in (_temps_via_scipy, _temps_via_pytraj):
         try:
