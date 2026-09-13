@@ -22,10 +22,11 @@ from implicit_solvent_ddm.workflow_phases import (
     run_endstate_simulations,
     decompose_system_and_generate_restraints,
     setup_intermediate_simulations,
-    run_post_analysis_intermediate_simulations,
     compute_free_energy_and_consolidate,
-    run_intermediate_simulations,
+    run_intermediate_and_post,
+    _aggregate_post_output,
     adaptive_restraint_pilot,
+    merge_pilot_windows,
     initilized_jobs,
 )
 
@@ -116,64 +117,83 @@ def ddm_workflow(
         message="--> Moving to phase 5: Intermediate State Simulations"
     )
 
-    # Phase 4.5: Adaptive Lambda Scheduler pilot (OBSERVATIONAL, flag-gated). Runs a short-MD pilot of
-    # the complex leg and LOGS a converged restraint schedule. It is a strict barrier before Phase 5 so
-    # it runs with exclusive resources, but production Phases 5/6/7 still read the Phase-4 seed setups
-    # (setup_intermediate_jobs.rv(0..4)) below — so the free-energy path is unchanged and the pilot's
-    # return is not consumed (Step 5a). Flag off -> no pilot job, Phase 5 follows Phase 4 as before
-    # (byte-identical DAG).
+    # Phase 4.5: Adaptive Lambda Scheduler pilot (flag-gated, CLOSED LOOP). Runs a short-MD pilot of the
+    # complex + receptor legs, drives the per-band R-ADD scheduler (dielectric -> charge -> restraints) to
+    # convergence, then REBUILDS the production setups from the converged dielectric + charge schedule so
+    # Phases 5/6/7 run full-length MD on the pilot-determined window count. Flag off -> no pilot job, Phase
+    # 5 reads the Phase-4 seed setups exactly as before (byte-identical DAG).
     phase4_tail = setup_intermediate_jobs
+    setup_source = setup_intermediate_jobs  # which setup job feeds Phases 5/6/7
     if config.workflow.adaptive_lambda:
-        phase4_tail = setup_intermediate_jobs.addFollowOnJobFn(
+        pilot = setup_intermediate_jobs.addFollowOnJobFn(
             adaptive_restraint_pilot,
             decomposition_jobs.rv(),
             endstate_jobs.rv(),
             updated_config,
         )
+        # Apply the converged dielectric + charge + restraint windows onto a fresh production config
+        # (full mdin, production dir).
+        merged = pilot.addFollowOnJobFn(merge_pilot_windows, updated_config, pilot.rv())
+        # Re-run Phase 3 on the merged schedule so RestraintMaker materializes a restraint file for every
+        # pilot-inserted exponent (the original seed RestraintMaker only carries seed-window files, so an
+        # inserted con/orient window's restraint_key would not resolve). Anchor protection keeps inserts
+        # inside the seed (min, max), so binding modes, max_*_restraint, and the Boresch ΔG are unchanged
+        # — this only adds the inserted interior restraint files. Then rebuild the production setups from
+        # the merged config + re-generated restraints.
+        redecomposition_jobs = merged.addFollowOnJobFn(
+            decompose_system_and_generate_restraints,
+            endstate_jobs.rv(),
+            merged.rv(),
+        )
+        setup_source = redecomposition_jobs.addFollowOnJobFn(
+            setup_intermediate_simulations,
+            redecomposition_jobs.rv(),
+            endstate_jobs.rv(),
+            merged.rv(),
+        )
+        phase4_tail = setup_source
 
-    # Phase 5: Run intermediate state simulations
-    run_intermediate_jobs = phase4_tail.addFollowOnJobFn(
-        run_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
+    # Phases 5 + 6 (merged): submit all intermediate MD windows first and couple each window's
+    # post-analysis row to its OWN MD job -- dissolving the global Phase5->Phase6 barrier so the
+    # dominant N^2 CPU post-analysis backfills cores as trajectories land. Returns
+    # (complex, receptor, ligand, flat_bottom) post-output bundles.
+    merged_jobs = phase4_tail.addFollowOnJobFn(
+        run_intermediate_and_post,
+        setup_source.rv(0), # config
+        setup_source.rv(1), # complex simulations
+        setup_source.rv(2), # receptor simulations
+        setup_source.rv(3), # ligand simulations
+        setup_source.rv(4), # flat bottom simulations
     )
-    run_intermediate_jobs.addFollowOnJobFn(
+    merged_jobs.addFollowOnJobFn(
         initilized_jobs,
-        message="✓ Phase 5 Complete: Intermediate state simulations finished"
+        message="✓ Phases 5-6 Complete: Intermediate MD + energy post-processing finished"
     )
-    run_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 6: Energy post-processing and analysis"
+
+    # Aggregate: flatten each system's per-window post rows into one .post_output bundle. Wired as a
+    # FOLLOW-ON of the merged dispatcher, so it waits for the dispatcher's entire MD+post subtree
+    # (every post_runner.rv() in merged_jobs.rv(0..3) is resolved before it runs).
+    aggregate_jobs = merged_jobs.addFollowOnJobFn(
+        _aggregate_post_output,
+        merged_jobs.rv(0), # complex per-window post rows
+        merged_jobs.rv(1), # receptor per-window post rows
+        merged_jobs.rv(2), # ligand per-window post rows
+        merged_jobs.rv(3), # flat bottom per-window post rows
     )
-    # Phase 6: Post-processing and Analysis (depends on intermediate)
-    analysis_jobs = run_intermediate_jobs.addFollowOnJobFn(
-        run_post_analysis_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config 
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
-    )
-    analysis_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 6 Complete: Energy post-processing and analysis finished"
-    )
-    post_analysis_complete = analysis_jobs.addFollowOnJobFn(
+    aggregate_jobs.addFollowOnJobFn(
         initilized_jobs,
         message="--> Moving to phase 7: Free energy computation and consolidation"
     )
 
-    # Phase 7: Compute Free Energy and Consolidate Results
-    free_energy_difference_jobs = analysis_jobs.addFollowOnJobFn(
+    # Phase 7: Compute Free Energy and Consolidate Results. Follow-on of the AGGREGATOR (consumes its
+    # rv), so Phase 7 waits for aggregation -> the .post_output bundles are resolved.
+    free_energy_difference_jobs = aggregate_jobs.addFollowOnJobFn(
         compute_free_energy_and_consolidate,
-        analysis_jobs.rv(0), # complex post-analysis results
-        analysis_jobs.rv(1), # receptor post-analysis results
-        analysis_jobs.rv(2), # receptor post-analysis results
-        analysis_jobs.rv(3), # ligand post-analysis results
-        setup_intermediate_jobs.rv(0), # config 
+        aggregate_jobs.rv(0), # complex post-output bundle
+        aggregate_jobs.rv(1), # receptor post-output bundle
+        aggregate_jobs.rv(2), # ligand post-output bundle
+        aggregate_jobs.rv(3), # flat bottom post-output bundle
+        setup_source.rv(0), # config
     )
 
     free_energy_difference_jobs.addFollowOnJobFn(
@@ -345,6 +365,8 @@ def main():
     )
     options = parser.parse_args()
     options.clean = "onSuccess"
+    # INFO is what carries the per-job [TIMING] records into the leader log that
+    # timing_report.py parses; without it the timing breakdown is empty.
     options.logLevel = "INFO"
     config_file = options.config_file[0]
     ignore_receptor = options.ignore_receptor

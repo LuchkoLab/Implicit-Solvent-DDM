@@ -2,8 +2,7 @@
 
 #user input values
 workflow_jobs:
-  plot_overlap_matrix: False 
-  # debug: True  
+  adaptive_lambda: false            # skips the ALS pilot (the crash path)
 hardware_parameters:
   executable: "sander" # executable machine for MD choice : [sander, sander.MPI, pmemed, pemed.MPI, pmeded.CUDA]
   mpi_command:  # system dependent /
@@ -11,6 +10,7 @@ hardware_parameters:
   memory: "2G"
   disk: "3G"
   output_directory_name: mdgb
+  export_intermediate_files: false  # production MD/post/parquet stay in the jobStore
 
 endstate_parameter_files:
   complex_parameter_filename: implicit_solvent_ddm/tests/structs/cb7-mol01.parm7 # list of topology file of a complex

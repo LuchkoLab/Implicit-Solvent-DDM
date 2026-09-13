@@ -13,13 +13,32 @@ import yaml
 from toil.common import FileID
 
 
-def generate_extdiel_mdin(job, user_mdin_ID: FileID, gb_extdiel: float) -> FileID:
-    """Write an mdin with unique external dielectric for generalize Born solvent"""
+def generate_extdiel_mdin(
+    job,
+    user_mdin_ID: FileID,
+    gb_extdiel: float,
+    nstlim=None,
+    ntwx=None,
+    saltcon=0.0,
+) -> FileID:
+    """Write an mdin with a unique external dielectric for the generalized-Born solvent.
 
+    ``nstlim``/``ntwx`` shorten the run for the ALS pilot (no-ops when ``None`` -> production length).
+    ``saltcon`` defaults to 0 across the GB-dielectric band: with salt the Debye screening makes the GB
+    polar term no longer exactly linear in ``lambda = 1 - 1/eps``, which is the property the band relies
+    on for uniform overlap. Pass ``saltcon=None`` to leave the user's value untouched.
+    """
     mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
 
     return job.fileStore.writeGlobalFile(
-        make_mdin_file(mdin_global, "gb_extdiel_mdin", gb_extdiel=gb_extdiel)
+        make_mdin_file(
+            mdin_global,
+            "gb_extdiel_mdin",
+            gb_extdiel=gb_extdiel,
+            nstlim=nstlim,
+            ntwx=ntwx,
+            saltcon=saltcon,
+        )
     )
 
 
@@ -31,12 +50,18 @@ def get_mdins(job, user_mdin_ID: FileID):
     user_mdin_args: str
         A user specified yaml file containing mdin arguments
 
-    Returns:
-    --------
-    default_mdin:
-    no_solvent_mdin:
-    post_mdin:
-    post_nosolv:
+    Returns
+    -------
+    default_mdin : FileID
+        Solvated MD.
+    no_solvent_mdin : FileID
+        Gas-phase MD (igb=6).
+    post_mdin : FileID
+        Single-point scoring (imin=5), user's saltcon.
+    post_nosolv : FileID
+        Single-point scoring for the gas-phase states.
+    post_saltfree : FileID
+        Single-point scoring at saltcon=0, for the GB-dielectric band.
     """
 
     mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
@@ -53,8 +78,14 @@ def get_mdins(job, user_mdin_ID: FileID):
             mdin_global, "post_nosolv_mdin", turn_off_solvent=True, post_process=True
         )
     )
+    # GB-dielectric band: its MD is written salt-free by generate_extdiel_mdin, so score it the same
+    # way. With salt the prefactor (1/intdiel - exp(-kappa*f)/extdiel) does not vanish at extdiel=1,
+    # so the band never reaches vacuum and leaves a ~350 kcal/mol cliff against the igb=6 gas anchor.
+    post_saltfree = job.fileStore.writeGlobalFile(
+        make_mdin_file(mdin_global, "post_saltfree_mdin", post_process=True, saltcon=0.0)
+    )
 
-    return (default_mdin, no_solvent_mdin, post_mdin, post_nosolv)
+    return (default_mdin, no_solvent_mdin, post_mdin, post_nosolv, post_saltfree)
 
 
 def pilot_md_steps(mdin_text, pilot_ps, pilot_frames, pilot_nstlim=None, dt_default=0.001):
@@ -95,10 +126,9 @@ def get_pilot_mdin(
       length (the bug this fixes). Stored at ``config.inputs["pilot_mdin"]`` /
       ``config.inputs["pilot_no_solvent_mdin"]``. Used ONLY when ``workflow.adaptive_lambda`` is set.
 
-    NOTE: GB-external-dielectric pilot states (``generate_extdiel_mdin`` from ``mdin_intermediate_file``)
-    are NOT shortened here; a pilot with ``gb_extdiel_windows`` would run those at production length.
-    The current ALS scope (restraints) and the cb7/MCL configs use empty ``gb_extdiel_windows``, so this
-    is not hit; the restraints-focused pilot (Step 6) removes the concern entirely.
+    NOTE: GB-external-dielectric pilot states are shortened separately by ``generate_extdiel_mdin`` (it
+    takes the same ``nstlim``/``ntwx`` derived here via ``pilot_md_steps``); see
+    ``workflow_phases.adaptive_restraint_pilot``.
     """
     mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
     with open(mdin_global) as fh:
@@ -111,7 +141,9 @@ def get_pilot_mdin(
             mdin_global, "pilot_no_solv_mdin", turn_off_solvent=True, nstlim=nstlim, ntwx=ntwx
         )
     )
-    return pilot_default, pilot_no_solvent
+    # nstlim/ntwx are returned too so the GB-dielectric band can shorten its per-epsilon mdins
+    # (generate_extdiel_mdin) to the same pilot length when an ALS insertion adds a new dielectric window.
+    return pilot_default, pilot_no_solvent, nstlim, ntwx
 
 
 def make_mdin_file(
@@ -122,6 +154,8 @@ def make_mdin_file(
     post_process=False,
     nstlim=None,
     ntwx=None,
+    saltcon=None,
+    score_igb=None,
 ):
     """Rewrite users AMBER mdin file for specific thermodynamic states
 
@@ -135,6 +169,10 @@ def make_mdin_file(
         Set igb=6 if turn_off_solvent=True
     post_process: bool
         Set imin=5 and ntx=5 if post_process=True
+    score_igb: int, optional
+        If provided, override the GB model (``igb=<score_igb>``) in the mdin. No-op when ``None`` so
+        the four production mdins stay byte-identical; used only by the standalone cross-GB-model
+        re-scoring analysis (gb_ddG_bar.py) to score a trajectory under an explicit igb.
     nstlim: int, optional
         If provided, override the MD step count (``nstlim``) in the mdin. No-op when ``None`` so the
         production mdins stay byte-identical; set only for the short ALS pilot.
@@ -185,6 +223,15 @@ def make_mdin_file(
             line = re.sub(r"nstlim\s*=\s*\d+", f"nstlim = {nstlim}", line)
         if ntwx is not None:
             line = re.sub(r"ntwx\s*=\s*\d+", f"ntwx = {ntwx}", line)
+        # GB-dielectric band: pin saltcon (default 0) so the GB polar term stays exactly linear in
+        # lambda = 1 - 1/eps. No-op when None (production/other mdins keep the user's saltcon).
+        if saltcon is not None:
+            line = re.sub(r"saltcon\s*=\s*[0-9.]+", f"saltcon={saltcon}", line)
+        # Cross-GB-model re-scoring: override igb with an explicit model (OBC=2, OBC2=5, GBn=7,
+        # GBn2=8, ...). No-op when None so production mdins are unaffected. Mirrors the gas igb=6
+        # swap above; applied last so an explicit score_igb wins.
+        if score_igb is not None:
+            line = re.sub(r"igb\s*=\s*\d+", f"igb={score_igb}", line)
         new_mdin += line
 
     with open(mdin_name, "w") as output:
