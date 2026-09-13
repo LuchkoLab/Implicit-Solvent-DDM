@@ -44,6 +44,7 @@ options.logLevel = os.environ.get("TOIL_LOG", "INFO")      # INFO so the [ALS] l
 options.logFile = LOGFILE                                   # full Toil log (incl. [ALS] lines) -> file
 options.clean = "always"
 options.workDir = SCRATCH
+options.maxCores = 50
 
 with open("implicit_solvent_ddm/tests/input_files/real_production_run.yaml") as fh:
     cfg_dict = yaml.safe_load(fh)

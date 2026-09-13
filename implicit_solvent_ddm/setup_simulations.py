@@ -305,12 +305,17 @@ class SimulationSetup:
         """
         temp_args = copy(self.no_gb_args)
 
+        # Receptor (apo-host) GB band carries the FULL host charge (q=1; no ligand to decharge) under the
+        # apo directory structure; the complex band decharges the ligand (q=0) under dirstruct_halo.
+        is_receptor = self.system_type == "receptor"
+        dirstruct_args = "dirstruct_apo" if is_receptor else "dirstruct_halo"
+
         temp_args["state_label"] = "gb_dielectric"
         temp_args["filename"] = "state_8_prod"
         temp_args["extdiel"] = extdiel
         temp_args["igb"] = f"igb_{self.config.intermediate_args.igb_solvent}"
         temp_args["igb_value"] = f"igb_{self.config.intermediate_args.igb_solvent}"
-        temp_args["charge"] = 0.0
+        temp_args["charge"] = 1.0 if is_receptor else 0.0
         temp_args["runtype"] = (
             f"Running production Simulation in state 8. Changing extdiel to: {extdiel}."
         )
@@ -327,7 +332,7 @@ class SimulationSetup:
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
-                dirstruct="dirstruct_halo",
+                dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
                 memory=self.config.system_settings.memory,

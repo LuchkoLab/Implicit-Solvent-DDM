@@ -279,6 +279,27 @@ class Calculation(Job):
         fileStore.logToMaster(f"amber_stdout: {amber_stdout}")
         fileStore.logToMaster(f"amber_stderr: {amber_stderr}")
 
+        # Per-job timing record -> parsed by research/timing_report.py into a phase breakdown.
+        # Phase is inferred from the output dir / runtype: the ALS pilot writes under a *_pilot tree
+        # (-> "adaptive"), post-analysis jobs carry post_analysis=True (-> "post_analysis"), endstate
+        # setup MD has an endstate/minimization runtype, everything else is the production intermediate MD.
+        # cores is ~0.1 for GPU windows, so the parser uses the gpu flag (GPU-hours = wall; else CPU-hours
+        # = wall*cores). end= is an absolute epoch so the parser can recover parallel-adjusted wall-clock.
+        _wall = time.perf_counter() - start
+        _rt = self.directory_args.get("runtype", "")
+        if "_pilot" in str(self.output_dir):
+            _phase = "adaptive"
+        elif self.post_analysis:
+            _phase = "post_analysis"
+        elif any(k in _rt for k in ("endstate", "minimization", "remd", "equil")):
+            _phase = "endstate"
+        else:
+            _phase = "intermediate_md"
+        fileStore.logToMaster(
+            f"[TIMING] phase={_phase} wall_s={_wall:.2f} cores={self.num_cores} "
+            f"gpu={int(bool(self.CUDA))} end={time.time():.0f} | runtype={_rt}"
+        )
+
         # if post analysis simulation just export the mdout file
         if self.post_analysis:
             # for not don't export any data
