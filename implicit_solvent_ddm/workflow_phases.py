@@ -5,12 +5,13 @@ This module contains the individual phase functions that make up the DDM workflo
 providing a clean separation of concerns and improved maintainability.
 """
 
+import copy
 import logging
 import numpy as np
 from toil.job import JobFunctionWrappingJob
 
 from implicit_solvent_ddm.config import Config
-from implicit_solvent_ddm.mdin import get_mdins, generate_extdiel_mdin
+from implicit_solvent_ddm.mdin import get_mdins, generate_extdiel_mdin, get_pilot_mdin
 from implicit_solvent_ddm.restraints import (
     BoreschRestraints,
     FlatBottom,
@@ -20,7 +21,11 @@ from implicit_solvent_ddm.restraints import (
 from implicit_solvent_ddm.alchemical import alter_topology, split_complex_system
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
 from implicit_solvent_ddm.runner import IntermidateRunner
-from implicit_solvent_ddm.adaptive_restraints import run_exponential_averaging, run_compute_mbar
+from implicit_solvent_ddm.adaptive_restraints import (
+    run_exponential_averaging,
+    run_compute_mbar,
+    adaptive_lambda_windows,
+)
 from implicit_solvent_ddm.run_endstate import (
     run_remd,
     run_basic_md,
@@ -75,10 +80,30 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
     # Create empty restraint file
     empty_restraint = mdins.addChildJobFn(write_empty_restraint)
     config.inputs["empty_restraint"] = empty_restraint.rv()
-    
+
     # Setup flat bottom restraint potentials
     flat_bottom_template = mdins.addChild(FlatBottom(config=config))
     config.inputs["flat_bottom_restraint"] = flat_bottom_template.rv(0)
+
+    # ALS pilot: emit a short-MD intermediate mdin used ONLY by the adaptive pilot (Phase 4.5). Behind
+    # the adaptive_lambda flag so the static path is byte-identical (no extra job, no inputs key).
+    # Always 50 ps by default (pilot_ps), with the step count derived from the user mdin's timestep and
+    # ntwx set for ~pilot_frames frames (get_pilot_mdin). pilot_nstlim is an explicit step override for
+    # tiny test systems where 50 ps is absurd.
+    if config.workflow.adaptive_lambda:
+        pilot_mdin = mdins.addChildJobFn(
+            get_pilot_mdin,
+            config.intermediate_args.mdin_intermediate_file,
+            config.intermediate_args.pilot_ps,
+            config.intermediate_args.pilot_frames,
+            config.intermediate_args.pilot_nstlim,
+        )
+        # rv(0) = default (solvated) pilot mdin; rv(1) = no-solvent (igb=6 gas-phase) pilot mdin. Both
+        # are swapped into the pilot config so EVERY pilot MD state runs at 50 ps (not just the
+        # default-mdin states).
+        config.inputs["pilot_mdin"] = pilot_mdin.rv(0)
+        config.inputs["pilot_no_solvent_mdin"] = pilot_mdin.rv(1)
+
     return config
 
 def run_endstate_simulations(job, config: Config):
@@ -618,28 +643,28 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
             run_exponential_averaging,
             flat_bottom_analysis,  # flat bottom post-analysis results
             config.intermediate_args.temperature,
-            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
+            accelerators=config.system_settings.mbar_accelerators,  # 0 = CPU (pymbar); keeps the analysis tail GPU-free so GPUs release during post-processing. Set system_settings.mbar_accelerators=1 when MBAR is JAX/GPU-accelerated.
         )
         complex_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_complex_analysis,  # complex post-analysis results
             config,
             "complex",
-            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
+            accelerators=config.system_settings.mbar_accelerators,  # 0 = CPU (pymbar); keeps the analysis tail GPU-free so GPUs release during post-processing. Set system_settings.mbar_accelerators=1 when MBAR is JAX/GPU-accelerated.
         )
         ligand_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_ligand_analysis,  # ligand post-analysis results
             config,
             "ligand",
-            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
+            accelerators=config.system_settings.mbar_accelerators,  # 0 = CPU (pymbar); keeps the analysis tail GPU-free so GPUs release during post-processing. Set system_settings.mbar_accelerators=1 when MBAR is JAX/GPU-accelerated.
         )
         receptor_mbar_job = job.addChildJobFn(
             run_compute_mbar,
             post_receptor_analysis,  # receptor post-analysis results
             config,
             "receptor",
-            accelerators=config.system_settings.num_accelerators,  # GPU slot for MBAR (JAX target; pymbar still runs CPU until jax is enabled)
+            accelerators=config.system_settings.mbar_accelerators,  # 0 = CPU (pymbar); keeps the analysis tail GPU-free so GPUs release during post-processing. Set system_settings.mbar_accelerators=1 when MBAR is JAX/GPU-accelerated.
         )
         
         # Consolidate output data if enabled
@@ -669,8 +694,148 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
             )
         
         return consolidation_job.rv()
-    
+
     return config
+
+
+def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Config):
+    """Phase 4.5: Adaptive Lambda Scheduler pilot (OBSERVATIONAL, flag-gated).
+
+    Runs a SHORT-MD copy of the intermediate cycle and drives the R-ADD restraint scheduler
+    (``adaptive_lambda_windows``) to convergence on the COMPLEX leg, then LOGS the converged restraint
+    schedule. **It does not feed production**: the production Phases 5/6/7 still read the Phase-4 seed
+    setups, so the validated free-energy path is byte-for-byte unchanged. The converged config is
+    returned for a future Step 5b (rebuild + re-thread) but is ignored by the DAG in 5a.
+
+    The pilot is isolated from production two ways, both set on a deepcopy ``pilot_config`` (the
+    production ``config`` is never mutated):
+      * **short MD** — ``inputs["default_mdin"]`` is swapped to the short ``inputs["pilot_mdin"]`` so
+        every pilot window (including ALS-inserted ones) runs at ``pilot_nstlim``;
+      * **separate output tree** — ``system_settings.output_directory_name`` gets a ``_pilot`` suffix so
+        the pilot's short trajectories never land in the production dirs (else production
+        ``_check_mdout`` would skip MD and compute ΔG on 50-ps data).
+
+    Only the complex leg is run: ``adaptive_lambda_windows("complex", ...)`` needs only the complex
+    ``post_output``, and the complex ``SimulationSetup`` already carries every ``complex_order`` state
+    (anchors, charges, restraint windows, endstate) so the pilot MBAR has all columns.
+
+    Parameters
+    ----------
+    decomposition_jobs, endstate_jobs : resolved Phase-3 / Phase-2 outputs (restraint templates and
+        endstate trajectories) — reused read-only, exactly as Phase 4 consumes them.
+    config : Config
+        The Phase-1 config (carries ``inputs["pilot_mdin"]`` when the flag is on).
+    """
+    if config.inputs.get("pilot_mdin") is None:
+        # Misconfigured (flag on but no pilot_nstlim): fail loud rather than silently piloting at
+        # production length, which would defeat the whole point of a cheap pilot.
+        raise ValueError(
+            "adaptive_restraint_pilot: config.inputs['pilot_mdin'] is unset. Set "
+            "intermediate_args.pilot_nstlim with workflow.adaptive_lambda=True."
+        )
+
+    pilot_config = copy.deepcopy(config)
+    # Short MD for the whole pilot cycle. The cycle uses TWO MD mdins: default (solvated) for restraint
+    # windows + solvated charge states, and no_solvent (igb=6) for the gas-phase no_interactions /
+    # interactions / igb=6 charge states. Swap BOTH to their 50 ps pilot versions — swapping only
+    # default_mdin leaves the gas-phase states running at full production length.
+    pilot_config.inputs["default_mdin"] = pilot_config.inputs["pilot_mdin"]
+    pilot_config.inputs["no_solvent_mdin"] = pilot_config.inputs["pilot_no_solvent_mdin"]
+    # The ALS restraint overlap is a banded MBAR over the restraint windows + their max-restraint
+    # anchor only (adaptive_lambda_windows -> compute_mbar(restraint_band=True)); the endstate is not in
+    # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate
+    # re-scoring from the pilot and guarantees no endstate column/rows leak into the pilot data.
+    pilot_config.workflow.end_state_postprocess = False
+    # Isolate the pilot output tree (top_directory_path = working_directory/output_directory_name).
+    pilot_config.system_settings.output_directory_name = (
+        pilot_config.system_settings.output_directory_name + "_pilot"
+    )
+
+    # KNOWN LIMITATION: GB-external-dielectric pilot states are generated from mdin_intermediate_file
+    # (generate_extdiel_mdin) and are NOT shortened, so they would run at full production length. The
+    # restraints-only ALS scope uses empty gb_extdiel_windows, so this is not hit; warn loudly if a
+    # caller ever enables it before the restraints-focused pilot (Step 6) lands.
+    if pilot_config.intermediate_args.gb_extdiel_windows:
+        job.fileStore.logToMaster(
+            "[ALS][pilot] WARNING: gb_extdiel_windows set — GB-dielectric pilot states run at FULL "
+            "production length (not shortened). Expect a slow pilot until the restraints-focused "
+            "pilot lands."
+        )
+
+    job.fileStore.logToMaster(
+        f"[ALS][pilot] Phase 4.5 starting. pilot output dir: "
+        f"{pilot_config.system_settings.top_directory_path}"
+    )
+
+    # Reuse Phase 4 verbatim on the pilot config -> pilot SimulationSetup objects (short mdin, isolated
+    # dir). rv(0) carries the binding modes + pilot mdin + seed _list; rv(1) is the complex setup.
+    setup_pilot = job.addChildJobFn(
+        setup_intermediate_simulations,
+        decomposition_jobs,
+        endstate_jobs,
+        pilot_config,
+    )
+
+    return setup_pilot.addFollowOnJobFn(
+        _pilot_md_post_drive,
+        setup_pilot.rv(0),  # pilot config (binding modes + pilot mdin + seed _list)
+        setup_pilot.rv(1),  # complex SimulationSetup
+    ).rv()
+
+
+def _pilot_md_post_drive(job, pilot_config: Config, complex_setup):
+    """Run the complex pilot leg (short MD -> post-analysis) then drive the R-ADD scheduler.
+
+    Mirrors the Phase-5 (MD, ``post_only=False``) then Phase-6 (post-analysis, ``post_only=True``)
+    ``IntermidateRunner`` construction, chained MD -> followOn(post) so the trajectories exist before
+    re-scoring. The post-runner's ``.rv()`` is the runner with a populated ``post_output`` (``run()``
+    returns ``self``), which ``adaptive_lambda_windows`` consumes exactly as Phase 7 does.
+    """
+    md_runner = job.addChild(
+        IntermidateRunner(
+            complex_setup.simulations,
+            pilot_config.inputs["restraints"],
+            post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
+            post_process_mdin=pilot_config.inputs["post_mdin"],
+            post_process_distruct="post_process_halo",
+            post_only=False,
+            config=pilot_config,
+        )
+    )
+    post_runner = md_runner.addFollowOn(
+        IntermidateRunner(
+            complex_setup.simulations,
+            pilot_config.inputs["restraints"],
+            post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
+            post_process_mdin=pilot_config.inputs["post_mdin"],
+            post_process_distruct="post_process_halo",
+            post_only=True,
+            config=pilot_config,
+        )
+    )
+
+    driver = post_runner.addFollowOnJobFn(
+        adaptive_lambda_windows,
+        post_runner.rv(),
+        pilot_config,
+        "complex",
+        restraints_scaling=True,
+    )
+    # adaptive_lambda_windows returns (results, converged_config, runner); log the converged schedule.
+    driver.addFollowOnJobFn(_log_pilot_schedule, driver.rv(1))
+    return driver.rv(1)
+
+
+def _log_pilot_schedule(job, converged_config: Config):
+    """Terminal pilot follow-on: log the converged restraint schedule (5a deliverable)."""
+    con = sorted(converged_config.intermediate_args.exponent_conformational_forces_list)
+    orient = sorted(converged_config.intermediate_args.exponent_orientational_forces_list)
+    job.fileStore.logToMaster(
+        f"[ALS][pilot] CONVERGED complex restraint schedule: {len(con)} windows\n"
+        f"[ALS][pilot]   conformational exponents: {con}\n"
+        f"[ALS][pilot]   orientational  exponents: {orient}"
+    )
+    return converged_config
 
 
 def update_config(job, config: Config, complex_binding_mode, receptor_binding_mode, ligand_binding_mode, restraints):

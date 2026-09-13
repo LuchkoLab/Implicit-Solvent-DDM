@@ -53,6 +53,7 @@ class Workflow:
     run_post_analysis: bool = True
     plot_overlap_matrix: bool = False 
     post_analysis_only: bool = False
+    adaptive_lambda: bool = False  # ALS: run the adaptive restraint-window pilot before production (default off = static schedule)
     vina_dock: bool = False
     restart: bool = False
     debug: bool = False
@@ -136,6 +137,12 @@ class SystemSettings:
         per available GPU, giving one window per GPU. The total number of GPUs is
         auto-detected by Toil's batch system and is not set here. Defaults to 1
         when CUDA is True and this is left at 0; values > 1 are clamped to 1.
+    mbar_accelerators : int
+        Number of GPUs to request *per MBAR / free-energy analysis job*. Defaults
+        to 0 because pymbar runs on CPU; this keeps the post-processing/MBAR phase
+        GPU-free so it can run in a CPU-only allocation (allowing the GPUs to be
+        released back to the scheduler during the analysis tail). Set to 1 only
+        once MBAR is JAX/GPU-accelerated. Values > 1 are clamped to 1.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -149,6 +156,7 @@ class SystemSettings:
     output_directory_name: str = "mdgb"
     CUDA: bool = field(default=False)
     num_accelerators: int = field(default=0)
+    mbar_accelerators: int = field(default=0)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
     
@@ -172,6 +180,16 @@ class SystemSettings:
                 self.num_accelerators,
             )
             self.num_accelerators = 1
+
+        if self.mbar_accelerators > 1:
+            # MBAR/free-energy estimation is a single analysis job and never needs
+            # more than one GPU; clamp so a stray value can't reserve several.
+            logger.warning(
+                "system_settings.mbar_accelerators=%d requests that many GPUs for "
+                "a single MBAR job; clamping to 1.",
+                self.mbar_accelerators,
+            )
+            self.mbar_accelerators = 1
 
     @property
     def top_directory_path(self):
@@ -684,7 +702,16 @@ class IntermediateStateArgs:
 
     charges_lambda_window: List[float] = field(default_factory=list)
     gb_extdiel_windows: List[float] = field(default_factory=list)
-    min_degree_overlap: float = 0.03
+    min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
+
+    # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
+    pilot_ps: float = 50.0                       # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
+    pilot_frames: int = 100                      # target trajectory frames written over the pilot window; pilot ntwx = round(nstlim / pilot_frames), so MBAR sampling is independent of dt and of the user's production ntwx (which is tuned for a much longer run)
+    pilot_nstlim: Optional[int] = None          # explicit step-count override of pilot_ps (None -> derive from pilot_ps + dt); set only for tiny test systems where 50 ps is absurd
+    max_adaptive_iterations: int = 12           # hard cap on R-ADD insertions per system (termination guard)
+    candidate_conformational_pool: List[float] = field(default_factory=list)  # fixed candidate exponent pool; empty -> derive from seed + candidate_pool_step
+    candidate_pool_step: Optional[float] = None  # pool granularity in exponent space; None -> default fill between endstate and pinned max
+    redistribution_mode: str = "add"            # "add" = R-ADD (insert +1, never move); "move" reserved for uniform pools
 
     guest_restraint_template: Optional[str] = None
     receptor_restraint_template: Optional[str] = None
@@ -699,6 +726,9 @@ class IntermediateStateArgs:
     orientational_restraint_forces: np.ndarray = field(init=False)
     max_conformational_restraint: float = field(init=False)
     max_orientational_restraint: float = field(init=False)
+    # Canonical exponent schedule — single source of truth for CycleSteps + ALS insertion (R1 fix).
+    exponent_conformational_forces_list: List[float] = field(init=False, default_factory=list)
+    exponent_orientational_forces_list: List[float] = field(init=False, default_factory=list)
 
     def __post_init__(self):
         # Ensure lambda windows include 0 and 1
@@ -718,6 +748,15 @@ class IntermediateStateArgs:
 
         self.max_conformational_restraint = max(self.conformational_restraints_forces)
         self.max_orientational_restraint = max(self.orientational_restraint_forces)
+
+        # Canonical exponent schedule (single source of truth for CycleSteps + ALS insertion; R1).
+        # Computed identically to workflow_phases.py:380-384 so the static path stays byte-identical.
+        self.exponent_conformational_forces_list = [
+            round(float(np.log2(force)), 3) for force in self.conformational_restraints_forces
+        ]
+        self.exponent_orientational_forces_list = [
+            round(float(np.log2(force)), 3) for force in self.orientational_restraint_forces
+        ]
 
         # Ensure mdin path is absolute
         self.mdin_intermediate_file = str(Path(self.mdin_intermediate_file).resolve())

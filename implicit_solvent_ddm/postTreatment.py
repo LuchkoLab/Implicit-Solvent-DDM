@@ -62,12 +62,14 @@ class ConsolidateData(Job):
     receptor_filename: str
         Name of the receptor.
     plot_overlap_matrix: bool
-        If true an overlap matrix plot for the complex will be created.
+        If true, an overlap-matrix heatmap PDF is written for each leg (complex, receptor, ligand).
+        The raw overlap matrices are written as .h5 regardless of this flag.
 
     Methods
     -------
-    _plot_overlap_matrix(self)
-       Creates an overlap matrix using the distribution of potential energy differences between the complex steps.
+    _export_overlap_matrices(self)
+       Export the MBAR overlap matrix for all three legs (complex, receptor, ligand): raw .h5 always,
+       heatmap PDFs when plot_overlap_matrix is set.
     run(self)
         Runner function to consolidate all the output data.
     """
@@ -236,17 +238,49 @@ class ConsolidateData(Job):
             + self._flat_bottom_contribution
         )
 
-    def _plot_overlap_matrix(self):
-        """Plot MBAR overlap Matrix"""
+    def _export_overlap_matrices(self):
+        """Export the MBAR overlap matrix for ALL THREE legs (complex, receptor, ligand).
+
+        Previously only the complex overlap was exported, and only as a figure gated behind
+        ``plot_overlap_matrix`` — the receptor and ligand overlap matrices were computed by MBAR and
+        then discarded, even though they are needed to judge each leg's lambda schedule. Here we save
+        the raw overlap matrix as an HDF5 dataframe for every leg (always — small and machine-readable)
+        and, when ``plot_overlap_matrix`` is set, a heatmap PDF per leg.
+
+        The matrix is in thermodynamic-cycle order: ``compute_mbar`` reorders the dataframe columns to
+        ``matrix_order.CycleSteps.<leg>_order`` and builds MBAR from that, so overlap element (i, j)
+        corresponds to states ``order[i], order[j]``. We label the exported dataframe's rows/columns
+        with those ordered state tuples (carried by ``run[1].columns``, the returned ``df_mbar``) so the
+        ordering is explicit in the file rather than a bare 0..N-1 integer axis.
+        """
         output_path = os.path.join(
             f"{self.working_path}", f".cache/{self.complex_name}"
         )
-        axis = plot_mbar_overlap_matrix(self.mbar_model.compute_overlap()["matrix"])
-        axis.figure.savefig(
-            f"{output_path}/{self.complex_name}_O_MBAR.pdf",
-            bbox_inches="tight",
-            pad_inches=0.0,
-        )
+        # name -> the (mbar_result, df_mbar) tuple returned by compute_mbar; [0][-1] is the MBAR object,
+        # [1] is df_mbar whose columns are the matrix_order-ordered (state, extdiel, charge, restraints).
+        legs = {
+            self.complex_name: self.complex_adative_run,
+            f"receptor_{self.receptor_name}": self.receptor_adaptive_run,
+            f"ligand_{self.ligand_name}": self.ligand_adaptive_run,
+        }
+        for name, run in legs.items():
+            overlap = run[0][-1].compute_overlap()["matrix"]
+            # readable, ordered labels from the matrix_order column tuples (same order MBAR used)
+            labels = ["|".join(map(str, state)) for state in run[1].columns]
+            overlap_df = pd.DataFrame(overlap, index=labels, columns=labels)
+            # raw overlap matrix (machine-readable; always exported), rows/cols in matrix_order order
+            overlap_df.to_hdf(
+                f"{output_path}/{name}_O_MBAR.h5", key="df", mode="w"
+            )
+            # heatmap figure (only when requested; needs matplotlib)
+            if self.plot_overlap_matrix:
+                axis = plot_mbar_overlap_matrix(overlap)
+                axis.figure.savefig(
+                    f"{output_path}/{name}_O_MBAR.pdf",
+                    bbox_inches="tight",
+                    pad_inches=0.0,
+                )
+                axis.figure.clear()
 
     def run(self, fileStore):
         output_path = os.path.join(
@@ -329,9 +363,8 @@ class ConsolidateData(Job):
         pickle.dump(self.mbar_model, filehandler)
         filehandler.close()
 
-        # plot overlap matrix for complex
-        if self.plot_overlap_matrix:
-            self._plot_overlap_matrix()
+        # export MBAR overlap matrices for all three legs (raw .h5 always; PDFs when requested)
+        self._export_overlap_matrices()
 
 
 def create_mdout_dataframe(

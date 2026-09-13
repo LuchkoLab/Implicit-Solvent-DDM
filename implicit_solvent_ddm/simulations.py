@@ -251,9 +251,18 @@ class Calculation(Job):
         # to its assigned GPU; self.env predates that and would mask the pin,
         # sending every window to the default device (GPU 0).
         run_env = os.environ.copy()
+        if self.CUDA and not run_env.get("CUDA_VISIBLE_DEVICES"):
+            # Toil left this GPU job with an EMPTY CUDA_VISIBLE_DEVICES (i.e. it did
+            # not pin a device -- this happens for the endstate jobs under
+            # single_machine). '' means "no GPUs visible" so pmemd.cuda dies with
+            # 'no CUDA-capable device'. UNSET it instead, so CUDA falls back to the
+            # GPUs the Slurm cgroup exposes (logical 0..N-1). Sequential endstate
+            # jobs land on GPU 0; windows that Toil DOES pin keep a non-empty id and
+            # never reach this branch (so multi-GPU pinning is unaffected).
+            run_env.pop("CUDA_VISIBLE_DEVICES", None)
         if self.CUDA:
             fileStore.logToMaster(
-                f"[GPU] {getattr(self, 'system_type', '?')} window pinned to "
+                f"[GPU] {getattr(self, 'system_type', '?')} window "
                 f"CUDA_VISIBLE_DEVICES={run_env.get('CUDA_VISIBLE_DEVICES')!r}"
             )
         # amber_output = sp.Popen(self.exec_list, stdout=sp.PIPE, stderr=sp.PIPE)
@@ -440,10 +449,18 @@ class Simulation(Calculation):
                 self.incrd, userPath=os.path.join(tempDir, os.path.basename(self.incrd))
             )
 
-        else:
+        elif self.incrd:
             self.read_files["incrd"] = fileStore.readGlobalFile(
                 self.incrd[0],
                 userPath=os.path.join(tempDir, os.path.basename(self.incrd[0])),
+            )
+
+        else:
+            raise RuntimeError(
+                f"No input coordinate for {self.output_dir}: incrd is an empty list. "
+                f"The upstream minimization/MD that produces this job's restart wrote no "
+                f"output -- almost always because pmemd.cuda saw no GPU "
+                f"(CUDA_VISIBLE_DEVICES=''). Fix the GPU allocation, not this job."
             )
 
         self.read_files["input_file"] = fileStore.readGlobalFile(

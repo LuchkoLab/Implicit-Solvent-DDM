@@ -43,7 +43,7 @@ def run_remd(job, user_config: Config):
         Simulation(
             executable=user_config.system_settings.executable,
             mpi_command=user_config.system_settings.mpi_command,
-            num_cores=user_config.num_cores_per_system.complex_ncores,
+            num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.complex_ncores),
             CUDA=user_config.system_settings.CUDA,
             prmtop=user_config.endstate_files.complex_parameter_filename,
             incrd=user_config.endstate_files.complex_coordinate_filename,
@@ -219,7 +219,7 @@ def run_remd(job, user_config: Config):
             Simulation(
                 executable=user_config.system_settings.executable,
                 mpi_command=user_config.system_settings.mpi_command,
-                num_cores=user_config.num_cores_per_system.receptor_ncores,
+                num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.receptor_ncores),
                 CUDA=user_config.system_settings.CUDA,
                 prmtop=user_config.endstate_files.receptor_parameter_filename,
                 incrd=user_config.endstate_files.receptor_coordinate_filename,
@@ -331,8 +331,9 @@ def run_basic_md(job, user_config: Config):
         Simulation(
             executable=user_config.system_settings.executable,
             mpi_command=user_config.system_settings.mpi_command,
-            num_cores=user_config.num_cores_per_system.complex_ncores,
+            num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.complex_ncores),
             CUDA=user_config.system_settings.CUDA,
+            accelerators=user_config.system_settings.num_accelerators,
             prmtop=user_config.endstate_files.complex_parameter_filename,
             incrd=user_config.endstate_files.complex_coordinate_filename,
             input_file=user_config.inputs["min_mdin"],
@@ -353,8 +354,9 @@ def run_basic_md(job, user_config: Config):
         Simulation(
             executable=user_config.system_settings.executable,
             mpi_command=user_config.system_settings.mpi_command,
-            num_cores=user_config.num_cores_per_system.complex_ncores,
+            num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.complex_ncores),
             CUDA=user_config.system_settings.CUDA,
+            accelerators=user_config.system_settings.num_accelerators,
             prmtop=user_config.endstate_files.complex_parameter_filename,
             incrd=minimization_complex.rv(0),
             input_file=user_config.endstate_method.basic_md_args.md_template_mdin,
@@ -445,7 +447,7 @@ def run_basic_md(job, user_config: Config):
             Simulation(
                 executable=user_config.system_settings.executable,
                 mpi_command=user_config.system_settings.mpi_command,
-                num_cores=user_config.num_cores_per_system.receptor_ncores,
+                num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.receptor_ncores),
                 CUDA=user_config.system_settings.CUDA,
                 prmtop=user_config.endstate_files.receptor_parameter_filename,
                 incrd=user_config.endstate_files.receptor_coordinate_filename,
@@ -462,6 +464,7 @@ def run_basic_md(job, user_config: Config):
                 memory=user_config.system_settings.memory,
                 disk=user_config.system_settings.disk,
                 sim_debug=user_config.workflow.debug,
+                accelerators=user_config.system_settings.num_accelerators,
             )
         )
 
@@ -469,8 +472,9 @@ def run_basic_md(job, user_config: Config):
             Simulation(
                 executable=user_config.system_settings.executable,
                 mpi_command=user_config.system_settings.mpi_command,
-                num_cores=user_config.num_cores_per_system.receptor_ncores,
+                num_cores=(0.1 if user_config.system_settings.CUDA else user_config.num_cores_per_system.receptor_ncores),
                 CUDA=user_config.system_settings.CUDA,
+                accelerators=user_config.system_settings.num_accelerators,
                 prmtop=user_config.endstate_files.receptor_parameter_filename,
                 incrd=minimization_receptor.rv(0),
                 input_file=user_config.endstate_method.basic_md_args.md_template_mdin,

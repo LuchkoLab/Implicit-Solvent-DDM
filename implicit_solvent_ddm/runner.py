@@ -111,8 +111,8 @@ class IntermidateRunner(Job):
         post_only: bool,
         config: Config,
         adaptive: bool = False,
-        loaded_dataframe: list = [],
-        post_output: Union[list, list[pd.DataFrame]] = [],
+        loaded_dataframe: Optional[list] = None,
+        post_output: Optional[Union[list, list[pd.DataFrame]]] = None,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -140,11 +140,14 @@ class IntermidateRunner(Job):
         self.post_only = post_only
         self.config = config
         self.adaptive = adaptive
-        self.post_output = post_output
+        # Mutable-default fix: fresh per-instance lists, so production runners don't alias one
+        # shared module-level list. Callers that WANT to share by reference (e.g. new_runner
+        # threading post_output across pilot iterations) pass explicit non-None lists.
+        self.post_output = post_output if post_output is not None else []
         self.ligand_output = []
         self.receptor_output = []
         self.complex_output = []
-        self._loaded_dataframe = loaded_dataframe
+        self._loaded_dataframe = loaded_dataframe if loaded_dataframe is not None else []
         self.post_process_distruct = post_process_distruct
 
     def run(self, fileStore):
@@ -415,7 +418,11 @@ class IntermidateRunner(Job):
             executable=self.config.system_settings.executable,
             mpi_command=self.config.system_settings.mpi_command,
             num_cores=self.config.num_cores_per_system.complex_ncores,
-            CUDA=False,
+            # ALS pilot (and the revived adaptive path) must honour the CUDA flag exactly like the
+            # static path (setup_simulations.setup_apply_restraint_windows): complex runs on GPU for
+            # protein-ligand. The previous hardcoded CUDA=False only happened to match host-guest
+            # (cb7), where config.system_settings.CUDA is already falsy.
+            CUDA=self.config.system_settings.CUDA,
             prmtop=parm_file,
             incrd=self.config.inputs["endstate_complex_lastframe"],
             input_file=mdin,
@@ -424,6 +431,11 @@ class IntermidateRunner(Job):
             system_type="complex",
             directory_args=dirs_args[0],
             dirstruct="dirstruct_halo",
+            accelerators=(
+                self.config.system_settings.num_accelerators
+                if self.config.system_settings.CUDA
+                else None
+            ),
         )
 
         self.simulations.append(new_job)
@@ -510,6 +522,13 @@ class IntermidateRunner(Job):
                 "topdir": self.config.system_settings.top_directory_path,
             },
             dirstruct="dirstruct_apo",
+            # Receptor runs on GPU when CUDA is set (mirrors setup_apply_restraint_windows: a
+            # non-ligand system requests an accelerator so Toil pins it to a distinct device).
+            accelerators=(
+                self.config.system_settings.num_accelerators
+                if self.config.system_settings.CUDA
+                else None
+            ),
         )
 
         self.simulations.append(new_job)
@@ -519,16 +538,25 @@ class IntermidateRunner(Job):
         cls: Type["IntermidateRunner"],
         config: Config,
         obj: dict,
+        post_only: bool = True,
+        simulations: Optional[list] = None,
     ):
+        """Build a runner that shares ``post_output``/``_loaded_dataframe`` by reference with ``obj``.
+
+        ``post_only`` selects the MD pass (``False``) or the post-analysis pass (``True``) of the ALS
+        pilot's two-phase sub-runner; ``simulations`` overrides the simulation list (e.g. to run ONLY
+        the newly-inserted pilot windows) while still accumulating into the shared ``post_output``.
+        Defaults preserve the original behaviour (post-only over ``obj['simulations']``).
+        """
         return cls(
-            simulations=obj["simulations"],
+            simulations=simulations if simulations is not None else obj["simulations"],
             restraints=obj["restraints"],
             config=config,
             post_process_distruct=obj["post_process_distruct"],
             post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
             post_process_mdin=config.inputs["post_mdin"],
             adaptive=True,
-            post_only=True,
+            post_only=post_only,
             post_output=obj["post_output"],
             loaded_dataframe=obj["_loaded_dataframe"],
         )

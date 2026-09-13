@@ -14,6 +14,20 @@ from toil.job import Job
 working_directory = os.getcwd()
 
 
+def _seed_config():
+    """Load a fresh ``Config`` from the test ``config.yaml`` (the static restraint-window seed).
+
+    The restraint-window-comparison fixtures (``get_*_config``) only need the input seed schedule,
+    which is global across systems and is not mutated by the static workflow. They previously read it
+    from the workflow's Toil return value via ``run_workflow.rv(N)``, but ``run_workflow`` yields
+    ``updated_config.rv()`` (already a ``Promise``), so the second ``.rv()`` raised
+    ``AttributeError: 'Promise' object has no attribute 'rv'`` (and a Promise cannot be re-resolved
+    after the Toil context closes anyway). Reading the seed straight from the config avoids that.
+    """
+    with open(os.path.join("implicit_solvent_ddm/tests/input_files/config.yaml")) as yml:
+        return Config.from_config(yaml.safe_load(yml))
+
+
 @pytest.fixture(scope="session")
 def run_workflow():
     options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
@@ -75,7 +89,7 @@ def get_ligand_config(run_workflow):
     Returns:
         _type_: _description_
     """
-    return run_workflow.rv(1)
+    return _seed_config()
 
 
 @pytest.fixture(scope="module")
@@ -88,7 +102,7 @@ def get_complex_config(run_workflow):
     Returns:
         _type_: _description_
     """
-    return run_workflow.rv(0)
+    return _seed_config()
 
 
 @pytest.fixture(scope="module")
@@ -101,4 +115,4 @@ def get_receptor_config(run_workflow):
     Returns:
         _type_: _description_
     """
-    return run_workflow.rv(2)
+    return _seed_config()
