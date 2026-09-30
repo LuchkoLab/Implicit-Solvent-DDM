@@ -318,6 +318,51 @@ def refactor_find_heavy_bonds(parmed_traj_bonds):
 
     return num_heavy_bonds > 1
 
+def ramped_force(conformational_force, max_force, slope):
+    """
+    Force constant of a ramped restraint subset in one window.
+
+    Parameters
+    ----------
+    conformational_force : float
+        The window's network force constant, kcal/mol/A^2.
+    max_force : float
+        The network force at the top of the ladder.
+    slope : float
+        How many times faster than the network the subset falls, in log2.
+
+    Returns
+    -------
+    float
+        ``2**(E_max - slope*(E_max - E_con))``: equal to ``max_force`` at the top of the ladder
+        and effectively zero at the floor (2^-32 at E_con = -14 for E_max = 4, slope 2).
+    """
+    e_max, e_con = np.log2(max_force), np.log2(conformational_force)
+    return float(2.0 ** (e_max - slope * (e_max - e_con)))
+
+
+def count_heavy_neighbors(atom):
+    """
+    Number of heavy atoms covalently bonded to a parmed atom.
+
+    Unlike ``refactor_find_heavy_bonds``, which reads ``bond.atom2`` whatever end the query atom
+    sits on (so a terminal N can count itself), this counts the partner of each bond. The legacy
+    function is left as is so legacy Boresch anchors stay reproducible.
+
+    Parameters
+    ----------
+    atom : parmed.topologyobjects.Atom
+        Atom to inspect.
+
+    Returns
+    -------
+    int
+        Bonded partners whose name does not start with ``H``.
+    """
+    partners = (bond.atom2 if bond.atom1 is atom else bond.atom1 for bond in atom.bonds)
+    return sum(not partner.name.startswith("H") for partner in partners)
+
+
 def screen_for_distance_restraints(num_atoms, com, mol):
     """
     This function combs a molecule object (num_atoms) to find the atom closest to the coordinates at (com).

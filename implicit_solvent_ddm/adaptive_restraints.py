@@ -752,6 +752,7 @@ def run_compute_mbar(
         charges_windows=config.intermediate_args.charges_lambda_window,
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
         endstate_label=config.endstate_method.endstate_state_label,
+        lj_windows=config.intermediate_args.lj_scale_windows,
     )
     cycle_steps.round(3)
     
@@ -819,6 +820,7 @@ def adaptive_lambda_windows(
         charges_windows=updated_config.intermediate_args.charges_lambda_window,
         external_dielectic=updated_config.intermediate_args.gb_extdiel_windows,
         endstate_label=updated_config.endstate_method.endstate_state_label,
+        lj_windows=updated_config.intermediate_args.lj_scale_windows,
     )
     # round all restraint forces values to 3 sig. figs for readable dataframes.
     cycle_steps.round(3)
@@ -1157,6 +1159,7 @@ def improve_restraints_overlap(
                 conformational_template=runner.restraints.complex_conformational_restraints,
                 orientational_template=runner.restraints.boresch.boresch_template,
                 conformational_force=new_con_force,
+                **getattr(runner.restraints, "ramp", {}),
                 orientational_force=new_orient_force,
             ),
         )
@@ -1178,6 +1181,7 @@ def improve_restraints_overlap(
                 write_restraint_forces,
                 conformational_template=runner.restraints.receptor_conformational_restraints,
                 conformational_force=new_con_force,
+                **getattr(runner.restraints, "ramp", {}),
             ),
         )
 
@@ -1255,6 +1259,7 @@ def improve_restraints_overlap_batch(
                     conformational_template=runner.restraints.complex_conformational_restraints,
                     orientational_template=runner.restraints.boresch.boresch_template,
                     conformational_force=new_con_force,
+                **getattr(runner.restraints, "ramp", {}),
                     orientational_force=new_orient_force,
                 ),
             )
@@ -1276,6 +1281,7 @@ def improve_restraints_overlap_batch(
                     write_restraint_forces,
                     conformational_template=runner.restraints.receptor_conformational_restraints,
                     conformational_force=new_con_force,
+                **getattr(runner.restraints, "ramp", {}),
                 ),
             )
         # Canonical schedule (R1): the adapter and CycleSteps read these lists, so record each pair here.
@@ -1402,6 +1408,7 @@ def _dielectric_band_ascending(runner, config, system_type, log=print):
         charges_windows=config.intermediate_args.charges_lambda_window,
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
         endstate_label=config.endstate_method.endstate_state_label,
+        lj_windows=config.intermediate_args.lj_scale_windows,
     )
     cycle_steps.round(3)
     results = compute_mbar(

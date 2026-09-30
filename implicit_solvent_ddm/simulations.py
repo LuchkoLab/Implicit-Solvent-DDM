@@ -151,6 +151,32 @@ class Calculation(Job):
         # os.remove("mdin")
         return fileStore.readGlobalFile(mdin_ID)
 
+    def _mdout_tails(self, max_files=3, lines=25):
+        """Tail of each mdout, for the RuntimeError raised on a failed AMBER run.
+
+        Setup errors -- a bad ladder, a groupfile mismatch, an unreadable restart -- are
+        written to the mdout, not to stderr, and export_files() never runs on a failure,
+        so without this they die with the job's scratch directory.
+        """
+        found = sorted(
+            f for f in os.listdir(".")
+            if re.match(r".*\.?mdout(\.\w+)*$", f) and os.path.isfile(f)
+        )
+        if not found:
+            return "  mdout: none written"
+
+        out = []
+        for name in found[:max_files]:
+            try:
+                with open(name, errors="replace") as fh:
+                    tail = fh.read().strip().splitlines()[-lines:]
+            except OSError as err:
+                tail = [f"<unreadable: {err}>"]
+            out.append(f"  {name}:\n" + "\n".join(f"    {t}" for t in tail))
+        if len(found) > max_files:
+            out.append(f"  ... {len(found) - max_files} more mdout files")
+        return "\n".join(out)
+
     def export_files(self, fileStore, output_directory, parameter_files):
         restart_files = []
         traj_files = []
@@ -325,7 +351,8 @@ class Calculation(Job):
                 f"{self.directory_args.get('runtype', '?')} in {self.output_dir}\n"
                 f"  command: {' '.join(str(arg) for arg in self.exec_list)}\n"
                 f"  stderr: {amber_stderr.strip()[-2000:]}\n"
-                f"  stdout: {amber_stdout.strip()[-2000:]}"
+                f"  stdout: {amber_stdout.strip()[-2000:]}\n"
+                f"{self._mdout_tails()}"
             )
 
         # Per-job timing record -> parsed by research/timing_report.py into a phase breakdown.
@@ -909,26 +936,40 @@ class ExtractTrajectories(Job):
             target_trajectoryID = self.trajectory_files
 
         solu = re.sub(r"\..*", "", os.path.basename(self.read_solute))
-        lastframe_nc = f"{solu}_{self.target_temp}K_lastframe.ncrst"
-        lastframe_rst7 = f"{solu}_{self.target_temp}K_lastframe.rst7"
 
-        frame_arg = self._pose_medoid_frame(fileStore, solu, read_target_traj)
+        medoid_frame = self._pose_medoid_frame(fileStore, solu, read_target_traj)
+        # name the file after the frame it actually holds, so a downstream command line
+        # says which reference the restraints were built from
+        tag = "lastframe" if medoid_frame is None else f"medoid{medoid_frame}"
+        lastframe_nc = f"{solu}_{self.target_temp}K_{tag}.ncrst"
+        lastframe_rst7 = f"{solu}_{self.target_temp}K_{tag}.rst7"
 
-        # get the last frame at the target temperature
+        # get the reference frame at the target temperature
         fileStore.logToMaster(f"read_target_traj {read_target_traj}")
-        sp.run(
-            [
-                "cpptraj",
-                "-p",
-                self.read_solute,
-                "-y",
-                read_target_traj,
-                "-ya",
-                frame_arg,
-                "-x",
-                lastframe_nc,
-            ]
-        )
+        if medoid_frame is None:
+            sp.run(
+                [
+                    "cpptraj",
+                    "-p",
+                    self.read_solute,
+                    "-y",
+                    read_target_traj,
+                    "-ya",
+                    "lastframe",
+                    "-x",
+                    lastframe_nc,
+                ]
+            )
+        else:
+            # cpptraj splits -ya on whitespace and maps each token to a separate input
+            # trajectory, so a "N N" range cannot go there -- use an input script
+            script = f"{solu}_medoid_frame.cpptraj"
+            with open(script, "w") as fh:
+                fh.write(f"parm {self.read_solute}\n")
+                fh.write(f"trajin {read_target_traj} {medoid_frame} {medoid_frame}\n")
+                fh.write(f"trajout {lastframe_nc}\n")
+                fh.write("go\n")
+            sp.run(["cpptraj", "-i", script], capture_output=True)
         sp.run(
             [
                 "cpptraj",
@@ -961,13 +1002,14 @@ class ExtractTrajectories(Job):
         return (target_trajectoryID, lastframe_nc_ID, lastframe_rst7_ID)
 
     def _pose_medoid_frame(self, fileStore, solu, read_target_traj):
-        """cpptraj ``-ya`` argument for the restraint reference frame.
+        """1-based frame number of the dominant pose cluster's medoid.
 
-        ``"lastframe"`` when the flag is off or the trajectory is too short to cluster,
-        otherwise ``"<N> <N>"`` for the dominant pose cluster's medoid.
+        ``None`` when the flag is off, the trajectory is too short to cluster, or the
+        clustering itself fails, which leaves the caller on the unchanged
+        ``-ya lastframe`` path.
         """
         if not self.pose_medoid:
-            return "lastframe"
+            return None
 
         from implicit_solvent_ddm import pose_clusters
 
@@ -976,16 +1018,25 @@ class ExtractTrajectories(Job):
             fileStore.logToMaster(
                 f"[POSE] only {len(traj)} frames, too few to cluster; using lastframe"
             )
-            return "lastframe"
+            return None
 
-        result = pose_clusters.analyze(
-            traj,
-            self.ligand_mask,
-            self.receptor_mask,
-            cutoff=self.cluster_cutoff,
-            radius=self.pocket_radius,
-            stride=self.cluster_stride,
-        )
+        # a bad pocket selection must not throw away an endstate that already ran
+        try:
+            result = pose_clusters.analyze(
+                traj,
+                self.ligand_mask,
+                self.receptor_mask,
+                cutoff=self.cluster_cutoff,
+                radius=self.pocket_radius,
+                stride=self.cluster_stride,
+            )
+        except ValueError as exc:
+            fileStore.logToMaster(
+                f"[POSE] WARNING: clustering failed for {solu} ({exc}); falling back to "
+                f"lastframe. dG is still correct, the restrained leg is just noisier."
+            )
+            return None
+
         _, medoid_frame, fraction = pose_clusters.dominant_medoid(result["summary"])
 
         if fraction < 0.5:
@@ -1002,16 +1053,16 @@ class ExtractTrajectories(Job):
             )
 
         fileStore.logToMaster(
-            f"[POSE] {solu} restraint reference = frame {medoid_frame} "
-            f"(medoid of cluster 1, {fraction:.1%} of {len(result['frames'])} frames, "
+            f"[POSE] {solu} restraint reference = frame {medoid_frame} 0-based "
+            f"(cpptraj frame {medoid_frame + 1}, the number in the filename; medoid of "
+            f"cluster 1, {fraction:.1%} of {len(result['frames'])} frames, "
             f"stride {result['stride']})"
         )
 
         self._export_cluster_artifacts(fileStore, solu, result)
 
         # cpptraj trajin is 1-based
-        start_stop = medoid_frame + 1
-        return f"{start_stop} {start_stop}"
+        return medoid_frame + 1
 
     def _export_cluster_artifacts(self, fileStore, solu, result):
         if self.working_directory is None or self.directory_args is None:

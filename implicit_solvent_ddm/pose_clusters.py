@@ -40,6 +40,7 @@ from scipy.spatial.distance import pdist, squareform
 DEFAULT_FRAME_CAP = 2000  # O(n^2): 2000 frames is 16 MB condensed, 10000 is 400 MB
 MIN_POCKET_ATOMS = 10
 MIN_CLUSTER_FRAMES = 10
+MAX_POCKET_RADIUS = 16.0  # auto-expansion ceiling; past this it is no longer "the pocket"
 
 
 # ----------------------------------------------------------------------
@@ -118,16 +119,50 @@ def _select(top, mask):
     return np.asarray(sel, dtype=int)
 
 
+def _radius_ladder(radius, max_radius, step=2.0):
+    """The requested radius, then ``step`` increments up to ``max_radius`` inclusive."""
+    ladder = [float(radius)]
+    while ladder[-1] + step <= max_radius:
+        ladder.append(ladder[-1] + step)
+    return ladder
+
+
 def build_pocket_atoms(top, xyz0, ligand_mask, receptor_mask, radius,
-                       min_atoms=MIN_POCKET_ATOMS):
+                       min_atoms=MIN_POCKET_ATOMS, max_radius=MAX_POCKET_RADIUS):
     """Freeze a static binding-site atom selection based on frame 0.
 
-    Returns ``(pocket_indices, ligand_indices, label)``.
+    A residue lines the site when any of its heavy atoms sits within ``radius`` of the
+    ligand; the superposition uses the C-alphas of those residues, or the contacting heavy
+    atoms when the receptor has no backbone (host-guest). The radius grows in 2 A steps up
+    to ``max_radius`` when the site comes up short -- contact on the C-alpha alone
+    undercounts a fragment's site. Distances are evaluated numerically because
+    ``Topology.select`` cannot evaluate a cpptraj distance mask.
 
-    Receptor atoms follow the rule ``RestraintMaker._determine_restraint_atoms`` uses:
-    C-alpha atoms when the receptor has a backbone, all heavy atoms otherwise
-    (host-guest). Distances are evaluated numerically because ``Topology.select`` is
-    topology-only and cannot evaluate a cpptraj distance mask.
+    Parameters
+    ----------
+    top : pytraj.Topology
+        Topology the masks are evaluated against.
+    xyz0 : numpy.ndarray
+        ``(n_atoms, 3)`` coordinates of the frame that defines the site.
+    ligand_mask, receptor_mask : str
+        AMBER masks selecting the ligand and the receptor.
+    radius : float
+        Contact distance, in Angstrom.
+    min_atoms : int, optional
+        Fewest pocket atoms an alignment is trusted with.
+    max_radius : float, optional
+        Ceiling for the automatic radius growth.
+
+    Returns
+    -------
+    tuple of (numpy.ndarray, numpy.ndarray, str)
+        Pocket atom indices, ligand heavy-atom indices, and a label for the report.
+
+    Raises
+    ------
+    ValueError
+        If either mask selects nothing, or the site is still underfilled at
+        ``max_radius``.
     """
     xyz0 = np.asarray(xyz0, dtype=float)
 
@@ -140,33 +175,46 @@ def build_pocket_atoms(top, xyz0, ligand_mask, receptor_mask, radius,
             f"ligand mask {ligand_mask!r} selected no heavy atoms"
         )
 
-    ca = _select(top, f"{receptor_mask} & @CA")
-    if ca.size > 0:
-        candidates, kind = ca, "CA"
-    else:
-        # Non-protein (e.g. host-guest): no backbone to align on, use heavy atoms
-        candidates, kind = _select(top, f"{receptor_mask} & !@H*"), "heavy"
-    if candidates.size == 0:
+    receptor_heavy = _select(top, f"{receptor_mask} & !@H*")
+    if receptor_heavy.size == 0:
         raise ValueError(
             f"receptor mask {receptor_mask!r} selected no atoms"
         )
 
-    lig_xyz = xyz0[ligand_all]
-    cand_xyz = xyz0[candidates]
-    d = np.linalg.norm(cand_xyz[:, None, :] - lig_xyz[None, :, :], axis=-1)
-    pocket_indices = candidates[d.min(axis=1) <= radius]
+    ca = _select(top, f"{receptor_mask} & @CA")
+    kind = "CA" if ca.size > 0 else "heavy"
+
+    contact = np.linalg.norm(
+        xyz0[receptor_heavy][:, None, :] - xyz0[ligand_all][None, :, :], axis=-1
+    ).min(axis=1)
+
+    for used in _radius_ladder(radius, max_radius):
+        near = receptor_heavy[contact <= used]
+        if kind == "CA":
+            resids = {int(top.atom(int(i)).resid) for i in near}
+            pocket_indices = np.array(
+                [int(i) for i in ca if int(top.atom(int(i)).resid) in resids], dtype=int
+            )
+        else:
+            pocket_indices = near
+        if pocket_indices.size >= min_atoms:
+            break
 
     if pocket_indices.size < min_atoms:
         raise ValueError(
-            f"only {pocket_indices.size} pocket {kind} atoms within {radius} A of the "
+            f"only {pocket_indices.size} pocket {kind} atoms within {used:g} A of the "
             f"ligand; increase the pocket radius or check the masks"
         )
 
+    grown = "" if used == float(radius) else f" [radius grown {float(radius):g} -> {used:g} A]"
     if kind == "CA":
         resids = sorted({int(top.atom(int(i)).resid) + 1 for i in pocket_indices})
-        label = f"pocket CA residues   : {resids}"
+        label = f"pocket CA residues   : {resids}{grown}"
     else:
-        label = f"pocket heavy atoms   : {pocket_indices.size} (no backbone; host-guest)"
+        label = (
+            f"pocket heavy atoms   : {pocket_indices.size} (no backbone; host-guest)"
+            f"{grown}"
+        )
 
     return pocket_indices, ligand_indices, label
 

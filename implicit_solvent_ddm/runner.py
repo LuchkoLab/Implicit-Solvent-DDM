@@ -206,6 +206,7 @@ class IntermidateRunner(Job):
             charges_windows=self.config.intermediate_args.charges_lambda_window,
             external_dielectic=self.config.intermediate_args.gb_extdiel_windows,
             endstate_label=self.config.endstate_method.endstate_state_label,
+            lj_windows=self.config.intermediate_args.lj_scale_windows,
         )
         cycle_steps.round(3)
         order = {

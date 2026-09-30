@@ -92,6 +92,7 @@ def run_remd(job, user_config: Config):
                 "topdir": user_config.system_settings.top_directory_path,
             },
             working_directory=user_config.system_settings.working_directory,
+            sim_debug=user_config.workflow.debug,
         )
     )
     # config.endstate_method.remd_args.nthreads
@@ -188,6 +189,7 @@ def run_remd(job, user_config: Config):
             working_directory=user_config.system_settings.working_directory,
             memory=user_config.system_settings.memory,
             disk=user_config.system_settings.disk,
+            sim_debug=user_config.workflow.debug,
         )
     )
     # The ligand endstate runs on CPU. A 17-atom fragment never justifies a GPU, and
@@ -290,6 +292,7 @@ def run_remd(job, user_config: Config):
                 working_directory=user_config.system_settings.working_directory,
                 memory=user_config.system_settings.memory,
                 disk=user_config.system_settings.disk,
+                sim_debug=user_config.workflow.debug,
             )
         )
 

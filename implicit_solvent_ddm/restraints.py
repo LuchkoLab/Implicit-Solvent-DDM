@@ -15,15 +15,15 @@ import parmed as pmd
 import pytraj as pt
 from toil.common import FileID, Toil
 from toil.job import Job
-import subprocess
-import tempfile
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.restraint_helper import (
     compute_dihedral_angle,
+    count_heavy_neighbors,
     create_atom_neighbor_array,
     distance_calculator,
     find_angle,
     norm_distance,
+    ramped_force,
     refactor_find_heavy_bonds,
     screen_for_distance_restraints,
     shortest_distance_between_molecules,
@@ -128,7 +128,12 @@ class FlatBottom(Job):
         self.ligand_mask = config.amber_masks.ligand_mask
         # topology parameters
         self.complex_topology = config.endstate_files.complex_parameter_filename
-        self.complex_coordinate = config.endstate_files.complex_coordinate_filename
+        # the fixed restraint reference when given (same file as the Boresch and conformational
+        # restraints); with endstate_method 0 complex_coordinate_filename is the ensemble
+        self.complex_coordinate = (
+            config.endstate_files.restraint_reference_coordinate
+            or config.endstate_files.complex_coordinate_filename
+        )
 
         self.readfiles = {}
 
@@ -157,13 +162,14 @@ class FlatBottom(Job):
     def _com_ligand(self) -> np.ndarray:
         """Compute ligand center of mass"""
 
-        return pt.center_of_mass(self.complex_traj, mask=self.restrained_ligand_atoms)[-1]  # type: ignore
+        # frame 0, matching the pocket selection; identical for a single-frame restart
+        return pt.center_of_mass(self.complex_traj, mask=self.restrained_ligand_atoms)[0]  # type: ignore
 
     @property
     def _com_receptor(self) -> np.ndarray:
         """Compute receptor center of mass"""
 
-        return pt.center_of_mass(self.complex_traj, mask=self.restrained_receptor_atoms)[-1]  # type: ignore
+        return pt.center_of_mass(self.complex_traj, mask=self.restrained_receptor_atoms)[0]  # type: ignore
 
     @property
     def _center_of_mass_difference(self) -> float:
@@ -203,52 +209,6 @@ class FlatBottom(Job):
 
         return self._r3 + self.harmonic_restraint
 
-    @property
-    def generate_flatbottom_restraint(self):
-        """
-        Generate a flat-bottom restraint file using cpptraj.
-
-        Returns:
-            str: Contents of the generated restraint file.
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            rst_path = os.path.join(tmpdir, "restraint.RST")
-            cpptraj_input = os.path.join(tmpdir, "cpptraj.in")
-
-            # Build cpptraj command script
-            cpptraj_script = f"""parm {self.readfiles['prmtop']}
-    rst '!:LIG & !@H* & @CA' ':LIG & !@H*' iresid 0 iat -1 -1 \\
-        r1 {self.flat_bottom_restraints["r1"]} \\
-        r2 {self.flat_bottom_restraints["r2"]} \\
-        r3 {self.flat_bottom_restraints["r3"]} \\
-        r4 {self.flat_bottom_restraints["r4"]} \\
-        rk2 {self.flat_bottom_restraints["rk2"]} \\
-        rk3 {self.flat_bottom_restraints["rk3"]} \\
-        out {rst_path}
-    """
-
-            # Write cpptraj input file
-            with open(cpptraj_input, "w") as fh:
-                fh.write(cpptraj_script)
-
-            # Run cpptraj
-            result = subprocess.run(
-                ["cpptraj", "-i", cpptraj_input],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False
-            )
-
-            # Handle cpptraj errors
-            if result.returncode != 0:
-                raise RuntimeError(
-                    f"cpptraj failed with code {result.returncode}:\n{result.stderr}"
-                )
-
-            # Read and return restraint contents
-            with open(rst_path) as fh:
-                return fh.read()
     @property
     def _flat_bottom_restraints_template(self):
         """Parse in flat bottom restraint template.
@@ -382,27 +342,19 @@ class FlatBottom(Job):
         fileStore.logToMaster(f"ligand atoms: {self.restrained_ligand_atoms}")
 
         temp_file = fileStore.getLocalTempFile()
-        # protein-like case 
-        if self._protein_like:
-            fileStore.logToMaster("Protein-like system: using receptor Cα atoms for flat-bottom restraints."); 
-            with open(temp_file, "w") as fH:
-                fH.write(self.generate_flatbottom_restraint)
+        # one path for both: the protein / host-guest split already lives in the selection
+        # (C-alphas when the receptor has a backbone, heavy atoms otherwise), and only this
+        # template writes igr1/igr2 from the selected atoms
+        restraint = self._flat_bottom_restraints_template
+        fileStore.logToMaster(
+            f"Flat-bottom groups: {len(self.restrained_receptor_atoms)} receptor "
+            f"{'CA' if self._protein_like else 'heavy'} atoms, "
+            f"{len(self.restrained_ligand_atoms)} ligand atoms"
+        )
+        with open(temp_file, "w") as fH:
+            fH.write(restraint)
 
-            return (
-                fileStore.writeGlobalFile(temp_file),
-                self.generate_flatbottom_restraint,
-            )
-
-        # non-protein case 
-        else:
-            fileStore.logToMaster(" Non-protein case: select all heavy atoms for flat-bottom restraints."); 
-            with open(temp_file, "w") as fH:
-                fH.write(self._flat_bottom_restraints_template)
-
-            return (
-                fileStore.writeGlobalFile(temp_file),
-                self._flat_bottom_restraints_template,
-            )
+        return fileStore.writeGlobalFile(temp_file), restraint
 
 class BoreschRestraints(Job):
     """
@@ -463,6 +415,14 @@ class BoreschRestraints(Job):
         The selected l3 atom to constuct angle and dihedral angles
     boresch_template: str
         Orientational restraint written .RST file.
+    anchor_pool: str
+        ``"pocket_backbone"`` restricts R1-R3 to backbone CA/C/N of residues within
+        ``pocket_radius`` of the ligand, minus ``excluded_receptor_mask``; ``"legacy"`` screens
+        every receptor heavy atom. A receptor without backbone atoms always uses legacy.
+    pocket_radius: float
+        Contact distance (A) defining the pocket residues for ``pocket_backbone``.
+    excluded_receptor_mask: str
+        AMBER mask of receptor atoms that are not held by the network in every window.
 
     References
     ----------
@@ -502,6 +462,9 @@ class BoreschRestraints(Job):
         receptor_heavy_atom_2_parm_index: Optional[int] = None,
         receptor_heavy_atom_3_parm_index: Optional[int] = None,
         boresch_template: Optional[str] = None,
+        anchor_pool: str = "legacy",
+        pocket_radius: float = 10.0,
+        excluded_receptor_mask: Optional[str] = None,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -547,6 +510,75 @@ class BoreschRestraints(Job):
         self.K_phiC = K_phiC  # max torisional
         self.phi_C0 = phi_C0  # compute central
         self.boresch_template = boresch_template
+        self.anchor_pool = anchor_pool
+        self.pocket_radius = pocket_radius
+        self.excluded_receptor_mask = excluded_receptor_mask
+        self._pool = None
+
+    def _receptor_anchor_pool(self):
+        """Receptor atoms eligible as R1-R3 under ``pocket_backbone``.
+
+        Returns
+        -------
+        numpy.ndarray or None
+            0-based receptor atom indices (the complex indices, receptor first), or None for
+            the legacy screen (requested, or no backbone atoms, i.e. host-guest).
+
+        Raises
+        ------
+        ValueError
+            If the receptor is not first in the complex, or fewer than three atoms qualify.
+        """
+        if self.anchor_pool == "legacy":
+            return None
+        from implicit_solvent_ddm.pose_clusters import build_pocket_atoms
+
+        top = self.complex_traj.top
+        receptor = pt.select_atoms(self.receptor_mask, top)
+        # a host can have atoms named C or N; three C-alphas mean a protein backbone
+        if pt.select_atoms(f"({self.receptor_mask})&@CA", top).size < 3:
+            return None
+        backbone = pt.select_atoms(f"({self.receptor_mask})&@CA,C,N", top)
+        if not np.array_equal(receptor, np.arange(receptor.size)):
+            raise ValueError("pocket_backbone Boresch anchors need the receptor first in the complex topology")
+        pocket_ca, _, _ = build_pocket_atoms(
+            top, self.complex_traj.xyz[0], self.ligand_mask, self.receptor_mask, radius=self.pocket_radius
+        )
+        residues = {top.atom(int(i)).resid for i in pocket_ca}
+        excluded = set()
+        if self.excluded_receptor_mask:
+            excluded = set(pt.select_atoms(self.excluded_receptor_mask, top).tolist())
+        pool = np.array([int(i) for i in backbone
+                         if top.atom(int(i)).resid in residues and int(i) not in excluded])
+        if pool.size < 3:
+            raise ValueError(f"only {pool.size} pocket backbone atoms available for Boresch anchors")
+        return pool
+
+    def _anchor_pairs(self, atoms, offset):
+        """Ordered (a2, a3) candidate pairs whose a3 has more than one heavy neighbour.
+
+        Parameters
+        ----------
+        atoms : list[pytraj.core.topology_objects.Atom]
+            Candidate atoms, indexed within their molecule's sub-topology.
+        offset : int
+            Index of the molecule's first atom in the complex, to reach its parmed atom.
+
+        Returns
+        -------
+        list[tuple]
+            Candidate pairs in the form ``_check_suitable_restraints`` expects.
+        """
+        branched = [a for a in atoms if count_heavy_neighbors(self.complex_parm.atoms[offset + a.index]) > 1]
+        return [(a, b) for a in atoms for b in branched if a.index != b.index]
+
+    def _anchor_summary(self):
+        """R1-R3 and L1-L3 as residue:atom, for the job log."""
+        top = self.complex_traj.top
+        name = lambda i: f"{top.atom(int(i) - 1).resname}{top.atom(int(i) - 1).resid + 1}:{top.atom(int(i) - 1).name}"
+        receptor = [self.rec_dist_atom, self.receptor_atom2, self.receptor_atom3]
+        ligand = [self.lig_dist_atom, self.ligand_atom2, self.ligand_atom3]
+        return f"R1-R3 {[name(i) for i in receptor]}  L1-L3 {[name(i) for i in ligand]}"
 
     @property
     def receptor_heavy_atoms(self):
@@ -618,39 +650,12 @@ class BoreschRestraints(Job):
     @property
     def _write_orientational_template(self):
         """
-        Write an orentational restraint .RST file.
-
-        Generate AMBER NMR restraints:
-            &rst iat = atom_r1, atom_L1,
-            r1=0, r2 = r_aA0, r3 = r_aA0, r4 = 1000
-            rk2= $drest, rk3= $drest,
-            /
-            &rst iat = atom_R2, atom_R1, atom_L1,
-            r1 = 0, r2 = theta_B0, r3 = theta_B0, r4 = 180,
-            rk2 = $arest, rk3 = $arest,
-            /
-            &rst iat = atom_R1, atom_L1, atom_L2,
-            r1 = 0, r2 = theta_A0, r3 = theta_A0, r4 = 180,
-            rk2 = $arest, rk3 = $arest,
-            /
-            &rst iat= atom_R1, atom_L1, atom_L2, $atom_L3,
-            r1=0., r2=phi_A0, r3=phi_A0, r4=360.,
-            rk2 = $trest, rk3 = $trest,
-            /
-            &rst iat= atom_L1, atom_R1, atom_R2, atom_R3,
-            r1=0., r2=$rec_torres, r3=$rec_torres, r4=360.,
-            rk2 = $trest, rk3 = $trest,
-            /
-            &rst iat= atom_R2, atom_R1, atom_L1, atom_L2,
-            r1=0., r2=$central_torres, r3=$central_torres, r4=360.,
-            rk2 = $trest, rk3 = $trest,
-            /
-            &end
+        Write the orientational restraint template with each dihedral centred on its target.
 
         Returns
         -------
-        complex_name_orientational_template.RST: str
-            A written orientational .RST restraint file.
+        str
+            Path of the written ``<complex>_orientational_template.RST``.
         """
 
         string_template = ""
@@ -676,6 +681,13 @@ class BoreschRestraints(Job):
                 central_torres=self.phi_C0,
                 rec_torres=self.phi_B0,
                 lig_torres=self.phi_A0,
+                # +/-180 around the target keeps the restraint harmonic in both directions
+                central_tor_lo=float(self.phi_C0) - 180.0,
+                central_tor_hi=float(self.phi_C0) + 180.0,
+                rec_tor_lo=float(self.phi_B0) - 180.0,
+                rec_tor_hi=float(self.phi_B0) + 180.0,
+                lig_tor_lo=float(self.phi_A0) - 180.0,
+                lig_tor_hi=float(self.phi_A0) + 180.0,
                 drest="$drest",
                 arest="$arest",
                 trest="$trest",
@@ -809,6 +821,13 @@ class BoreschRestraints(Job):
                 receptor.n_atoms, lig_a1_coords, receptor
             )
 
+        if self._pool is not None:
+            # R1 = pocket backbone atom closest to L1, not the receptor COM atom
+            xyz = receptor.xyz[0]
+            distances = np.linalg.norm(xyz[self._pool] - lig_a1_coords, axis=1)
+            nearest = int(self._pool[int(np.argmin(distances))])
+            receptor_a1, rec_a1_coords, dist_rest = nearest + 1, xyz[nearest], float(distances.min())
+
         # set attributes
         self._assign_if_undefined("lig_dist_atom", ligand_a1)
         self._assign_if_undefined("rec_dist_atom", receptor_a1)
@@ -931,7 +950,7 @@ class BoreschRestraints(Job):
         )
 
     def run(self, fileStore):
-        fileStore.logToMaster("Creating Boresch Restraints")
+        fileStore.logToMaster(f"Creating Boresch Restraints from {self.complex_coordinate}")
         temp_dir = fileStore.getLocalTempDir()
         complex_prmtop_ID = fileStore.readGlobalFile(
             self.complex_prmtop,
@@ -947,6 +966,17 @@ class BoreschRestraints(Job):
         # self.complex_parm = pmd.load_file(self.complex_prmtop)
         self.complex_traj = pt.load(complex_coordinate_ID, complex_prmtop_ID)
         self.complex_parm = pmd.load_file(complex_prmtop_ID)
+        self._pool = self._receptor_anchor_pool()
+        receptor_traj = self.complex_traj[self.receptor_mask]
+        if self._pool is None:
+            ligand_pairs, receptor_pairs = self.ligand_heavy_atom_pairs, None
+        else:
+            ligand_pairs = self._anchor_pairs(self.ligand_heavy_atoms, offset=receptor_traj.n_atoms)
+            # iterate topology.atoms: topology.atom(i) returns an Atom whose .index is always 0
+            pool = set(self._pool.tolist())
+            receptor_pairs = self._anchor_pairs(
+                [a for k, a in enumerate(receptor_traj.topology.atoms) if k in pool], offset=0
+            )
 
         (
             ligand_atom_A_coord,
@@ -965,7 +995,7 @@ class BoreschRestraints(Job):
         ) = self._check_suitable_restraints(
             ligand_atom_A_coord,
             receptor_atom_a_coord,
-            self.ligand_heavy_atom_pairs,
+            ligand_pairs,
             self.complex_traj[self.ligand_mask],
         )
         ligand_a2 = self.complex_traj[self.receptor_mask].n_atoms + ligand_suba2
@@ -985,7 +1015,7 @@ class BoreschRestraints(Job):
         ) = self._check_suitable_restraints(
             receptor_atom_a_coord,
             ligand_atom_A_coord,
-            self.receptor_heavy_atom_pairs,
+            self.receptor_heavy_atom_pairs if receptor_pairs is None else receptor_pairs,
             self.complex_traj[self.receptor_mask],
         )
 
@@ -1004,6 +1034,8 @@ class BoreschRestraints(Job):
 
         # set central torsion phi ange
         self._assign_if_undefined("phi_C0", central_torsion)
+        mode = "legacy" if self._pool is None else "pocket_backbone"
+        fileStore.logToMaster(f"Boresch anchors ({mode}): {self._anchor_summary()}")
         # assign boresch template
         self._assign_if_undefined(
             "boresch_template",
@@ -1057,6 +1089,8 @@ class RestraintMaker(Job):
         )
         self.config = config
         self.boresch = boresch_restraints
+        # every write_restraint_forces call for a receptor/complex window must carry these
+        self.ramp = config.intermediate_args.ramp_kwargs
         self.flat_bottom = flat_bottom
         self.restraints = {}
         self.ligand_conformational_restraints = None
@@ -1084,7 +1118,7 @@ class RestraintMaker(Job):
         ]
 
     def run(self, fileStore):
-        fileStore.logToMaster("Creating Restraints")
+        fileStore.logToMaster(f"Creating Restraints: conformational network from {self.complex_binding_mode}")
         conformational_restraints = self.addChildJobFn(
             get_conformational_restraints,
             self.config.endstate_files.complex_parameter_filename,
@@ -1092,6 +1126,7 @@ class RestraintMaker(Job):
             self.config.amber_masks.receptor_mask,
             self.config.amber_masks.ligand_mask,
             self.config.intermediate_args.unrestrained_receptor_mask,
+            self.config.intermediate_args.receptor_ramp_mask,
         )
         self.conformational_restraints = conformational_restraints
 
@@ -1133,6 +1168,7 @@ class RestraintMaker(Job):
                     write_restraint_forces,
                     conformational_restraints.rv(2),
                     conformational_force=conformational_force,
+                    **self.ramp,
                 ).rv()
 
                 self.restraints[
@@ -1144,6 +1180,7 @@ class RestraintMaker(Job):
                     conformational_force=conformational_force,
                     orientational_force=orientational_force,
                     flat_bottom_template=self.flat_bottom,
+                    **self.ramp,
                 ).rv()
             else:
                 self.restraints[
@@ -1177,6 +1214,7 @@ class RestraintMaker(Job):
             self.boresch.boresch_template,
             conformational_force=conformational_force,
             orientational_force=orientational_force,
+            **self.ramp,
         )
 
     def add_ligand_window(self, conformational_force):
@@ -1191,6 +1229,7 @@ class RestraintMaker(Job):
             write_restraint_forces,
             self.conformational_restraints.rv(2),
             conformational_force=conformational_force,
+            **self.ramp,
         ).rv()
 
     def _get_boresch_parameters(self, restraint_filename):
@@ -1256,6 +1295,7 @@ def get_conformational_restraints(
     receptor_mask,
     ligand_mask,
     unrestrained_receptor_mask=None,
+    receptor_ramp_mask=None,
 ):
     """
      Purpose to create a series of conformational restraint template files.
@@ -1270,6 +1310,11 @@ def get_conformational_restraints(
          The jobStoreFileID of the imported file. The file being an coordinate file (.ncrst, .nc) of a complex
      complex_restrt_filename: srt
          Name of the coordinate complex file
+     unrestrained_receptor_mask: str, optional
+         Receptor atoms dropped from the network in every window.
+     receptor_ramp_mask: str, optional
+         Receptor atoms whose restraints are kept but written with the ``$frest_ramp``
+         placeholder, which ``write_restraint_forces`` fills from the ramp schedule.
 
 
      Returns
@@ -1316,8 +1361,24 @@ def get_conformational_restraints(
             f"dropped {before - len(receptor_atom_neighbor_index)} of {before} receptor restraints"
         )
 
+    ramped_pairs = []
+    if receptor_ramp_mask:
+        ramped = set((receptor.top.select(receptor_ramp_mask) + 1).tolist())
+        if not ramped:
+            raise ValueError(f"receptor_ramp_mask {receptor_ramp_mask!r} selected no receptor atoms")
+        ramped_pairs = [p for p in receptor_atom_neighbor_index if p[0] in ramped or p[1] in ramped]
+        receptor_atom_neighbor_index = [
+            p for p in receptor_atom_neighbor_index if p[0] not in ramped and p[1] not in ramped
+        ]
+        job.fileStore.logToMaster(
+            f"receptor_ramp_mask {receptor_ramp_mask}: {len(ramped)} atoms, "
+            f"{len(ramped_pairs)} ramped of {len(ramped_pairs) + len(receptor_atom_neighbor_index)} receptor restraints"
+        )
+
     ligand_template = conformational_restraints_template(ligand_atom_neighbor_index)
-    receptor_template = conformational_restraints_template(receptor_atom_neighbor_index)
+    receptor_template = conformational_restraints_template(
+        receptor_atom_neighbor_index
+    ) + conformational_restraints_template(ramped_pairs, placeholder="$frest_ramp")
     complex_template = conformational_restraints_template(
         ligand_atom_neighbor_index, num_receptor_atoms=receptor.n_atoms
     )
@@ -1356,7 +1417,36 @@ def write_restraint_forces(
     flat_bottom_template=None,
     conformational_force=0.0,
     orientational_force=0.0,
+    ramp_slope=None,
+    ramp_max_force=None,
 ):
+    """
+    Fill one window's restraint file from the conformational (and orientational) templates.
+
+    Parameters
+    ----------
+    job : toil.job.FunctionWrappingJob
+        Current Toil job.
+    conformational_template, orientational_template : FileID
+        Templates with ``$frest`` (and ``$frest_ramp``) / ``$drest``, ``$arest``, ``$trest``.
+    flat_bottom_template : str, optional
+        Flat-bottom restraint text prepended to complex files.
+    conformational_force, orientational_force : float
+        The window's force constants.
+    ramp_slope, ramp_max_force : float, optional
+        Ramp schedule for ``$frest_ramp`` (``RestraintMaker.ramp``); required when the template
+        carries that placeholder.
+
+    Returns
+    -------
+    FileID
+        The written ``restraint.RST``.
+
+    Raises
+    ------
+    ValueError
+        If the template has ramped restraints but no ramp schedule was passed.
+    """
     temp_dir = job.fileStore.getLocalTempDir()
 
     read_conformational_template = job.fileStore.readGlobalFile(
@@ -1383,9 +1473,13 @@ def write_restraint_forces(
             string_template += orientational_temp
 
     with open(read_conformational_template) as temp:
-        template = Template(temp.read())
-        restraint_temp = template.substitute(frest=conformational_force)
-        string_template += restraint_temp
+        text = temp.read()
+    forces = dict(frest=conformational_force)
+    if "$frest_ramp" in text:
+        if ramp_slope is None or ramp_max_force is None:
+            raise ValueError("restraint template has ramped restraints but no ramp schedule was passed")
+        forces["frest_ramp"] = ramped_force(conformational_force, ramp_max_force, ramp_slope)
+    string_template += Template(text).substitute(**forces)
 
     string_template = string_template.replace("&end", "")
 
@@ -1397,7 +1491,7 @@ def write_restraint_forces(
 
 
 def conformational_restraints_template(
-    solute_conformational_restraint, num_receptor_atoms=0, delta_flat = 0.5):
+    solute_conformational_restraint, num_receptor_atoms=0, delta_flat = 0.5, placeholder="$frest"):
     restraint_path = os.path.abspath(
         os.path.join(
             os.path.dirname(os.path.realpath(__file__)),
@@ -1416,7 +1510,7 @@ def conformational_restraints_template(
                 + num_receptor_atoms,
                 distance_lower=solute_conformational_restraint[index][2] - delta_flat,
                 distance_upper=solute_conformational_restraint[index][2] + delta_flat,
-                frest="$frest",
+                frest=placeholder,
             )
             string_template += restraint_template
     return string_template

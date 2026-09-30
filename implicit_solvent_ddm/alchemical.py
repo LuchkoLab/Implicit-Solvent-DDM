@@ -52,6 +52,7 @@ def split_complex_system(
         ),
     )
 
+    job.fileStore.logToMaster(f"splitting receptor/ligand from {endstate_coordiante_complex_filename}")
     # load in endstate lastframe coordinate of complex file
     traj = pt.load(coordinate_file, solute_file)
     # strip into receptor and ligand respectivlity
@@ -72,6 +73,46 @@ def split_complex_system(
     return receptor_ID, ligand_ID
 
 
+def scale_ligand_receptor_lj(parm, ligand_atoms, receptor_atoms, lj_scale):
+    """
+    Scale only the ligand-receptor Lennard-Jones coefficients of a topology, in place.
+
+    Parameters
+    ----------
+    parm : parmed.amber.AmberParm
+        Topology to modify.
+    ligand_atoms, receptor_atoms : array_like of int
+        0-based atom indices.
+    lj_scale : float
+        Factor on every ligand-receptor A and B coefficient.
+
+    Raises
+    ------
+    ValueError
+        If the ligand and receptor still share an LJ type after the split.
+    """
+    type_index = parm.parm_data["ATOM_TYPE_INDEX"]
+    # addLJType gives the whole mask one type, so split once per original ligand type
+    for original in sorted({type_index[i] for i in ligand_atoms}):
+        atoms = [int(i) + 1 for i in ligand_atoms if type_index[i] == original]
+        pmd.tools.actions.addLJType(parm, "@" + ",".join(map(str, atoms))).execute()
+    type_index = parm.parm_data["ATOM_TYPE_INDEX"]
+    ligand_types = {type_index[i] for i in ligand_atoms}
+    receptor_types = {type_index[i] for i in receptor_atoms}
+    if ligand_types & receptor_types:
+        raise ValueError("ligand and receptor still share LJ types after addLJType")
+    ntypes = parm.ptr("ntypes")
+    nb_index = parm.parm_data["NONBONDED_PARM_INDEX"]
+    acoef = parm.parm_data["LENNARD_JONES_ACOEF"]
+    bcoef = parm.parm_data["LENNARD_JONES_BCOEF"]
+    for li in ligand_types:
+        for rj in receptor_types:
+            slot = nb_index[ntypes * (li - 1) + (rj - 1)]
+            if slot > 0:
+                acoef[slot - 1] *= lj_scale
+                bcoef[slot - 1] *= lj_scale
+
+
 def alter_topology(
     job,
     solute_amber_parm,
@@ -80,6 +121,7 @@ def alter_topology(
     receptor_mask,
     exculsions=False,
     set_charge=0.0,
+    lj_scale=None,
 ) -> str:
     """
     Simple command to alter the ligand charge and/or turn off non-bonded interactions with receptor w/ligand.
@@ -98,6 +140,8 @@ def alter_topology(
         If True no non-bonded interactions between the ligand and receptor will be computed
     set_charge: float
         Specify the percent charge of all ligand atoms. 0.2 -> 20% total charges.
+    lj_scale: float, optional
+        Scale on the ligand-receptor Lennard-Jones interaction; None leaves it unchanged.
     Returns
     -------
     toil.fileStores.FileID
@@ -119,6 +163,11 @@ def alter_topology(
 
     # load parmed
     solute_parm = pmd.load_file(read_solute_prmtop, read_solute_coordiate)
+    # before the charge edit: addLJType reloads atoms from parm_data, discarding atom-level changes
+    if lj_scale is not None:
+        if exculsions:
+            raise ValueError("lj_scale and exculsions both set: exclusions already remove ligand-receptor LJ")
+        scale_ligand_receptor_lj(solute_parm, ligand_atoms, traj.topology.select(receptor_mask), lj_scale)
 
     saved_filename = ""
 
@@ -129,6 +178,9 @@ def alter_topology(
     for index, new_charge in enumerate(reduce_charge):
         solute_parm.atoms[ligand_atoms[index]].charge = new_charge
     saved_filename += f"charge_{set_charge}_"
+
+    if lj_scale is not None:
+        saved_filename += f"lj_{lj_scale}_"
 
     if exculsions:
         pmd.tools.actions.addExclusions(

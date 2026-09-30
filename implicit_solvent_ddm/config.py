@@ -247,6 +247,8 @@ class ParameterFiles:
     complex_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
     ligand_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
     receptor_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
+    # Set by Config when intermediate_states_arguments.restraint_reference is a file
+    restraint_reference_coordinate: Optional[Union[str, FileID]] = field(default=None)
 
     # Misc
     ignore_unique_naming: bool = False
@@ -392,6 +394,7 @@ class ParameterFiles:
             "complex_initial_coordinate",
             "ligand_initial_coordinate",
             "receptor_initial_coordinate",
+            "restraint_reference_coordinate",
         ]
 
         for attr in file_attributes:
@@ -602,10 +605,15 @@ class FlatBottomRestraints:
         Default is 10.0 Å.
     spring_constant : float
         Force constant K in kJ/mol·nm². Default is 1.0.
-    restrained_receptor_atoms : list of int, optional
-        Atom indices to restrain on the receptor side.
-    restrained_ligand_atoms : list of int, optional
-        Atom indices to restrain on the ligand side.
+    pocket_radius : float
+        Contact distance defining the binding site the receptor group is anchored on.
+        Default is 8.0 Å, matching `IntermediateStateArgs.pose_pocket_radius` so the
+        restraint and the pose clustering agree on what "the pocket" is.
+    restrained_receptor_atoms : list of int or str, optional
+        Receptor side of the restraint, as 0-based atom indices or an AMBER mask.
+        Resolved by `Config._check_missing_flatbottom_parameters` when left None.
+    restrained_ligand_atoms : list of int or str, optional
+        Ligand side, same forms.
     flat_bottom_restraints : dict, optional
         User-defined parameters {r1, r2, r3, r4, rk2, rk3}. If not provided,
         defaults are inferred using `_missing_parameters()`.
@@ -614,8 +622,9 @@ class FlatBottomRestraints:
     flat_bottom_width: float = 5.0
     harmonic_distance: float = 10.0
     spring_constant: float = 1.0
-    restrained_receptor_atoms: Optional[List[int]] = None
-    restrained_ligand_atoms: Optional[List[int]] = None
+    pocket_radius: float = 8.0
+    restrained_receptor_atoms: Optional[Union[List[int], str]] = None
+    restrained_ligand_atoms: Optional[Union[List[int], str]] = None
     flat_bottom_restraints: Optional[
         dict[str, float]
     ] = None  # {r1: 0, r2: 0, r3: 10, r4: 20, rk2: 0.1, rk3: 0.1}
@@ -778,6 +787,7 @@ class IntermediateStateArgs:
     temperature: float
 
     charges_lambda_window: List[float] = field(default_factory=list)
+    lj_scale_windows: List[float] = field(default_factory=list)  # ligand-receptor LJ scales for complex windows between no_interactions (0) and interactions (1); empty -> no intermediate LJ windows
     gb_extdiel_windows: List[float] = field(default_factory=list)
     min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
     post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
@@ -787,11 +797,40 @@ class IntermediateStateArgs:
     # --- Conformational-restraint selection ---
     unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
 
+    receptor_ramp_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms whose network restraints are ramped rather than dropped: free near the endstate (keeps the seam), frozen at the top of the ladder (keeps the complex and receptor legs identical in the GB/charge/LJ windows). Mutually exclusive with unrestrained_receptor_mask, which frees the selection in EVERY window and let MCL-1 loop 22-32 sample differently per leg.
+    receptor_ramp_slope: float = 2.0  # ramp exponent = E_max - slope*(E_max - E_con): equals the network at the top, 2^-32 at E_con=-14 for slope 2.
+
+    # --- Boresch anchor selection ---
+    boresch_anchors: str = "pocket_backbone"  # "pocket_backbone": R1-R3 from backbone CA/C/N of residues within boresch_pocket_radius of the ligand, minus any freed/ramped mask. "legacy": any receptor heavy atom, farthest lever arm wins -- on a protein that picks surface side-chain tips (MCL-1/ligand-17 anchored to ARG31 in the freed loop, which dragged the ligand into the protein). A receptor with no backbone (host-guest) always uses legacy.
+    boresch_pocket_radius: float = 10.0  # A around the ligand defining the residues whose backbone may anchor Boresch
+
     # --- Restraint reference frame ---
-    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid". Complex leg only. Variance fix, not a bias one: dG is correct either way.
+    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid" | path to a single-frame complex restart (crystal pose, or scripts/relax_binding_pose.py output). A path is identical in every replicate; the two keywords are drawn from each run's own sampling and differ per replicate. Variance fix, not a bias one: dG is correct either way.
     pose_cluster_cutoff: float = 2.0  # A, average-linkage cutoff on no-fit ligand RMSD
     pose_pocket_radius: float = 8.0  # A around the ligand defining the pocket atoms to superpose on
     pose_cluster_stride: int = 0  # 0 -> auto, caps the O(n^2) matrix at ~2000 frames
+
+    @property
+    def freed_receptor_mask(self) -> Optional[str]:
+        """Receptor atoms not held by the network in every window; never usable as Boresch anchors."""
+        return self.receptor_ramp_mask or self.unrestrained_receptor_mask
+
+    @property
+    def ramp_kwargs(self) -> dict:
+        """``write_restraint_forces`` arguments for the receptor ramp; empty when there is no ramp."""
+        if not self.receptor_ramp_mask:
+            return {}
+        return dict(
+            ramp_slope=float(self.receptor_ramp_slope),
+            ramp_max_force=float(self.max_conformational_restraint),
+        )
+
+    @property
+    def restraint_reference_file(self) -> Optional[str]:
+        """Path of the fixed restraint reference, or None when it is drawn from the run's sampling."""
+        if self.restraint_reference in ("lastframe", "pose_medoid"):
+            return None
+        return self.restraint_reference
 
     # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
     pilot_ps: float = 50.0                     # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
@@ -881,11 +920,29 @@ class IntermediateStateArgs:
                 raise ValueError("long_restraint_window_ns must be > 0 ns (or None to disable)")
             self.long_restraint_window_exponent = min(self.exponent_conformational_forces_list)
 
-        if self.restraint_reference not in ("lastframe", "pose_medoid"):
+        self.lj_scale_windows = sorted({float(lam) for lam in self.lj_scale_windows})
+        if any(not 0.0 < lam < 1.0 for lam in self.lj_scale_windows):
+            raise ValueError(f"lj_scale_windows must lie strictly between 0 and 1, got {self.lj_scale_windows}")
+
+        if self.receptor_ramp_mask and self.unrestrained_receptor_mask:
             raise ValueError(
-                f"restraint_reference must be 'lastframe' or 'pose_medoid', "
-                f"got {self.restraint_reference!r}"
+                "receptor_ramp_mask and unrestrained_receptor_mask are mutually exclusive: "
+                "one ramps the selection, the other drops it from every window"
             )
+        if float(self.receptor_ramp_slope) < 1.0:
+            raise ValueError("receptor_ramp_slope must be >= 1 so the ramp is at or below the network")
+        if self.boresch_anchors not in ("pocket_backbone", "legacy"):
+            raise ValueError(
+                f"boresch_anchors must be 'pocket_backbone' or 'legacy', got {self.boresch_anchors!r}"
+            )
+
+        if self.restraint_reference not in ("lastframe", "pose_medoid"):
+            if not os.path.isfile(str(self.restraint_reference)):
+                raise ValueError(
+                    f"restraint_reference must be 'lastframe', 'pose_medoid' or a path to a "
+                    f"complex restart, got {self.restraint_reference!r}"
+                )
+            self.restraint_reference = str(Path(self.restraint_reference).resolve())
 
         # Ensure mdin path is absolute
         self.mdin_intermediate_file = str(Path(self.mdin_intermediate_file).resolve())
@@ -1101,6 +1158,7 @@ class Config:
     ignore_receptor: bool = False
 
     def __post_init__(self):
+        self._resolve_restraint_reference()
         self._config_sanity_check()
 
         # A supplied receptor is reused as-is and may be a multi-frame ensemble; a generated
@@ -1142,6 +1200,40 @@ class Config:
         self._check_missing_flatbottom_parameters()
         self._remd_target_temperature()
         self.intermediate_args._sanity_check_mdin()
+
+    def _resolve_restraint_reference(self):
+        """
+        Make a fixed restraint reference the structure every leg is restrained to and starts from.
+
+        Resolved here, before Toil serialization, because config changes made inside a Toil job
+        never reach later phases. The complex REMD / basic-MD endstate starts from it too; a
+        user-provided endstate (method 0) keeps its ensemble, since there the complex coordinate
+        IS the sampled ensemble. Phase 2 swaps it in as the binding mode
+        (``workflow_phases.use_reference_frame``).
+
+        Raises
+        ------
+        ValueError
+            If the reference is not one frame matching the complex topology.
+        """
+        path = self.intermediate_args.restraint_reference_file
+        if path is None:
+            return
+        parm = str(self.endstate_files.complex_parameter_filename)
+        try:
+            n_frames = pt.iterload(path, parm).n_frames
+        except Exception as err:
+            raise ValueError(f"restraint_reference {path} does not match {parm}: {err}") from err
+        # pytraj reports an atom-count mismatch on stderr and yields zero frames, not an error
+        if n_frames == 0:
+            raise ValueError(f"restraint_reference {path} does not match {parm} (atom count?)")
+        if n_frames != 1:
+            raise ValueError(
+                f"restraint_reference {path} has {n_frames} frames; it must be one complex restart"
+            )
+        self.endstate_files.restraint_reference_coordinate = path
+        if self.endstate_method.endstate_method_type != 0:
+            self.endstate_files.complex_coordinate_filename = path
 
     def _check_endstate_method(self):
         """
@@ -1232,8 +1324,74 @@ class Config:
             restraints={},   # Placeholder; can be populated post-init
         )
 
+    @staticmethod
+    def _resolve_restraint_atoms(topology, given, fallback):
+        """Resolve a restraint group to 0-based atom indices.
+
+        Parameters
+        ----------
+        topology : pytraj.Topology
+            Topology the mask is evaluated against.
+        given : list of int, str, or None
+            Explicit indices, an AMBER mask, or None to use `fallback`.
+        fallback : array_like of int
+            Selection used when `given` is None.
+
+        Returns
+        -------
+        list of int
+            0-based atom indices.
+
+        Raises
+        ------
+        ValueError
+            If a supplied mask selects no atoms.
+        """
+        if given is None:
+            selection = fallback
+        elif isinstance(given, str):
+            selection = topology.select(given)
+            if selection is None or len(selection) == 0:
+                raise ValueError(f"restraint mask {given!r} selected no atoms")
+        else:
+            selection = given
+        return [int(index) for index in selection]
+
     def _check_missing_flatbottom_parameters(self):
-        pass
+        """Fill in the flat-bottom restraint groups the config did not supply.
+
+        The receptor side becomes the C-alphas of residues within ``pocket_radius`` of the
+        ligand, so the restrained distance is measured from the binding site and not from
+        the whole receptor's centre of mass, which leaves the ligand free to sit anywhere
+        on the surface at the same radius.
+        """
+        from implicit_solvent_ddm.pose_clusters import build_pocket_atoms
+
+        flat_bottom = self.endstate_method.flat_bottom
+        # a fixed restraint reference defines the site; with endstate_method 0 the complex
+        # coordinate is the sampled ensemble, whose frame 0 is not that structure
+        reference = self.endstate_files.restraint_reference_coordinate
+        if reference is not None:
+            trajectory = pt.iterload(str(reference), str(self.endstate_files.complex_parameter_filename))
+        else:
+            trajectory = self.complex_pytraj_trajectory
+        topology = trajectory.top
+
+        # the initial pose defines the site, not wherever the ensemble wandered
+        pocket_atoms, ligand_atoms, _ = build_pocket_atoms(
+            topology,
+            trajectory[0].xyz,
+            self.amber_masks.ligand_mask,
+            self.amber_masks.receptor_mask,
+            radius=flat_bottom.pocket_radius,
+        )
+
+        flat_bottom.restrained_receptor_atoms = self._resolve_restraint_atoms(
+            topology, flat_bottom.restrained_receptor_atoms, pocket_atoms
+        )
+        flat_bottom.restrained_ligand_atoms = self._resolve_restraint_atoms(
+            topology, flat_bottom.restrained_ligand_atoms, ligand_atoms
+        )
 
     @property
     def complex_pytraj_trajectory(self) -> pt.Trajectory:

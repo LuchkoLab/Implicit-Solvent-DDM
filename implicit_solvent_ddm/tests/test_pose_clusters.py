@@ -164,6 +164,7 @@ def test_protein_pocket_uses_ca_atoms_within_the_radius():
             ":LIG & !@H*": np.array([0, 1]),
             ":LIG": np.array([0, 1, 2, 3]),
             ":1-10 & @CA": np.arange(4, 28),
+            ":1-10 & !@H*": np.arange(4, 28),
         },
         resids={i: i for i in range(28)},
     )
@@ -172,6 +173,57 @@ def test_protein_pocket_uses_ca_atoms_within_the_radius():
     assert sorted(pocket) == list(range(4, 16))  # the far shell is excluded
     assert sorted(ligand) == [0, 1]              # descriptor is heavy atoms only
     assert "pocket CA residues" in label
+
+
+def test_side_chain_contact_pulls_in_a_distant_ca():
+    # the fragment case: every CA sits beyond the radius, only side chains touch. A
+    # CA-distance rule finds nothing here and the run dies.
+    xyz = np.zeros((26, 3))
+    xyz[0] = [0.0, 0.0, 0.0]                                    # ligand heavy atom
+    xyz[1] = [0.5, 0.0, 0.0]                                    # ligand hydrogen
+    side_chains = np.arange(2, 14)
+    cas = np.arange(14, 26)
+    xyz[side_chains] = np.array([[5.0, 0.0, 0.0]]) + RNG.normal(scale=0.2, size=(12, 3))
+    xyz[cas] = np.array([[12.0, 0.0, 0.0]]) + RNG.normal(scale=0.2, size=(12, 3))
+    resids = {int(a): i for i, a in enumerate(side_chains)}
+    resids.update({int(a): i for i, a in enumerate(cas)})       # CA i shares residue i
+    top = _FakeTopology(
+        {
+            ":LIG & !@H*": np.array([0]),
+            ":LIG": np.array([0, 1]),
+            ":REC & @CA": cas,
+            ":REC & !@H*": np.concatenate([side_chains, cas]),
+        },
+        resids=resids,
+    )
+    pocket, _, label = pc.build_pocket_atoms(top, xyz, ":LIG", ":REC", radius=8.0)
+
+    assert sorted(pocket) == list(cas)
+    assert "radius grown" not in label
+
+
+def test_an_underfilled_pocket_grows_the_radius():
+    # 8 CAs at 4.5 A, 12 more at 10.5 A: the requested radius is one atom short of a
+    # trustworthy alignment, so the search widens instead of killing the workflow.
+    xyz = np.zeros((22, 3))
+    xyz[1] = [0.5, 0.0, 0.0]                                   # ligand hydrogen
+    for k, atom in enumerate(range(2, 10)):
+        xyz[atom] = [5.0, 0.1 * k, 0.0]
+    for k, atom in enumerate(range(10, 22)):
+        xyz[atom] = [11.0, 0.1 * k, 0.0]
+    top = _FakeTopology(
+        {
+            ":LIG & !@H*": np.array([0]),
+            ":LIG": np.array([0, 1]),
+            ":REC & @CA": np.arange(2, 22),
+            ":REC & !@H*": np.arange(2, 22),
+        },
+        resids={i: i for i in range(22)},
+    )
+    pocket, _, label = pc.build_pocket_atoms(top, xyz, ":LIG", ":REC", radius=6.0)
+
+    assert len(pocket) == 20                 # the far shell came in at 12 A
+    assert "radius grown 6 -> 12 A" in label
 
 
 def test_host_guest_pocket_falls_back_to_heavy_atoms():
@@ -212,7 +264,8 @@ def test_too_few_pocket_atoms_is_an_error():
     top = _FakeTopology({
         ":LIG & !@H*": np.array([0, 1]),
         ":LIG": np.array([0, 1, 2, 3]),
-        ":1-10 & @CA": np.arange(16, 28),  # only the far shell
+        ":1-10 & @CA": np.arange(16, 28),     # only the far shell
+        ":1-10 & !@H*": np.arange(16, 28),
     })
     with pytest.raises(ValueError, match="pocket"):
         pc.build_pocket_atoms(top, xyz, ":LIG", ":1-10", radius=10.0)

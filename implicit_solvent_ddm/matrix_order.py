@@ -15,6 +15,7 @@ class CycleSteps:
     # Must match setup_simulations.apo_endstate_dirstruct's state_label: that value is the
     # MBAR index key, so a mismatch makes every endstate .loc[] lookup raise KeyError.
     endstate_label: str = "endstate"
+    lj_windows: list[float] = field(default_factory=list)
     endstate: list[tuple[str, str, str, str]] = field(default_factory=list, init=False)
     no_gb: list[tuple[str, str, str, str]] = field(init=False)
     no_interactions: list[tuple[str, str, str, str]] = field(init=False)
@@ -59,6 +60,19 @@ class CycleSteps:
         ]
         self.orientational_forces = [
             round(float(force), dec) for force in self.orientational_forces
+        ]
+
+    @property
+    def lj_scaled(self):
+        """Intermediate ligand-receptor LJ windows, ascending, between no_interactions and interactions."""
+        return [
+            (
+                f"lj_{float(lj_scale)}",
+                "0.0",
+                "0.0",
+                f"{max(self.conformation_forces)}_{max(self.orientational_forces)}",
+            )
+            for lj_scale in sorted(self.lj_windows)
         ]
 
     @property
@@ -155,6 +169,7 @@ class CycleSteps:
     def complex_order(self) -> list:
         return (
             self.no_interactions
+            + self.lj_scaled
             + self.interations
             + self.complex_GB_exl_windows
             + self.complex_charges
@@ -170,13 +185,15 @@ class CycleSteps:
     def start_complex_charge_matrix(self):
         return (
             len(self.no_interactions)
+            + len(self.lj_scaled)
             + len(self.interations)
             + len(self.external_dielectic)
         )
 
     @property
     def start_gb_extdiel_matrix(self):
-        return len(self.no_interactions)
+        # index of the interactions state, the gas anchor the GB band starts from
+        return len(self.no_interactions) + len(self.lj_scaled)
 
     @property
     def start_receptor_gb_matrix(self):
@@ -193,6 +210,7 @@ class CycleSteps:
     def halo_restraint_matrix(self) -> int:
         return (
             len(self.no_interactions)
+            + len(self.lj_scaled)
             + len(self.interations)
             + len(self.complex_GB_exl_windows)
             + len(self.complex_charges)

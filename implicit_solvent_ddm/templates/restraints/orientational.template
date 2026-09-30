@@ -15,17 +15,17 @@ rk2 = $arest, rk3 = $arest,
 /
 
 &rst iat= $atom_R1, $atom_L1, $atom_L2, $atom_L3,
-r1=0., r2=$lig_torres, r3=$lig_torres, r4=360.,
+r1=$lig_tor_lo, r2=$lig_torres, r3=$lig_torres, r4=$lig_tor_hi,
 rk2 = $trest, rk3 = $trest,
 /
 
 &rst iat= $atom_L1, $atom_R1, $atom_R2, $atom_R3,
-r1=0., r2=$rec_torres, r3=$rec_torres, r4=360.,
+r1=$rec_tor_lo, r2=$rec_torres, r3=$rec_torres, r4=$rec_tor_hi,
 rk2 = $trest, rk3 = $trest,
 /
 
 &rst iat= $atom_R2, $atom_R1, $atom_L1, $atom_L2,
-r1=0., r2=$central_torres, r3=$central_torres, r4=360.,
+r1=$central_tor_lo, r2=$central_torres, r3=$central_torres, r4=$central_tor_hi,
 rk2 = $trest, rk3 = $trest,
 /
 

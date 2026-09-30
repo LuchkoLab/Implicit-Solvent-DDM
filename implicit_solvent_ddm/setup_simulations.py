@@ -277,6 +277,47 @@ class SimulationSetup:
             )
         )
 
+    def setup_lj_scaled_simulation(self, restraint_key: str, prmtop: FileID, lj_scale: float):
+        """
+        Add a complex window with ligand-receptor LJ scaled by ``lj_scale``.
+
+        Parameters
+        ----------
+        restraint_key : str
+            Key of the max-restraint complex restraint file.
+        prmtop : FileID
+            Topology from ``alter_topology(..., lj_scale=lj_scale)``.
+        lj_scale : float
+            Scale on the ligand-receptor LJ, between 0 and 1.
+        """
+        temp_args = copy(self.no_gb_args)
+        # the state key has no LJ slot, so the scale lives in the label
+        temp_args["state_label"] = f"lj_{lj_scale}"
+        temp_args["filename"] = f"state_7_lj{lj_scale}_prod"
+        temp_args["runtype"] = f"Running production simulation in state 7: ligand-receptor LJ at {lj_scale} in vacuum"
+
+        self.simulations.append(
+            Simulation(
+                executable=self.config.system_settings.executable,
+                mpi_command=self.config.system_settings.mpi_command,
+                num_cores=self.num_cores,
+                CUDA=self.config.system_settings.CUDA,
+                prmtop=prmtop,
+                incrd=self.binding_mode,
+                input_file=self.config.inputs["no_solvent_mdin"],
+                restraint_file=self.restraints,
+                directory_args=temp_args,
+                system_type=self.system_type,
+                dirstruct="dirstruct_halo",
+                working_directory=self.config.system_settings.working_directory,
+                restraint_key=restraint_key,
+                memory=self.config.system_settings.memory,
+                disk=self.config.system_settings.disk,
+                sim_debug=self.config.workflow.debug,
+                accelerators=self.config.system_settings.num_accelerators,
+            )
+        )
+
     def setup_lj_interations_simulation(self, restraint_key: str, prmtop: FileID):
         """_summary_
 

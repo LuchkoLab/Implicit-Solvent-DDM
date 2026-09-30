@@ -161,8 +161,37 @@ def run_endstate_simulations(job, config: Config):
             endstate_job = job.addChildJobFn(user_defined_endstate, config)
     else:
         endstate_job = job.addChildJobFn(user_defined_endstate, config)
-    
+
+    reference = config.endstate_files.restraint_reference_coordinate
+    if reference is not None:
+        return endstate_job.addFollowOnJobFn(use_reference_frame, endstate_job.rv(), reference).rv()
     return endstate_job.rv()
+
+
+def use_reference_frame(job, endstate, reference):
+    """
+    Replace the endstate's binding mode with the fixed restraint reference.
+
+    Element 0 is the one frame Phase 3 splits and builds every restraint from, and every
+    window's starting coordinate, so swapping it here gives all three legs the same reference
+    in every replicate. The trajectories are untouched.
+
+    Parameters
+    ----------
+    job : JobFunctionWrappingJob
+        Current Toil job.
+    endstate : tuple
+        ``(complex binding mode, complex traj, receptor traj, ligand traj)``.
+    reference : FileID
+        Imported single-frame complex restart.
+
+    Returns
+    -------
+    tuple
+        ``endstate`` with element 0 replaced.
+    """
+    job.fileStore.logToMaster(f"restraint reference: fixed file {reference} (replaces {endstate[0]})")
+    return (reference, *endstate[1:])
 
 
 def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config):
@@ -216,6 +245,9 @@ def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config)
             K_phiA=config.intermediate_args.max_orientational_restraint,
             K_phiB=config.intermediate_args.max_orientational_restraint,
             K_phiC=config.intermediate_args.max_orientational_restraint,
+            anchor_pool=config.intermediate_args.boresch_anchors,
+            pocket_radius=config.intermediate_args.boresch_pocket_radius,
+            excluded_receptor_mask=config.intermediate_args.freed_receptor_mask,
         )
     )
     
@@ -379,6 +411,23 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                 exculsions=True,
             ).rv(),
         )
+
+    # Intermediate ligand-receptor LJ windows between no_interactions and interactions
+    if config.workflow.complex_ligand_exclusions and config.workflow.complex_turn_off_exclusions:
+        for lj_scale in config.intermediate_args.lj_scale_windows:
+            complex_simulations.setup_lj_scaled_simulation(
+                restraint_key=f"complex_{max_conformational_force}_{max_orientational_force}_rst",
+                prmtop=job.addChildJobFn(
+                    alter_topology,
+                    solute_amber_parm=config.endstate_files.complex_parameter_filename,
+                    solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+                    ligand_mask=config.amber_masks.ligand_mask,
+                    receptor_mask=config.amber_masks.receptor_mask,
+                    set_charge=0.0,
+                    lj_scale=lj_scale,
+                ).rv(),
+                lj_scale=lj_scale,
+            )
 
     # Setup LJ interaction simulations
     if config.workflow.complex_turn_off_exclusions:
