@@ -910,9 +910,12 @@ def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Con
     pilot_config.inputs["no_solvent_mdin"] = pilot_config.inputs["pilot_no_solvent_mdin"]
     # A pilot must be uniformly short; the als_pilot marker below already covers this.
     pilot_config.inputs.pop("long_window_mdin", None)
-    # The band passes solve dense MBARs on sub-grids, so the pilot must be scored densely; production
-    # keeps its own block size (merge_pilot_windows copies only the window lists).
-    pilot_config.intermediate_args.post_analysis_block_size = None
+    # ALS needs only adjacent overlaps, so score the pilot as a BAR chain; pruning reads non-adjacent
+    # overlaps and needs every cell. Production keeps its own block size (merge_pilot_windows copies
+    # only the window lists).
+    pilot_config.intermediate_args.post_analysis_block_size = (
+        None if pilot_config.intermediate_args.prune_after_convergence else 2
+    )
     # The ALS restraint overlap is a banded MBAR over the restraint windows + their max-restraint
     # anchor only (adaptive_lambda_windows -> compute_mbar(restraint_band=True)); the endstate is not in
     # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate

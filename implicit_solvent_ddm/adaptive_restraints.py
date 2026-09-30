@@ -595,6 +595,48 @@ def plan_band_insertion(overlap_matrix, coords, threshold, pool):
     )
 
 
+class AdjacentOverlap:
+    """Stand-in for a pymbar MBAR object that carries only adjacent-pair overlaps."""
+
+    def __init__(self, matrix):
+        self.matrix = matrix
+
+    def compute_overlap(self):
+        return {"matrix": self.matrix}
+
+
+def adjacent_overlap_matrix(df):
+    """Overlap matrix from one two-state (BAR) solve per adjacent pair of states.
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Subsampled reduced energies; rows indexed by sampled state, columns the ordered band states.
+        Only each adjacent pair's cells need to be present.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``[i][i+1]`` and ``[i+1][i]`` hold the pair's overlap; every other entry is NaN.
+
+    Raises
+    ------
+    ValueError
+        If an adjacent pair has unscored cells.
+    """
+    states = list(df.columns)
+    matrix = np.full((len(states), len(states)), np.nan)
+    for i in range(len(states) - 1):
+        pair = [states[i], states[i + 1]]
+        sub = df.loc[df.index.isin(pair), pair]
+        if sub.isna().to_numpy().any():
+            raise ValueError(f"adjacent pair {pair} has unscored cells; it cannot be solved as BAR")
+        overlap = pdmbar.mbar(sub)[-1].compute_overlap()["matrix"]
+        matrix[i][i + 1] = overlap[0][1]
+        matrix[i + 1][i] = overlap[1][0]
+    return matrix
+
+
 def compute_mbar(
     simulation_data: list[pd.DataFrame],
     temperature: float,
@@ -625,7 +667,8 @@ def compute_mbar(
     block_size: int, optional
         When set, solve the full cycle as a chain of ``block_size``-state MBAR blocks rather
         than one dense solve (see block_mbar.py). Required when post-analysis was run banded,
-        because ``df_mbar`` is then sparse. Ignored for band-sliced (ALS pilot) solves.
+        because ``df_mbar`` is then sparse. Ignored for band-sliced (ALS pilot) solves, which
+        switch to one two-state solve per adjacent pair whenever the band data are sparse.
 
     Returns
     -------
@@ -784,7 +827,10 @@ def compute_mbar(
     # which Toil does not surface for successful jobs, so the mbar phase was invisible to the report
     # even on a cold run.
     _mbar_t0 = time.perf_counter()
-    if block_size and band is None and matrix_order is not None:
+    if band is not None and df_subsampled.isna().to_numpy().any():
+        # ALS reads only adjacent overlaps, so sparse pilot scoring is solved pair by pair (BAR)
+        _mbar_result = (None, None, AdjacentOverlap(adjacent_overlap_matrix(df_subsampled)))
+    elif block_size and band is None and matrix_order is not None:
         # Banded post-analysis: df_mbar is legitimately sparse, so the cycle is solved as a
         # chain of dense per-block MBARs. Only the full-cycle solve is banded -- the ALS band
         # passes still get a dense sub-grid and a real pymbar object.
