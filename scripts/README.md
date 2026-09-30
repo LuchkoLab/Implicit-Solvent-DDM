@@ -32,6 +32,7 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `cycle_audit.py` | **Why do replicates disagree? Where the complex and receptor legs fail to cancel** — four subcommands: `cancel` (per-band complex+receptor sums and per-GB-step mismatch, cache only), `saltbridge` (salt-bridge state of a freed selection's charged residues per GB window and leg), `pose` (the ligand pose each replicate held vs the input), `seam` (receptor endstate → weakest-window gap by region, plus an endstate × reference cross check that tells a bad endstate from a bad reference). MBAR overlap cannot see any of these — each leg is its own MBAR problem | yes (pytraj, not AMBER) |
 | `extend_weak_windows.py` | **Does more sampling in the weak restraint windows lower the replicate spread?** `setup` writes one restart job per window at or below `--max-exponent` (default −8.5) continuing it to `--target-ns` (default 20), plus a SLURM array script; each task fails on NaN/Infinity/overflow in its mdout. `analyze` re-solves the band from the `--anchor` window (default −8.0) down to the weakest with MBAR on restraint energies computed from coordinates (states differ only by force constants), for the original frames, original + extension, and extension only, then substitutes each into the replicate's ΔG_bind and reports the SD across replicates. Aborts if its energies disagree with the cached post-analysis matrix | setup: no; runs: pmemd |
 | `relax_binding_pose.py` | **Pre-step: relax the one input binding pose ONCE, before any replicate** — restrained minimise → heat → equilibrate → minimise under the production GB settings (`igb`/`saltcon`/`extdiel`, not `min.mdin`'s `saltcon=0`), with the ligand heavy atoms + pocket C-alphas held to the input pose in every stage. Writes the complex/receptor/ligand restarts every replicate shares, a pose-RMSD plateau check, and fails on NaN/Infinity mdouts | yes |
+| `nfe_rmsd_probe.py` | **Can AMBER give us a GPU RMSD restraint, and is it best-fit?** — stands up `infe=1` + `&pmd` + `MULTI_RMSD` from scratch and checks that it runs, that the CV is rotation/translation invariant and equals cpptraj `rms … mass`, that it applies force rather than only monitoring, and that `cv_ni` does not silently truncate | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
 
 ---
@@ -625,3 +626,73 @@ coordinate's SD per window next to the thermal prediction √(kT/2k); 7 which li
 (2.2 Å) of the protein with LJ off, with their lever arm from the anchor L1 (far atoms loaded = rotation about the
 anchor). A broader LJ-off pose with near-thermal Boresch SDs points to stiffer Boresch force constants as the fix.
 
+## `nfe_rmsd_probe.py` — can AMBER give us a GPU RMSD restraint, and is it best-fit?
+
+**Question.** We want to replace the pairwise conformational restraint network (82,077 `&rst` terms
+on MCL-1) with one best-fit RMSD collective variable under a flat-bottom umbrella, so the restraint
+ladder walks a bounded coordinate in Angstrom that terminates exactly at the unrestrained endstate.
+Targeted MD (`itgtmd=1`) is the obvious mechanism and is unusable: the AMBER 25 manual lists it under
+functionality "missing entirely" from PMEMD (Sec. 23.3), and there is no `sander.cuda`. The surviving
+route is AMBER's NFE module, `infe=1` + `&pmd` + `cv_type='MULTI_RMSD'`, which Sec. 26.4.4 says "can
+be fully applied in GPU accelerated PMEMD". The manual leaves the load-bearing details unstated.
+
+**What it decides.**
+
+| probe | question | blocking? |
+|---|---|---|
+| 1 `runs` | does `infe=1` + `&pmd` + MULTI_RMSD start on `pmemd.cuda` with `igb != 0`, alongside a live `nmropt=1` DISANG? | yes |
+| 2 `bestfit` | is the CV rotation/translation invariant, and does it equal cpptraj `rms … mass`? | **yes — this is the gate** |
+| 3 `bias` | does the restraint apply force, or only monitor? | no |
+| 4 `rescore` | does `imin=5` evaluate NFE, and does the bias reach the `ENERGY` column MBAR reads? | no |
+| 5 `scale` | does `cv_r` survive at protein size without silent truncation? | yes |
+
+`--probe gate` (default) runs 1, 2 and 5.
+
+**Why probe 2 is the gate.** `MULTI_RMSD` cites Coutsias/Seok/Dill (quaternion RMSD), which *is* an
+optimal-superposition method, but the manual never says the NFE driver superimposes before calling
+it. A lab-frame CV would fight the Boresch orientational restraints and invalidate the standard-state
+correction — the design would be wrong, not merely slow. The probe settles it by evaluating the CV at
+step 0 from the same coordinates twice, once against the reference as given and once against a
+rigidly rotated and translated copy of it, and cross-checking both against cpptraj. **It does not
+need a GPU**, so it can be answered with `--executable sander` before any GPU allocation.
+
+**Why probe 5 exists.** This workflow has already been bitten by an undocumented Fortran array cap:
+`igr1`/`igr2` top out at 200 atoms, which is what forced the `@CA` workaround in the flat-bottom COM
+restraint (release v1.1.3). There is no documented limit on `cv_ni`/`cv_nr`. HSP90 has 207 CA atoms,
+so the probe compares the reported CV against cpptraj rather than merely checking for an error.
+
+**Method.** Each probe writes its own self-contained mdin + `cv.in` + `restraint.RST` into a case
+subdirectory and runs AMBER directly — nothing in `implicit_solvent_ddm/` is touched, except that
+probe 4 imports the package's own `mdout.min_to_dataframe` so it measures exactly what MBAR would
+see. The DISANG is a real but zero-force `&rst`, so `nmropt=1` and NFE are exercised together without
+perturbing the energy. `&pmd` is emitted after `&cntrl` and *before* `&wt`/`DISANG`, which is the
+placement the workflow's planned mdin injector will use, so the probe validates that choice.
+
+The restrained set degrades the way `restraints.FlatBottom` already does — `@CA` when present, all
+heavy atoms otherwise — so cb7 exercises the host–guest fallback path.
+
+**Reading it.** Every probe prints GO or NO-GO with the number it decided on, and the exit status is
+non-zero if any blocking probe fails. The `pmd.txt` layout is undocumented, so the CV column is a
+defensible guess (`--pmd-column`, default 1); pass `--show-pmd` on the first run to eyeball the raw
+head before trusting the parse.
+
+**Existing trajectories.** Pass `--traj` and the script stops generating its own: probe 1 shrinks to
+a single step (the only question it still answers is whether the run starts), and probes 2/5 draw
+`--frames` check points spread through the real trajectory instead of a 1 ps relaxation. That is the
+better test — a CV that is right near zero and wrong at 3 Å would pass a single-point check, so
+covering the RMSD range the ladder will actually traverse matters. Probe 4 re-scores the same
+trajectory.
+
+    # the design-critical question, CPU, no GPU allocation needed
+    python scripts/nfe_rmsd_probe.py --probe 1,2 --executable sander --show-pmd \
+        --prmtop implicit_solvent_ddm/tests/structs/cb7-mol01.parm7 \
+        --inpcrd implicit_solvent_ddm/tests/structs/cb7-mol01.ncrst \
+        --traj  implicit_solvent_ddm/tests/structs/cb7-mol01_300K.nc \
+        --workdir nfe_probe_cb7
+
+    # then the GPU question, and the force check
+    python scripts/nfe_rmsd_probe.py --probe gate --executable pmemd.cuda \
+        --prmtop ... --inpcrd ... --traj ... --workdir nfe_probe_cb7_gpu
+    python scripts/nfe_rmsd_probe.py --probe 3 --nstlim 25000 --k 50 --prmtop ... --inpcrd ...
+
+Probe 3 always runs new MD — you cannot show that a force is applied without integrating it.
