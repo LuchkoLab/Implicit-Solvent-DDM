@@ -863,6 +863,7 @@ class IntermediateStateArgs:
     rmsd_ligand_tolerance_scale: float = 1.0    # ligand r3 = scale * receptor r3
     rmsd_site_cutoff: Optional[float] = None    # Angstrom around the ligand for the binding-site colvar; None -> no site CV
     rmsd_site_tolerance_scale: float = 1.0      # site r3 = scale * global r3
+    rmsd_site_atoms: str = "heavy"               # heavy: every heavy atom of the site residues; global: the global group's atom class (CA)
     rmsd_r1: float = -10.0                      # unreachable lower anchors: with r2=0 and RMSD>=0 only the upper wall is live
     rmsd_r2: float = 0.0
     rmsd_r4: float = 1000.0                     # mirrors the r4=1000 convention of the &rst templates
@@ -1081,6 +1082,8 @@ class IntermediateStateArgs:
                 "receptor_ramp_mask and unrestrained_receptor_mask act on the pairwise network, "
                 "which rmsd_tolerance_windows replaces"
             )
+        if self.rmsd_site_atoms not in ("heavy", "global"):
+            raise ValueError(f"rmsd_site_atoms must be 'heavy' or 'global', got {self.rmsd_site_atoms!r}")
         if self.receptor_ramp_mask and self.unrestrained_receptor_mask:
             raise ValueError(
                 "receptor_ramp_mask and unrestrained_receptor_mask are mutually exclusive: "

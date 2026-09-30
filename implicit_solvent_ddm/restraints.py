@@ -1841,7 +1841,7 @@ def select_ligand_restraint_atoms(topology, ligand_mask):
     return np.asarray(topology.select(f"{ligand_mask} & !@H*")), f"{ligand_mask} & !@H*"
 
 
-def select_site_restraint_atoms(topology, receptor_mask, ligand_mask, cutoff):
+def select_site_restraint_atoms(topology, coordinates, receptor_mask, ligand_mask, cutoff, atom_class="heavy"):
     """Choose the binding-site residues for a second, tighter RMSD group.
 
     A single global CA leash does not hold the pocket: a loop can collapse into an empty site while
@@ -1852,22 +1852,36 @@ def select_site_restraint_atoms(topology, receptor_mask, ligand_mask, cutoff):
     ----------
     topology : pytraj.Topology
         Topology of the complex.
+    coordinates : numpy.ndarray, shape (n_atoms, 3)
+        Complex coordinates the site is measured on (the binding mode).
     receptor_mask, ligand_mask : str
         AMBER masks selecting the receptor and the ligand.
     cutoff : float
-        Distance in Angstrom; whole residues within this of the ligand are selected.
+        Distance in Angstrom; whole residues with any atom within this of the ligand are selected.
+    atom_class : {"heavy", "global"}
+        ``"heavy"`` restrains every heavy atom of the site residues; ``"global"`` restricts the site
+        to the atom class of the global group (CA on a protein).
 
     Returns
     -------
     indices : numpy.ndarray
-        Zero-based atom indices, restricted to the same atom class the global group uses.
+        Zero-based atom indices.
     mask : str
-        The mask that was actually resolved.
+        An equivalent residue mask, for logging.
     """
-    base, _ = select_receptor_restraint_atoms(topology, receptor_mask)
-    near = topology.select(f"({ligand_mask})<:{cutoff:g} & {receptor_mask}")
-    indices = np.intersect1d(np.asarray(base), np.asarray(near))
-    return indices, f"({ligand_mask})<:{cutoff:g} & {receptor_mask}"
+    ligand = np.asarray(topology.select(ligand_mask))
+    receptor = np.asarray(topology.select(receptor_mask))
+    xyz = np.asarray(coordinates)
+    nearest = np.linalg.norm(xyz[receptor][:, None, :] - xyz[ligand][None, :, :], axis=2).min(axis=1)
+    resids = sorted({topology.atom(int(i)).resid for i in receptor[nearest <= cutoff]})
+    site = np.array([i for i in receptor if topology.atom(int(i)).resid in set(resids)], dtype=int)
+    if atom_class == "heavy":
+        base, suffix = np.asarray(topology.select(f"({receptor_mask}) & !@H*")), "&!@H*"
+    else:
+        base, resolved = select_receptor_restraint_atoms(topology, receptor_mask)
+        suffix = "&@CA" if "@CA" in resolved else "&!@H*"
+    mask = ":" + ",".join(str(r + 1) for r in resids) + suffix
+    return np.intersect1d(site, np.asarray(base)), mask
 
 
 def map_complex_to_subsystem(subsystem_indices, group_indices):
@@ -2053,8 +2067,10 @@ def get_rmsd_cv_templates(job, config, complex_prmtop, complex_coordinate, endst
         job.fileStore.logToMaster(f"[rmsd] receptor group: {resolved} -> {indices.size} atoms")
         groups["receptor"] = (indices, 1.0)
     if args.rmsd_site_cutoff:
+        coordinates = pt.load(mode_path, top_path).xyz[0]
         indices, resolved = select_site_restraint_atoms(
-            topology, receptor_mask, ligand_mask, args.rmsd_site_cutoff
+            topology, coordinates, receptor_mask, ligand_mask, args.rmsd_site_cutoff,
+            atom_class=args.rmsd_site_atoms,
         )
         job.fileStore.logToMaster(f"[rmsd] site group: {resolved} -> {indices.size} atoms")
         groups["site"] = (indices, args.rmsd_site_tolerance_scale)
