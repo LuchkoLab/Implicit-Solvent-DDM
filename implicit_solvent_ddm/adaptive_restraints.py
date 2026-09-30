@@ -15,7 +15,7 @@ from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.alchemical import alter_topology
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.matrix_order import CycleSteps
-from implicit_solvent_ddm.restraints import write_restraint_forces
+from implicit_solvent_ddm.restraints import write_restraint_forces, write_cv_file
 from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
 from implicit_solvent_ddm.mdin import generate_extdiel_mdin
 
@@ -63,6 +63,58 @@ def derive_offset(conformational_exps, orientational_exps):
     if len(offsets) != 1:
         raise ValueError(f"non-constant orient-con offset: {sorted(offsets)}")
     return offsets.pop()
+
+
+def interpolate_partner(coordinates, partners, new_coordinate):
+    """Interpolate an index-paired ladder at a newly inserted coordinate.
+
+    Parameters
+    ----------
+    coordinates : sequence of float
+        The scheduled coordinate, e.g. RMSD tolerances.
+    partners : sequence of float
+        The ladder paired with it by index, e.g. orientational exponents.
+    new_coordinate : float
+        The value R-ADD chose to insert.
+
+    Returns
+    -------
+    float
+        The partner value at the same fractional position between the bracketing windows.
+    """
+    order = np.argsort(np.asarray(coordinates, dtype=float))
+    xs = np.asarray(coordinates, dtype=float)[order]
+    ys = np.asarray(partners, dtype=float)[order]
+    return round(float(np.interp(float(new_coordinate), xs, ys)), ROUND_DP)
+
+
+def pair_orientational(conformational_exps, orientational_exps, new_con, coordinate="force"):
+    """Choose the orientational exponent for a newly inserted conformational window.
+
+    In force mode both ladders are log2 exponents separated by a constant offset, so the partner is
+    exact. In rmsd mode the conformational coordinate is an Angstrom tolerance and the orientational
+    one is still a log2 exponent -- no offset exists between them, and the pairing is purely ordinal,
+    so the partner is interpolated at the same fractional position instead.
+
+    Parameters
+    ----------
+    conformational_exps : sequence of float
+        Scheduled conformational coordinates (exponents, or RMSD tolerances).
+    orientational_exps : sequence of float
+        Scheduled orientational exponents, paired by index.
+    new_con : float
+        The newly inserted conformational coordinate.
+    coordinate : {"force", "rmsd"}, optional
+        Which pairing rule applies.
+
+    Returns
+    -------
+    float
+        The orientational exponent to pair with ``new_con``.
+    """
+    if coordinate == "rmsd":
+        return interpolate_partner(conformational_exps, orientational_exps, new_con)
+    return round(new_con + derive_offset(conformational_exps, orientational_exps), ROUND_DP)
 
 
 def min_direction_superdiagonal(overlap_matrix):
@@ -281,7 +333,8 @@ def prune_schedule(overlap_matrix, threshold):
 
 
 def prune_restraint_exponents(
-    overlap_matrix, conformational_exps, orientational_exps, system_type, threshold
+    overlap_matrix, conformational_exps, orientational_exps, system_type, threshold,
+    coordinate="force",
 ):
     """Prune a converged dense restraint ladder to its minimal connected subset, returning the kept
     ``(conformational, orientational)`` exponents (both sorted ascending).
@@ -296,16 +349,18 @@ def prune_restraint_exponents(
     * prune_margin``) since the short pilot over-estimates overlap vs. production. Raises ``ValueError``
     on a block/matrix size mismatch (fail loud rather than silently corrupt the schedule).
     """
-    block = build_selected_block(conformational_exps, system_type)
+    block = build_selected_block(conformational_exps, system_type, coordinate)
     if len(block) != len(overlap_matrix):
         raise ValueError(
             f"prune: block length {len(block)} != overlap-matrix dim {len(overlap_matrix)} "
             f"({system_type}) — refusing to prune on a misaligned matrix"
         )
-    offset = derive_offset(conformational_exps, orientational_exps)
     kept_idx = prune_schedule(overlap_matrix, threshold)
     kept_con = sorted(round(float(block[i]), ROUND_DP) for i in kept_idx)
-    kept_orient = [round(c + offset, ROUND_DP) for c in kept_con]
+    kept_orient = [
+        pair_orientational(conformational_exps, orientational_exps, c, coordinate)
+        for c in kept_con
+    ]
     return kept_con, kept_orient
 
 
@@ -349,16 +404,31 @@ def prune_restraint_exponents(
 # production-overlap check (Phase 6), not auto-filled here.
 
 
-def build_selected_block(conformational_exps, system_type):
-    """Order the restraint conformational exponents to match the leg's MBAR overlap band.
+def build_selected_block(conformational_exps, system_type, coordinate="force"):
+    """Order the restraint conformational coordinates to match the leg's MBAR overlap band.
 
     ``insert_one`` requires ``block[k], block[k+1]`` to be adjacent restraint states. The MBAR matrix
-    lists complex restraint states in DESCENDING force (``remove_restraints``: max -> min) and
-    ligand/receptor states in ASCENDING force (``apply_restraints``: min -> max). Returns ONLY the
-    restraint-window exponents in that direction (the endstate is not a restraint window and is
-    handled as the fixed lower anchor).
+    lists complex restraint states strongest-first (``remove_restraints``) and ligand/receptor states
+    weakest-first (``apply_restraints``). Returns ONLY the restraint-window coordinates in that
+    direction; the endstate is not a restraint window and is handled as the fixed lower anchor.
+
+    Parameters
+    ----------
+    conformational_exps : sequence of float
+        Scheduled conformational coordinates.
+    system_type : {"complex", "receptor", "ligand"}
+        Which leg's band direction to produce.
+    coordinate : {"force", "rmsd"}, optional
+        ``"force"`` -- bigger is stronger, so weakest-first is ascending. ``"rmsd"`` -- the tightest
+        flat bottom is the SMALLEST tolerance, so the sense inverts. Must agree with
+        ``CycleSteps.restraint_coordinate`` or the block will not align with the overlap matrix.
+
+    Returns
+    -------
+    list of float
+        The band's coordinates in matrix order.
     """
-    ordered = sorted(float(e) for e in conformational_exps)
+    ordered = sorted((float(e) for e in conformational_exps), reverse=(coordinate == "rmsd"))
     if system_type == "complex":
         ordered.reverse()
     return ordered
@@ -432,6 +502,7 @@ def plan_restraint_insertion(
     threshold,
     pool,
     banded=False,
+    coordinate="force",
 ):
     """Decide the single R-ADD restraint window to insert this iteration (pure).
 
@@ -442,8 +513,7 @@ def plan_restraint_insertion(
     derived (and asserted constant) from the seed pairing. ``banded`` is forwarded to the band slice
     (True when ``overlap_matrix`` was computed over only the restraint band — the ALS pilot).
     """
-    offset = derive_offset(conformational_exps, orientational_exps)
-    block = build_selected_block(conformational_exps, system_type)
+    block = build_selected_block(conformational_exps, system_type, coordinate)
     superdiagonal = restraint_band_superdiagonal(
         overlap_matrix, system_type, band_start, band_end, banded
     )
@@ -455,7 +525,11 @@ def plan_restraint_insertion(
         lower_bound=min(block),
         upper_bound=max(block),
     )
-    new_orient = round(new_con + offset, ROUND_DP) if new_con is not None else None
+    new_orient = (
+        pair_orientational(conformational_exps, orientational_exps, new_con, coordinate)
+        if new_con is not None
+        else None
+    )
     return new_con, new_orient, converged, reason
 
 
@@ -753,6 +827,7 @@ def run_compute_mbar(
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
         endstate_label=config.endstate_method.endstate_state_label,
         lj_windows=config.intermediate_args.lj_scale_windows,
+        restraint_coordinate="rmsd" if config.intermediate_args.rmsd_mode else "force",
     )
     cycle_steps.round(3)
     
@@ -821,6 +896,7 @@ def adaptive_lambda_windows(
         external_dielectic=updated_config.intermediate_args.gb_extdiel_windows,
         endstate_label=updated_config.endstate_method.endstate_state_label,
         lj_windows=updated_config.intermediate_args.lj_scale_windows,
+        restraint_coordinate="rmsd" if updated_config.intermediate_args.rmsd_mode else "force",
     )
     # round all restraint forces values to 3 sig. figs for readable dataframes.
     cycle_steps.round(3)
@@ -872,18 +948,28 @@ def adaptive_lambda_windows(
         # drop (banded=True). The min-direction superdiagonal then aligns 1:1 with build_selected_block.
         band_start, band_end = 0, None
 
-        pool = build_candidate_pool(
-            con_list,
-            explicit_pool=updated_config.intermediate_args.candidate_conformational_pool,
-            step=updated_config.intermediate_args.candidate_pool_step,
-        )
+        coordinate = "rmsd" if updated_config.intermediate_args.rmsd_mode else "force"
+        if coordinate == "rmsd":
+            # Angstrom axis: its own pool, and 0.25 A (about one measured sigma of the endstate RMSD)
+            # rather than the log2 exponent spacing.
+            pool = build_candidate_pool(
+                con_list,
+                explicit_pool=updated_config.intermediate_args.candidate_rmsd_pool,
+                step=updated_config.intermediate_args.rmsd_pool_step,
+            )
+        else:
+            pool = build_candidate_pool(
+                con_list,
+                explicit_pool=updated_config.intermediate_args.candidate_conformational_pool,
+                step=updated_config.intermediate_args.candidate_pool_step,
+            )
 
         # Observability (Step 5a): log the restraint-band overlap that drives the R-ADD decision, so a
         # convergence/insertion can be read directly from the run log instead of inferred. Logs each
         # adjacent restraint pair's min-direction overlap and flags those below the threshold. A
         # degenerate band (thin pilot data -> ~1.0 or NaN everywhere) is visible here.
         threshold = updated_config.intermediate_args.min_degree_overlap
-        block = build_selected_block(con_list, system_type)
+        block = build_selected_block(con_list, system_type, coordinate)
         band_sd = restraint_band_superdiagonal(
             overlap_matrix, system_type, band_start, band_end, banded=True
         )
@@ -924,8 +1010,9 @@ def adaptive_lambda_windows(
                         f"windows: {sorted(con_list)}"
                     )
                 return (results, updated_config, system_runner)
-            offset = derive_offset(con_list, orient_list)
-            pairs = [(c, round(c + offset, ROUND_DP)) for c in new_cons]
+            pairs = [
+                (c, pair_orientational(con_list, orient_list, c, coordinate)) for c in new_cons
+            ]
             job.log(
                 f"[ALS][{system_type}] BATCH inserting {len(pairs)} restraint windows "
                 f"con={[p[0] for p in pairs]} ({max_iterations - 1} rounds left)"
@@ -951,6 +1038,7 @@ def adaptive_lambda_windows(
             conformational_exps=con_list,
             orientational_exps=orient_list,
             system_type=system_type,
+            coordinate=coordinate,
             band_start=band_start,
             band_end=band_end,
             threshold=updated_config.intermediate_args.min_degree_overlap,
@@ -1132,15 +1220,35 @@ def improve_restraints_overlap(
         ``post_runner_promise`` is the ``.rv()`` of the post-analysis sub-runner (consumed by the
         recursion as the next ``system_runner``); ``config`` carries the extended schedule.
     """
+    args = config.intermediate_args
+    rmsd_mode = args.rmsd_mode
     new_con = float(round(new_con, ROUND_DP))
     new_orient = float(round(new_orient, ROUND_DP))
-    new_con_force = float(np.exp2(new_con))
+    # In rmsd mode the conformational coordinate IS the value written into the restraint (an Angstrom
+    # tolerance), so there is no 2^p to undo.
+    new_con_force = new_con if rmsd_mode else float(np.exp2(new_con))
     new_orient_force = float(np.exp2(new_orient))
+    # The Boresch DISTANCE spring rides its own ladder, so an inserted window needs its own value at
+    # the same fractional position rather than inheriting the conformational one.
+    new_boresch_distance = float(
+        np.exp2(
+            interpolate_partner(
+                args.exponent_conformational_forces_list,
+                [float(np.log2(f)) for f in args.boresch_distance_forces],
+                new_con,
+            )
+        )
+    )
 
     job.log(
-        f"[ALS][{system_type}] writing restraint window con_exp={new_con} "
-        f"(force={new_con_force:.5g}) orient_exp={new_orient} (force={new_orient_force:.5g})"
+        f"[ALS][{system_type}] writing restraint window con={new_con} "
+        f"({'r3 in A' if rmsd_mode else f'force={new_con_force:.5g}'}) orient_exp={new_orient} "
+        f"(force={new_orient_force:.5g}) boresch_dist={new_boresch_distance:.5g}"
     )
+
+    # rmsd mode: the inserted window also needs its own cv.in, carrying the same groups and reference
+    # as every other window and differing only in the tolerance.
+    new_cv_file = None
 
     # Short-pilot MD length (item 7). Fall back to the production mdin if the pilot mdin was not
     # emitted (e.g. flag-gated wiring not yet active), so this stays callable in isolation.
@@ -1148,6 +1256,18 @@ def improve_restraints_overlap(
 
     restraints_job = job.addChildJobFn(initilized_jobs)
     before = len(runner.simulations)
+
+    if rmsd_mode:
+        new_cv_file = restraints_job.addChildJobFn(
+            write_cv_file,
+            runner.restraints.cv_spec,
+            system_type,
+            new_con,
+            args.rmsd_force_constant,
+            r1=args.rmsd_r1,
+            r2=args.rmsd_r2,
+            r4=args.rmsd_r4,
+        )
 
     if system_type == "complex":
         runner._add_complex_simulation(
@@ -1161,7 +1281,9 @@ def improve_restraints_overlap(
                 conformational_force=new_con_force,
                 **getattr(runner.restraints, "ramp", {}),
                 orientational_force=new_orient_force,
+                boresch_distance_force=new_boresch_distance,
             ),
+            cv_file=new_cv_file,
         )
     elif system_type == "ligand":
         runner._add_ligand_simulation(
@@ -1172,6 +1294,7 @@ def improve_restraints_overlap(
                 conformational_template=runner.restraints.ligand_conformational_restraints,
                 conformational_force=new_con_force,
             ),
+            cv_file=new_cv_file,
         )
     else:
         runner._add_receptor_simulation(
@@ -1183,6 +1306,7 @@ def improve_restraints_overlap(
                 conformational_force=new_con_force,
                 **getattr(runner.restraints, "ramp", {}),
             ),
+            cv_file=new_cv_file,
         )
 
     # The MD pass runs ONLY the just-added window (the old windows' trajectories are already on disk);
@@ -1340,6 +1464,8 @@ def improve_dielectric_overlap(
         gb_extdiel=new_eps,
         nstlim=config.inputs.get("pilot_nstlim_steps"),
         ntwx=config.inputs.get("pilot_ntwx"),
+        nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+        nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     ).rv()
 
     max_con = max(config.intermediate_args.exponent_conformational_forces_list)
@@ -1409,6 +1535,7 @@ def _dielectric_band_ascending(runner, config, system_type, log=print):
         external_dielectic=config.intermediate_args.gb_extdiel_windows,
         endstate_label=config.endstate_method.endstate_state_label,
         lj_windows=config.intermediate_args.lj_scale_windows,
+        restraint_coordinate="rmsd" if config.intermediate_args.rmsd_mode else "force",
     )
     cycle_steps.round(3)
     results = compute_mbar(
@@ -1537,6 +1664,8 @@ def improve_dielectric_overlap_both(
         gb_extdiel=new_eps,
         nstlim=config.inputs.get("pilot_nstlim_steps"),
         ntwx=config.inputs.get("pilot_ntwx"),
+        nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+        nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     ).rv()
 
     max_con = max(config.intermediate_args.exponent_conformational_forces_list)

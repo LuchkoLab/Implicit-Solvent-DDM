@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from string import Template
 from tkinter import Y
 import re
+import warnings
 import yaml
 from toil.common import FileID
 
@@ -20,6 +21,8 @@ def generate_extdiel_mdin(
     nstlim=None,
     ntwx=None,
     saltcon=0.0,
+    nfe_cv_file=None,
+    nfe_output_freq=250,
 ) -> FileID:
     """Write an mdin with a unique external dielectric for the generalized-Born solvent.
 
@@ -38,11 +41,13 @@ def generate_extdiel_mdin(
             nstlim=nstlim,
             ntwx=ntwx,
             saltcon=saltcon,
+            nfe_cv_file=nfe_cv_file,
+            nfe_output_freq=nfe_output_freq,
         )
     )
 
 
-def get_mdins(job, user_mdin_ID: FileID):
+def get_mdins(job, user_mdin_ID: FileID, nfe_cv_file=None, nfe_output_freq=250):
     """Writes all mdins for intermidate states
 
     Parameters
@@ -62,13 +67,25 @@ def get_mdins(job, user_mdin_ID: FileID):
         Single-point scoring for the gas-phase states.
     post_saltfree : FileID
         Single-point scoring at saltcon=0, for the GB-dielectric band.
+
+    Notes
+    -----
+    ``nfe_cv_file`` enables the RMSD collective-variable restraint, and reaches ONLY the two MD mdins.
+    The three ``imin=5`` scoring mdins are left NFE-free on purpose: the restraint term is added
+    analytically in post-analysis (``nfe_energy.band_restraint_energy``), which is exact -- MULTI_RMSD
+    was measured equal to cpptraj ``rms ... mass`` to 3e-5 A -- and which keeps the design independent
+    of whether ``imin=5`` evaluates NFE biases at all, something the AMBER manual never states.
     """
 
     mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
 
-    default_mdin = job.fileStore.writeGlobalFile(make_mdin_file(mdin_global, "_mdin"))
+    default_mdin = job.fileStore.writeGlobalFile(
+        make_mdin_file(mdin_global, "_mdin", nfe_cv_file=nfe_cv_file,
+                       nfe_output_freq=nfe_output_freq)
+    )
     no_solvent_mdin = job.fileStore.writeGlobalFile(
-        make_mdin_file(mdin_global, "no_solv_mdin", turn_off_solvent=True)
+        make_mdin_file(mdin_global, "no_solv_mdin", turn_off_solvent=True,
+                       nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq)
     )
     post_mdin = job.fileStore.writeGlobalFile(
         make_mdin_file(mdin_global, "post_mdin", post_process=True)
@@ -175,7 +192,8 @@ def long_window_md_steps(mdin_text, target_ns, dt_default=0.001):
     return nstlim, ntwx, ntwx
 
 
-def get_long_window_mdin(job, user_mdin_ID: FileID, target_ns: float = None):
+def get_long_window_mdin(job, user_mdin_ID: FileID, target_ns: float = None, nfe_cv_file=None,
+                         nfe_output_freq=250):
     """Write the long-run mdin for the lowest restraint window. Mirrors ``get_pilot_mdin``.
 
     Returns ``(long_mdin, nstlim, ntwx)``, stored at ``config.inputs["long_window_mdin"]`` and
@@ -202,7 +220,8 @@ def get_long_window_mdin(job, user_mdin_ID: FileID, target_ns: float = None):
             f"({frames} frames, unchanged from the user mdin)"
         )
     long_mdin = job.fileStore.writeGlobalFile(
-        make_mdin_file(mdin_global, "long_window_mdin", nstlim=nstlim, ntwx=ntwx, ntpr=ntpr)
+        make_mdin_file(mdin_global, "long_window_mdin", nstlim=nstlim, ntwx=ntwx, ntpr=ntpr,
+                       nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq)
     )
     return long_mdin, nstlim, ntwx
 
@@ -213,6 +232,8 @@ def get_pilot_mdin(
     pilot_ps: float = 50.0,
     pilot_frames: int = 100,
     pilot_nstlim: int = None,
+    nfe_cv_file=None,
+    nfe_output_freq=250,
 ):
     """Write the short-pilot intermediate mdins for the ALS pilot (always 50 ps by default).
 
@@ -234,11 +255,13 @@ def get_pilot_mdin(
     with open(mdin_global) as fh:
         nstlim, ntwx = pilot_md_steps(fh.read(), pilot_ps, pilot_frames, pilot_nstlim)
     pilot_default = job.fileStore.writeGlobalFile(
-        make_mdin_file(mdin_global, "pilot_mdin", nstlim=nstlim, ntwx=ntwx)
+        make_mdin_file(mdin_global, "pilot_mdin", nstlim=nstlim, ntwx=ntwx,
+                       nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq)
     )
     pilot_no_solvent = job.fileStore.writeGlobalFile(
         make_mdin_file(
-            mdin_global, "pilot_no_solv_mdin", turn_off_solvent=True, nstlim=nstlim, ntwx=ntwx
+            mdin_global, "pilot_no_solv_mdin", turn_off_solvent=True, nstlim=nstlim, ntwx=ntwx,
+            nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq,
         )
     )
     # nstlim/ntwx are returned too so the GB-dielectric band can shorten its per-epsilon mdins
@@ -257,6 +280,8 @@ def make_mdin_file(
     ntpr=None,
     saltcon=None,
     score_igb=None,
+    nfe_cv_file=None,
+    nfe_output_freq=250,
 ):
     """Rewrite users AMBER mdin file for specific thermodynamic states
 
@@ -283,6 +308,13 @@ def make_mdin_file(
         If provided, override the energy print interval. No-op when ``None``. Set alongside ``ntwx``
         by the long low-restraint window; cannot affect any energy, since the MD mdout is never
         parsed (only the ``imin=5`` scoring mdout is).
+    nfe_cv_file: str, optional
+        If provided, enable AMBER's NFE module: append ``infe = 1`` to the ``nmropt`` line and insert
+        a ``&pmd`` block pointing at this filename. No-op when ``None``, so the production mdins stay
+        byte-identical. Only the MD mdins get it -- the ``imin=5`` scoring mdins deliberately do not,
+        because the restraint term is added analytically in post-analysis (see ``nfe_energy``).
+    nfe_output_freq: int, optional
+        ``&pmd`` ``output_freq``, i.e. how often the CV is written to ``pmd.txt``.
     Returns
     -------
     mdin: str
@@ -342,11 +374,56 @@ def make_mdin_file(
         # swap above; applied last so an explicit score_igb wins.
         if score_igb is not None:
             line = re.sub(r"igb\s*=\s*\d+", f"igb={score_igb}", line)
+        # NFE: anchor infe=1 on the nmropt line rather than on a bare namelist terminator. nmropt is
+        # guaranteed present by Config._sanity_check_mdin and is by definition a &cntrl variable, so
+        # it cannot be mis-placed the way a "/" heuristic could.
+        if nfe_cv_file is not None and "nmropt" in line and "infe" not in line:
+            line = re.sub(r"(nmropt\s*=\s*\S+?)(\s*,?\s*)$", r"\1, infe = 1\2", line.rstrip("\n")) + "\n"
         new_mdin += line
+
+    if nfe_cv_file is not None:
+        new_mdin = _insert_pmd_block(new_mdin, nfe_cv_file, nfe_output_freq)
 
     with open(mdin_name, "w") as output:
         output.write(new_mdin)
     return os.path.abspath(mdin_name)
+
+
+def _insert_pmd_block(mdin_text, cv_file, output_freq):
+    """Splice an NFE ``&pmd`` namelist into an mdin.
+
+    Placed after ``&cntrl`` and BEFORE the first ``&wt``/``DISANG`` line. Whether AMBER tolerates
+    ``&pmd`` appearing *after* ``DISANG =`` is undocumented, so this sidesteps the question; the
+    placement was confirmed accepted by both sander and pmemd.cuda on cb7 (2026-08-30).
+
+    Parameters
+    ----------
+    mdin_text : str
+        The mdin as rewritten so far.
+    cv_file : str
+        Filename the ``&pmd`` block points at, staged per window by ``Calculation._mdin_restraint``.
+    output_freq : int
+        ``&pmd`` ``output_freq``.
+
+    Returns
+    -------
+    str
+        The mdin with the ``&pmd`` block inserted.
+    """
+    block = (
+        " &pmd\n"
+        "  output_file = 'pmd.txt'\n"
+        f"  output_freq = {output_freq}\n"
+        f"  cv_file = '{cv_file}'\n"
+        " /\n"
+    )
+    lines = mdin_text.splitlines(keepends=True)
+    for anchor in (r"^\s*&wt", r"^\s*DISANG"):
+        for position, line in enumerate(lines):
+            if re.match(anchor, line):
+                return "".join(lines[:position]) + block + "".join(lines[position:])
+    warnings.warn("no &wt or DISANG line found; appending the &pmd block at end of mdin")
+    return mdin_text + block
 
 
 def generate_replica_mdin(

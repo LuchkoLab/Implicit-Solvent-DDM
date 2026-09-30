@@ -133,6 +133,20 @@ class Calculation(Job):
         restraint_file = shutil.copyfile(
             self.read_files["restraint_file"], "restraint.RST"
         )
+        # cv_file='cv.in' is a literal in the mdin, so per-window variation rides a swapped FILE and
+        # no per-window mdin has to be regenerated.
+        if self.read_files.get("cv_file"):
+            shutil.copyfile(self.read_files["cv_file"], "cv.in")
+            # A cv.in that no &pmd block references means the collective-variable restraint is simply
+            # not applied -- the run completes and every window in the band is the same Hamiltonian.
+            # Fail here rather than let that reach MBAR as a plausible-looking zero.
+            with open(mdin) as handle:
+                mdin_text = handle.read()
+            if "&pmd" not in mdin_text or "infe" not in mdin_text:
+                raise RuntimeError(
+                    f"a cv.in was staged for {self.output_dir} but the mdin has no infe/&pmd block, "
+                    "so the RMSD restraint would silently not be applied"
+                )
 
         with open(mdin) as temp:
             template = Template(temp.read())
@@ -441,6 +455,8 @@ class Simulation(Calculation):
         inptraj=None,
         post_analysis=False,
         restraint_key=None,
+        cv_file: Union[RestraintMaker, str, None] = None,
+        cv_key=None,
         sim_debug: bool = False,
         memory: Optional[Union[int, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -481,6 +497,8 @@ class Simulation(Calculation):
             debug=sim_debug,
         )
         self.restraint_key = restraint_key
+        self.cv_file = cv_file
+        self.cv_key = cv_key
         self.system_type = system_type
 
     def setup(self):
@@ -598,6 +616,19 @@ class Simulation(Calculation):
                 self.restraint_file,
                 userPath=os.path.join(tempDir, os.path.basename(self.restraint_file)),
             )
+        if self.cv_file is not None:
+            cv_source = (
+                # .get, not [], because cv_files is empty in force mode -- the same RestraintMaker
+                # is handed to every Simulation either way.
+                self.cv_file.cv_files.get(self.cv_key)
+                if isinstance(self.cv_file, RestraintMaker)
+                else self.cv_file
+            )
+            if cv_source is not None:
+                self.read_files["cv_file"] = fileStore.readGlobalFile(
+                    cv_source,
+                    userPath=os.path.join(tempDir, os.path.basename(str(cv_source))),
+                )
         self.read_files["mdin"] = Calculation._mdin_restraint(
             self, fileStore, self.read_files["input_file"]
         )

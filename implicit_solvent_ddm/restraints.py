@@ -15,6 +15,9 @@ import parmed as pmd
 import pytraj as pt
 from toil.common import FileID, Toil
 from toil.job import Job
+import subprocess
+import tempfile
+import warnings
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.restraint_helper import (
     compute_dihedral_angle,
@@ -280,22 +283,12 @@ class FlatBottom(Job):
             * If receptor contains Cα atoms (@CA), use those (protein case)
             * Otherwise, use all heavy atoms (host–guest or non-protein)
         """
-        # Ligand: heavy atoms only
-        self.restrained_ligand_atoms = self.topology.select(
-            f"{self.ligand_mask} & !@H*"
+        self.restrained_ligand_atoms, _ = select_ligand_restraint_atoms(
+            self.topology, self.ligand_mask
         )
-
-        # Try to select receptor Cα atoms (safe even if none exist)
-        ca_sel = self.topology.select(f"{self.receptor_mask} & @CA")
-
-        if ca_sel is not None and ca_sel.size > 0:
-            # Protein-like system: restrain only backbone Cα atoms
-            self.restrained_receptor_atoms = ca_sel
-        else:
-            # Non-protein (e.g., host–guest): restrain all heavy atoms
-            self.restrained_receptor_atoms = self.topology.select(
-                f"{self.receptor_mask} & !@H*"
-            )
+        self.restrained_receptor_atoms, _ = select_receptor_restraint_atoms(
+            self.topology, self.receptor_mask
+        )
 
         
     def _determine_restraint_parameters(self):
@@ -1052,6 +1045,7 @@ class RestraintMaker(Job):
         boresch_restraints: BoreschRestraints,
         complex_binding_mode: FileID,
         flat_bottom: FileID,
+        endstate_trajectory: Optional[FileID] = None,
         conformational_template=None,
         orientational_template=None,
         memory: Optional[Union[int, str]] = None,
@@ -1078,7 +1072,8 @@ class RestraintMaker(Job):
         self.complex_restraint_file = config.intermediate_args.complex_restraint_files
         self.ligand_restraint_file = config.intermediate_args.guest_restraint_files
         self.receptor_restraint_file = config.intermediate_args.receptor_restraint_files
-        self.max_con_force = config.intermediate_args.max_conformational_restraint
+        # The pinned anchor: max spring constant in force mode, MINIMUM tolerance in rmsd mode.
+        self.max_con_force = config.intermediate_args.strongest_conformational_restraint
         self.max_orient_force = config.intermediate_args.max_orientational_restraint
 
         self.conformational_forces = (
@@ -1093,6 +1088,9 @@ class RestraintMaker(Job):
         self.ramp = config.intermediate_args.ramp_kwargs
         self.flat_bottom = flat_bottom
         self.restraints = {}
+        self.cv_files = {}          # rmsd mode only; keyed like restraints with an _cv suffix
+        self.cv_spec = None         # FileID of the shared group/reference specification
+        self.endstate_trajectory = endstate_trajectory
         self.ligand_conformational_restraints = None
         self.receptor_conformational_restraints = None
         self.complex_conformational_restraints = None
@@ -1119,6 +1117,7 @@ class RestraintMaker(Job):
 
     def run(self, fileStore):
         fileStore.logToMaster(f"Creating Restraints: conformational network from {self.complex_binding_mode}")
+        rmsd_mode = self.config.intermediate_args.rmsd_mode
         conformational_restraints = self.addChildJobFn(
             get_conformational_restraints,
             self.config.endstate_files.complex_parameter_filename,
@@ -1127,7 +1126,16 @@ class RestraintMaker(Job):
             self.config.amber_masks.ligand_mask,
             self.config.intermediate_args.unrestrained_receptor_mask,
             self.config.intermediate_args.receptor_ramp_mask,
+            rmsd_mode=rmsd_mode,
         )
+        if rmsd_mode:
+            self.cv_spec = self.addChildJobFn(
+                get_rmsd_cv_templates,
+                self.config,
+                self.config.endstate_files.complex_parameter_filename,
+                self.complex_binding_mode,
+                self.endstate_trajectory,
+            ).rv()
         self.conformational_restraints = conformational_restraints
 
         # just added remove
@@ -1147,12 +1155,33 @@ class RestraintMaker(Job):
 
         self.boresch_deltaG = self.boresch.compute_boresch_restraints
 
+        boresch_forces = self.config.intermediate_args.boresch_distance_forces
         for index, (conformational_force, orientational_force) in enumerate(
             zip(
                 self.config.intermediate_args.conformational_restraints_forces,
                 self.config.intermediate_args.orientational_restraint_forces,
             )
         ):
+            if rmsd_mode:
+                for system, key in (
+                    ("ligand", f"ligand_{conformational_force}_cv"),
+                    ("receptor", f"receptor_{conformational_force}_cv"),
+                    (
+                        "complex",
+                        f"complex_{conformational_force}_{orientational_force}_cv",
+                    ),
+                ):
+                    self.cv_files[key] = self.addFollowOnJobFn(
+                        write_cv_file,
+                        self.cv_spec,
+                        system,
+                        conformational_force,
+                        self.config.intermediate_args.rmsd_force_constant,
+                        r1=self.config.intermediate_args.rmsd_r1,
+                        r2=self.config.intermediate_args.rmsd_r2,
+                        r4=self.config.intermediate_args.rmsd_r4,
+                    ).rv()
+
             if len(self.ligand_restraint_file) == 0:
                 self.restraints[
                     f"ligand_{conformational_force}_rst"
@@ -1179,7 +1208,7 @@ class RestraintMaker(Job):
                     self.boresch.boresch_template,
                     conformational_force=conformational_force,
                     orientational_force=orientational_force,
-                    flat_bottom_template=self.flat_bottom,
+                    boresch_distance_force=float(boresch_forces[index]),
                     **self.ramp,
                 ).rv()
             else:
@@ -1274,6 +1303,34 @@ class RestraintMaker(Job):
         # )
 
     @staticmethod
+    def get_cv_file(cv_obj, system, conformational_force, orientational_force=None):
+        """Look up one window's ``cv.in`` by the same key scheme the restraints use.
+
+        Parameters
+        ----------
+        cv_obj : dict
+            ``RestraintMaker.cv_files``.
+        system : {"ligand", "receptor", "complex"}
+            Which leg the window belongs to.
+        conformational_force : float
+            The window's RMSD tolerance, which is also its state label.
+        orientational_force : float, optional
+            Required for the complex, whose key carries both coordinates.
+
+        Returns
+        -------
+        toil.fileStore.FileID or None
+            The rendered ``cv.in``, or None when the workflow is not in RMSD mode.
+        """
+        if not cv_obj:
+            return None
+        if system == "ligand":
+            return cv_obj.get(f"ligand_{conformational_force}_cv")
+        if system == "receptor":
+            return cv_obj.get(f"receptor_{conformational_force}_cv")
+        return cv_obj.get(f"complex_{conformational_force}_{orientational_force}_cv")
+
+    @staticmethod
     def get_restraint_file(
         restraint_obj, system, conformational_force, orientational_force=None
     ):
@@ -1296,6 +1353,7 @@ def get_conformational_restraints(
     ligand_mask,
     unrestrained_receptor_mask=None,
     receptor_ramp_mask=None,
+    rmsd_mode=False,
 ):
     """
      Purpose to create a series of conformational restraint template files.
@@ -1325,8 +1383,22 @@ def get_conformational_restraints(
          Conformational restraint template for the ligand only
      restriant_receptor_ID: str
          Conformational restraint template for the receptor only
+
+     Notes
+     -----
+     ``rmsd_mode=True`` returns three empty templates: the RMSD collective variable replaces the
+     pairwise network wholesale, so the cKDTree neighbour search is skipped entirely. That search is
+     what produces 82,077 ``&rst`` records on MCL-1, and it is the reason the restraint energy is
+     extensive in contact count rather than a property of the restraint itself.
     """
     tempDir = job.fileStore.getLocalTempDir()
+    if rmsd_mode:
+        empty = job.fileStore.getLocalTempFile()
+        with open(empty, "w") as handle:
+            handle.write("&end")
+        shared = job.fileStore.writeGlobalFile(empty)
+        return (shared, shared, shared)
+
     complex_prmtop_ID = job.fileStore.readGlobalFile(
         complex_prmtop, userPath=os.path.join(tempDir, os.path.basename(complex_prmtop))
     )
@@ -1414,33 +1486,46 @@ def write_restraint_forces(
     job,
     conformational_template,
     orientational_template=None,
-    flat_bottom_template=None,
     conformational_force=0.0,
     orientational_force=0.0,
     ramp_slope=None,
     ramp_max_force=None,
+    boresch_distance_force=None,
 ):
-    """
-    Fill one window's restraint file from the conformational (and orientational) templates.
+    """Compose one window's ``restraint.RST`` from the cached templates.
+
+    The flat-bottom COM term is deliberately absent: it is an ENDSTATE-only restraint, applied by
+    ``setup_simulations.setup_post_endstate_simulation`` as the ``flat_bottom``/``no_flat_bottom``
+    pair whose exponential average becomes ``_flat_bottom_contribution``. It was previously passed in
+    here, but a Toil ``FileID`` subclasses ``str``, so what got concatenated was a jobStore path
+    rather than restraint text -- AMBER ignored the stray line and the term was never applied. Every
+    result to date is therefore correct, and dropping it changes no energy.
 
     Parameters
     ----------
-    job : toil.job.FunctionWrappingJob
-        Current Toil job.
-    conformational_template, orientational_template : FileID
-        Templates with ``$frest`` (and ``$frest_ramp``) / ``$drest``, ``$arest``, ``$trest``.
-    flat_bottom_template : str, optional
-        Flat-bottom restraint text prepended to complex files.
-    conformational_force, orientational_force : float
-        The window's force constants.
+    job : toil.job.Job
+        Owning job, for fileStore access.
+    conformational_template : toil.fileStore.FileID
+        Template with a ``$frest`` placeholder. Empty in RMSD mode, where the collective variable
+        replaces the pairwise network.
+    orientational_template : toil.fileStore.FileID, optional
+        Boresch template with ``$drest``/``$arest``/``$trest`` placeholders.
+    conformational_force : float, optional
+        Spring constant substituted into the pairwise network.
+    orientational_force : float, optional
+        Spring constant for the Boresch angles and torsions.
+    boresch_distance_force : float, optional
+        Spring constant for the Boresch *distance* term. Defaults to ``conformational_force``, which
+        is the legacy behaviour; RMSD mode must pass its own value, since the conformational slot
+        then carries an Angstrom tolerance rather than a force constant.
     ramp_slope, ramp_max_force : float, optional
         Ramp schedule for ``$frest_ramp`` (``RestraintMaker.ramp``); required when the template
         carries that placeholder.
 
     Returns
     -------
-    FileID
-        The written ``restraint.RST``.
+    toil.fileStore.FileID
+        The composed ``restraint.RST``.
 
     Raises
     ------
@@ -1456,9 +1541,6 @@ def write_restraint_forces(
     string_template = ""
 
     if orientational_template is not None:
-        if flat_bottom_template is not None:
-            string_template += flat_bottom_template + "\n"
-
         read_orientational_template = job.fileStore.readGlobalFile(
             orientational_template,
             userPath=os.path.join(temp_dir, os.path.basename(orientational_template)),
@@ -1466,7 +1548,11 @@ def write_restraint_forces(
         with open(read_orientational_template) as oren_temp:
             template = Template(oren_temp.read())
             orientational_temp = template.substitute(
-                drest=conformational_force,
+                drest=(
+                    conformational_force
+                    if boresch_distance_force is None
+                    else boresch_distance_force
+                ),
                 arest=orientational_force,
                 trest=orientational_force,
             )
@@ -1703,3 +1789,412 @@ if __name__ == "__main__":
     # # toil.exportFile(outputFileID, "file://" + os.path.abspath(os.path.join(ioFileDirectory, "out.txt")))
 
     # return (restraint_complex_ID, restraint_ligand_ID, restriant_receptor_ID)
+
+
+# --------------------------------------------------------------------------------------------------
+# RMSD collective-variable restraint (AMBER NFE &pmd / MULTI_RMSD)
+# --------------------------------------------------------------------------------------------------
+def select_receptor_restraint_atoms(topology, receptor_mask):
+    """Choose the receptor atoms an RMSD or COM restraint acts on.
+
+    Protein-like systems are restrained through their backbone alpha carbons; anything without a
+    backbone -- a cucurbituril host, say -- falls back to all heavy atoms. This is the same rule
+    ``FlatBottom`` has always applied, lifted out so the RMSD path cannot drift from it.
+
+    Parameters
+    ----------
+    topology : pytraj.Topology
+        Topology of the complex.
+    receptor_mask : str
+        AMBER mask selecting the receptor.
+
+    Returns
+    -------
+    indices : numpy.ndarray
+        Zero-based atom indices, in topology order.
+    mask : str
+        The mask that was actually resolved, for logging.
+    """
+    ca_sel = topology.select(f"{receptor_mask} & @CA")
+    if ca_sel is not None and np.size(ca_sel) > 0:
+        return np.asarray(ca_sel), f"{receptor_mask} & @CA"
+    return np.asarray(topology.select(f"{receptor_mask} & !@H*")), f"{receptor_mask} & !@H*"
+
+
+def select_ligand_restraint_atoms(topology, ligand_mask):
+    """Choose the ligand atoms a restraint acts on -- always heavy atoms.
+
+    Parameters
+    ----------
+    topology : pytraj.Topology
+        Topology of the complex.
+    ligand_mask : str
+        AMBER mask selecting the ligand.
+
+    Returns
+    -------
+    indices : numpy.ndarray
+        Zero-based atom indices, in topology order.
+    mask : str
+        The mask that was actually resolved.
+    """
+    return np.asarray(topology.select(f"{ligand_mask} & !@H*")), f"{ligand_mask} & !@H*"
+
+
+def select_site_restraint_atoms(topology, receptor_mask, ligand_mask, cutoff):
+    """Choose the binding-site residues for a second, tighter RMSD group.
+
+    A single global CA leash does not hold the pocket: a loop can collapse into an empty site while
+    moving global CA RMSD by a few tenths of an Angstrom, and every LJ and charge decoupling window
+    runs at the anchor. Restraining the site separately, at its own tolerance, covers that.
+
+    Parameters
+    ----------
+    topology : pytraj.Topology
+        Topology of the complex.
+    receptor_mask, ligand_mask : str
+        AMBER masks selecting the receptor and the ligand.
+    cutoff : float
+        Distance in Angstrom; whole residues within this of the ligand are selected.
+
+    Returns
+    -------
+    indices : numpy.ndarray
+        Zero-based atom indices, restricted to the same atom class the global group uses.
+    mask : str
+        The mask that was actually resolved.
+    """
+    base, _ = select_receptor_restraint_atoms(topology, receptor_mask)
+    near = topology.select(f"({ligand_mask})<:{cutoff:g} & {receptor_mask}")
+    indices = np.intersect1d(np.asarray(base), np.asarray(near))
+    return indices, f"({ligand_mask})<:{cutoff:g} & {receptor_mask}"
+
+
+def map_complex_to_subsystem(subsystem_indices, group_indices):
+    """Translate complex-frame atom indices into their apo-topology equivalents.
+
+    ``conformational_restraints_template`` offsets ligand indices by the receptor atom count, which
+    silently assumes the receptor occupies the first ``n_receptor`` slots. That happens to hold today
+    -- ``pt.strip`` and ``complex[mask]`` both preserve order -- but computing the mapping exactly
+    costs microseconds and fails loudly rather than restraining the wrong atoms.
+
+    Parameters
+    ----------
+    subsystem_indices : numpy.ndarray
+        Sorted zero-based complex indices of every atom in the sub-system.
+    group_indices : numpy.ndarray
+        Zero-based complex indices of the restrained group, a subset of ``subsystem_indices``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Zero-based indices of the same atoms within the sub-system topology.
+
+    Raises
+    ------
+    ValueError
+        If any group atom is absent from the sub-system.
+    """
+    subsystem = np.asarray(subsystem_indices)
+    group = np.asarray(group_indices)
+    position = np.searchsorted(subsystem, group)
+    if np.any(position >= subsystem.size) or np.any(subsystem[np.minimum(position, subsystem.size - 1)] != group):
+        missing = group[[p >= subsystem.size or subsystem[min(p, subsystem.size - 1)] != g
+                         for p, g in zip(position, group)]]
+        raise ValueError(f"restrained atoms {missing.tolist()} are not in the sub-system selection")
+    return position
+
+
+def render_colvar(atom_indices, reference, tolerance, force_constant, r1=-10.0, r2=0.0, r4=1000.0):
+    """Render one single-group ``MULTI_RMSD`` ``&colvar`` block.
+
+    Single-group on purpose: the multi-group form of ``MULTI_RMSD`` combines groups as
+    ``sqrt(sum_g M_g/M R_g**2)``, whereas separate blocks give ``U = sum_g U_g``. The additive form
+    matches how the pairwise restraint file already composes ligand and receptor terms, so
+    cancellation against the apo legs is structurally unchanged, and it lets each group carry its own
+    tolerance and map 1:1 onto a single cpptraj ``rms ... mass`` series.
+
+    Parameters
+    ----------
+    atom_indices : numpy.ndarray
+        Zero-based atom indices in the topology this ``cv.in`` will be used with; written one-based.
+    reference : numpy.ndarray, shape (n, 3)
+        Reference positions for those atoms, written flattened as ``cv_r``.
+    tolerance : float
+        Flat-bottom upper edge ``r3``, in Angstrom.
+    force_constant : float
+        ``anchor_strength`` for both walls.
+    r1, r2, r4 : float, optional
+        Remaining anchor positions.
+
+    Returns
+    -------
+    str
+        The ``&colvar`` block, newline-terminated.
+    """
+    one_based = [int(index) + 1 for index in atom_indices]
+    flat = np.asarray(reference, dtype=float).reshape(-1)
+    index_block = ",\n         ".join(
+        ", ".join(str(value) for value in one_based[start : start + 10])
+        for start in range(0, len(one_based), 10)
+    )
+    reference_block = ",\n         ".join(
+        ", ".join(f"{value:.6f}" for value in flat[start : start + 6])
+        for start in range(0, flat.size, 6)
+    )
+    return (
+        "&colvar\n"
+        "  cv_type = 'MULTI_RMSD'\n"
+        f"  cv_ni = {len(one_based)},\n"
+        f"  cv_i = {index_block},\n"
+        f"  cv_nr = {flat.size},\n"
+        f"  cv_r = {reference_block},\n"
+        f"  anchor_position = {r1}, {r2}, {tolerance}, {r4}\n"
+        f"  anchor_strength = {force_constant}, {force_constant}\n"
+        "/\n"
+    )
+
+
+def build_rmsd_reference(topology_path, binding_mode_path, indices, source, trajectory_path=None):
+    """Resolve the reference positions the RMSD collective variable measures against.
+
+    The reference is a *waypoint*: the receptor and ligand legs pay ``free -> held at X`` while the
+    complex leg pays ``held at X -> free bound``, so ``X`` cancels from the cycle. What it changes is
+    path length -- both ends walk *to* ``X``, so a reference off the apo-to-holo segment makes every
+    leg walk further. A single snapshot sits about one thermal RMSF off that segment (measured here:
+    1.76 A on the receptor endstate, against a 2.16 A reorganization), which is why the ensemble
+    average is the default and a lastframe is not.
+
+    Parameters
+    ----------
+    topology_path : str
+        Complex topology.
+    binding_mode_path : str
+        Complex binding-mode coordinates -- the endstate last frame, and the legacy reference.
+    indices : numpy.ndarray
+        Zero-based complex indices of the restrained group.
+    source : str
+        ``restraint_reference`` (the binding-mode frame, i.e. the shared restraint reference when one
+        is configured), ``ensemble_average``, ``endstate_lastframe``, ``minimized``, or a path to a
+        coordinate file.
+    trajectory_path : str, optional
+        Holo trajectory to average. Required by ``ensemble_average``; without it the call falls back
+        to the binding mode and warns.
+
+    Returns
+    -------
+    numpy.ndarray, shape (n, 3)
+        Reference positions for ``indices``, in complex-frame order.
+    """
+    if source == "ensemble_average":
+        if trajectory_path is None:
+            warnings.warn(
+                "rmsd_reference_source='ensemble_average' but no endstate trajectory was supplied; "
+                "falling back to the binding-mode frame, which carries a full thermal fluctuation"
+            )
+        else:
+            mask = "@" + ",".join(str(int(i) + 1) for i in indices)
+            traj = pt.load(trajectory_path, topology_path, mask=mask)
+            pt.superpose(traj, ref=0)
+            return np.asarray(traj.xyz).mean(axis=0)
+    elif source not in ("restraint_reference", "endstate_lastframe", "minimized"):
+        return np.asarray(pt.load(source, topology_path).xyz[0][indices])
+    return np.asarray(pt.load(binding_mode_path, topology_path).xyz[0][indices])
+
+
+def get_rmsd_cv_templates(job, config, complex_prmtop, complex_coordinate, endstate_trajectory=None):
+    """Build the per-leg collective-variable specification for the RMSD restraint.
+
+    Produces one ``.npz`` in the jobStore holding, per leg and per group, the atom indices in that
+    leg's own topology plus the shared reference positions. Passing a FileID rather than the raw
+    arrays keeps large objects out of Toil promises, which is the same reason ``HamiltonianSpec``
+    exists.
+
+    Parameters
+    ----------
+    job : toil.job.Job
+        Owning job, for fileStore access.
+    config : Config
+        Supplies the masks and every ``rmsd_*`` knob.
+    complex_prmtop : toil.fileStore.FileID
+        Complex topology.
+    complex_coordinate : toil.fileStore.FileID or list
+        Complex binding-mode coordinates.
+    endstate_trajectory : toil.fileStore.FileID or list, optional
+        Holo trajectory used by ``rmsd_reference_source='ensemble_average'``.
+
+    Returns
+    -------
+    toil.fileStore.FileID
+        The ``.npz`` specification consumed by :func:`write_cv_file`.
+    """
+    temp_dir = job.fileStore.getLocalTempDir()
+
+    def _read(handle):
+        target = handle[0] if isinstance(handle, (list, tuple)) else handle
+        return job.fileStore.readGlobalFile(
+            target, userPath=os.path.join(temp_dir, os.path.basename(str(target)))
+        )
+
+    top_path = _read(complex_prmtop)
+    mode_path = _read(complex_coordinate)
+    traj_path = _read(endstate_trajectory) if endstate_trajectory is not None else None
+
+    args = config.intermediate_args
+    receptor_mask = config.amber_masks.receptor_mask
+    ligand_mask = config.amber_masks.ligand_mask
+    topology = pt.load_topology(top_path)
+
+    groups = {}
+    if args.rmsd_mask:
+        groups["receptor"] = (np.asarray(topology.select(args.rmsd_mask)), 1.0)
+    else:
+        indices, resolved = select_receptor_restraint_atoms(topology, receptor_mask)
+        job.fileStore.logToMaster(f"[rmsd] receptor group: {resolved} -> {indices.size} atoms")
+        groups["receptor"] = (indices, 1.0)
+    if args.rmsd_site_cutoff:
+        indices, resolved = select_site_restraint_atoms(
+            topology, receptor_mask, ligand_mask, args.rmsd_site_cutoff
+        )
+        job.fileStore.logToMaster(f"[rmsd] site group: {resolved} -> {indices.size} atoms")
+        groups["site"] = (indices, args.rmsd_site_tolerance_scale)
+    if args.rmsd_restrain_ligand:
+        indices, resolved = select_ligand_restraint_atoms(topology, ligand_mask)
+        job.fileStore.logToMaster(f"[rmsd] ligand group: {resolved} -> {indices.size} atoms")
+        groups["ligand"] = (indices, args.rmsd_ligand_tolerance_scale)
+
+    receptor_atoms = np.asarray(topology.select(receptor_mask))
+    ligand_atoms = np.asarray(topology.select(ligand_mask))
+    # Which groups each leg's cv.in carries. The complex holds every group so its bias is exactly the
+    # sum of the apo legs', which is what makes the cycle cancel.
+    membership = {
+        "complex": [name for name in groups],
+        "receptor": [name for name in groups if name != "ligand"],
+        "ligand": ["ligand"] if "ligand" in groups else [],
+    }
+    subsystem = {"complex": None, "receptor": receptor_atoms, "ligand": ligand_atoms}
+
+    payload = {"groups": np.asarray(list(groups), dtype=object)}
+    for name, (indices, scale) in groups.items():
+        payload[f"ref:{name}"] = build_rmsd_reference(
+            top_path, mode_path, indices, args.rmsd_reference_source, traj_path
+        )
+        payload[f"scale:{name}"] = np.asarray(float(scale))
+        for system, members in membership.items():
+            if name not in members:
+                continue
+            mapped = (
+                indices if subsystem[system] is None
+                else map_complex_to_subsystem(subsystem[system], indices)
+            )
+            payload[f"idx:{system}:{name}"] = np.asarray(mapped)
+    for system, members in membership.items():
+        payload[f"members:{system}"] = np.asarray(members, dtype=object)
+
+    spec_path = os.path.join(temp_dir, "rmsd_cv_spec.npz")
+    np.savez(spec_path, **payload)
+    return job.fileStore.writeGlobalFile(spec_path)
+
+
+def write_cv_file(job, spec_id, system_type, tolerance, force_constant, r1=-10.0, r2=0.0, r4=1000.0):
+    """Render one window's ``cv.in`` from the shared specification.
+
+    Parameters
+    ----------
+    job : toil.job.Job
+        Owning job, for fileStore access.
+    spec_id : toil.fileStore.FileID
+        Output of :func:`get_rmsd_cv_templates`.
+    system_type : {"complex", "receptor", "ligand"}
+        Which leg's group membership and index mapping to use.
+    tolerance : float
+        This window's ``r3``, in Angstrom, before each group's scale is applied.
+    force_constant : float
+        ``anchor_strength`` shared by every group.
+    r1, r2, r4 : float, optional
+        Remaining anchor positions.
+
+    Returns
+    -------
+    toil.fileStore.FileID
+        The rendered ``cv.in``.
+    """
+    temp_dir = job.fileStore.getLocalTempDir()
+    spec_path = job.fileStore.readGlobalFile(
+        spec_id, userPath=os.path.join(temp_dir, "rmsd_cv_spec.npz")
+    )
+    spec = np.load(spec_path, allow_pickle=True)
+
+    blocks = ""
+    for name in spec[f"members:{system_type}"]:
+        name = str(name)
+        blocks += render_colvar(
+            spec[f"idx:{system_type}:{name}"],
+            spec[f"ref:{name}"],
+            round(float(tolerance) * float(spec[f"scale:{name}"]), 4),
+            force_constant,
+            r1=r1,
+            r2=r2,
+            r4=r4,
+        )
+
+    out_path = os.path.join(temp_dir, "cv.in")
+    with open(out_path, "w") as handle:
+        handle.write(blocks)
+    return job.fileStore.writeGlobalFile(out_path)
+
+
+def rmsd_series_for_trajectory(job, spec_id, system_type, prmtop, trajectory):
+    """Measure each collective-variable group's RMSD over one trajectory.
+
+    Called once per completed trajectory rather than once per matrix cell: every window in the
+    restraint band shares this series, and only the tolerance ``r3`` differs between them.
+
+    Uses the same mass-weighted best-fit RMSD the restraint itself applies -- ``MULTI_RMSD`` was
+    measured equal to cpptraj ``rms ... mass`` to 3e-5 Angstrom, and invariant to a rigid transform
+    of the reference to 3e-8 Angstrom -- so the energy rebuilt from this series is exact rather than
+    an approximation.
+
+    Parameters
+    ----------
+    job : toil.job.Job
+        Owning job, for fileStore access.
+    spec_id : toil.fileStore.FileID
+        Output of :func:`get_rmsd_cv_templates`.
+    system_type : {"complex", "receptor", "ligand"}
+        Which leg's group membership and index mapping to use.
+    prmtop : toil.fileStore.FileID
+        Topology matching ``trajectory``.
+    trajectory : toil.fileStore.FileID or list
+        The completed MD trajectory to measure.
+
+    Returns
+    -------
+    dict of str to numpy.ndarray
+        Per-frame RMSD in Angstrom, keyed by group name.
+    """
+    temp_dir = job.fileStore.getLocalTempDir()
+
+    def _read(handle):
+        target = handle[0] if isinstance(handle, (list, tuple)) else handle
+        return job.fileStore.readGlobalFile(
+            target, userPath=os.path.join(temp_dir, os.path.basename(str(target)))
+        )
+
+    spec = np.load(_read(spec_id), allow_pickle=True)
+    top_path = _read(prmtop)
+    traj_path = _read(trajectory)
+
+    series = {}
+    for name in spec[f"members:{system_type}"]:
+        name = str(name)
+        indices = np.asarray(spec[f"idx:{system_type}:{name}"])
+        reference = np.asarray(spec[f"ref:{name}"])
+        mask = "@" + ",".join(str(int(i) + 1) for i in indices)
+        traj = pt.load(traj_path, top_path, mask=mask)
+        reference_frame = pt.Frame(traj[0])
+        reference_frame.xyz[:] = reference
+        series[name] = np.asarray(
+            pt.rmsd(traj, mask="", ref=reference_frame, mass=True), dtype=float
+        )
+    return series

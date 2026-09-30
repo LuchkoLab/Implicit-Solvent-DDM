@@ -28,6 +28,7 @@ from implicit_solvent_ddm.alchemical import alter_topology, split_complex_system
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
 from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
 from implicit_solvent_ddm.adaptive_restraints import (
+    interpolate_partner,
     run_exponential_averaging,
     run_compute_mbar,
     adaptive_lambda_windows,
@@ -66,9 +67,14 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
         Job containing all setup components
     """
     # Generate MD input files for intermediate states
+    # RMSD mode: the two MD mdins get infe=1 + a &pmd block pointing at the per-window cv.in. The
+    # imin=5 scoring mdins deliberately do NOT -- the restraint term is added analytically.
+    nfe_cv_file = "cv.in" if config.intermediate_args.rmsd_mode else None
     mdins = job.addChildJobFn(
-        get_mdins, 
-        config.intermediate_args.mdin_intermediate_file
+        get_mdins,
+        config.intermediate_args.mdin_intermediate_file,
+        nfe_cv_file=nfe_cv_file,
+        nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     )
     
     # Store MDIN file references in config
@@ -93,6 +99,8 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
             get_long_window_mdin,
             config.intermediate_args.mdin_intermediate_file,
             config.intermediate_args.long_restraint_window_ns,
+            nfe_cv_file=nfe_cv_file,
+            nfe_output_freq=config.intermediate_args.rmsd_output_freq,
         )
         config.inputs["long_window_mdin"] = long_mdin.rv(0)
         config.inputs["long_window_nstlim"] = long_mdin.rv(1)
@@ -118,6 +126,8 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
             config.intermediate_args.pilot_ps,
             config.intermediate_args.pilot_frames,
             config.intermediate_args.pilot_nstlim,
+            nfe_cv_file=nfe_cv_file,
+            nfe_output_freq=config.intermediate_args.rmsd_output_freq,
         )
         # rv(0) = default (solvated) pilot mdin; rv(1) = no-solvent (igb=6 gas-phase) pilot mdin. Both
         # are swapped into the pilot config so EVERY pilot MD state runs at 50 ps (not just the
@@ -239,7 +249,7 @@ def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config)
             restraint_type=config.intermediate_args.restraint_type,
             ligand_mask=config.amber_masks.ligand_mask,
             receptor_mask=config.amber_masks.receptor_mask,
-            K_r=config.intermediate_args.max_conformational_restraint,
+            K_r=config.intermediate_args.boresch_Kr,
             K_thetaA=config.intermediate_args.max_orientational_restraint,
             K_thetaB=config.intermediate_args.max_orientational_restraint,
             K_phiA=config.intermediate_args.max_orientational_restraint,
@@ -258,6 +268,9 @@ def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config)
             complex_binding_mode=endstate_jobs[0],
             boresch_restraints=boresch_restraints.rv(),
             flat_bottom=config.inputs["flat_bottom_restraint"],
+            # Holo trajectory, for rmsd_reference_source='ensemble_average'. A single snapshot sits
+            # about one thermal RMSF off the apo-to-holo segment, which both legs then pay for.
+            endstate_trajectory=endstate_jobs[1],
         )
     ).rv()
 
@@ -349,8 +362,8 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
         receptor_simulations.setup_post_endstate_simulation()
         ligand_simulations.setup_post_endstate_simulation()
 
-    # Calculate maximum restraint forces
-    max_conformational_force = max(config.intermediate_args.conformational_restraints_forces)
+    # Calculate the pinned restraint anchor (mode-aware: max spring, or min RMSD tolerance)
+    max_conformational_force = config.intermediate_args.strongest_conformational_restraint
     max_orientational_force = max(config.intermediate_args.orientational_restraint_forces)
 
     
@@ -473,6 +486,8 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     gb_extdiel=dielectric,
                     nstlim=gb_nstlim,
                     ntwx=gb_ntwx,
+                    nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+                    nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
             )
 
@@ -491,6 +506,8 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     gb_extdiel=dielectric,
                     nstlim=gb_nstlim,
                     ntwx=gb_ntwx,
+                    nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+                    nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
             )
 
@@ -502,7 +519,14 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
         config.intermediate_args.conformational_restraints_forces,
         config.intermediate_args.orientational_restraint_forces,
     ):
-        exponent_conformational = round(np.log2(con_force), 3)
+        # In rmsd mode the conformational slot already HOLDS the state label (an Angstrom tolerance),
+        # so there is no 2^p to undo -- log2 would turn the ladder into exponents and send the
+        # r3 = 0 anchor to -inf.
+        exponent_conformational = (
+            round(float(con_force), 3)
+            if config.intermediate_args.rmsd_mode
+            else round(np.log2(con_force), 3)
+        )
         exponent_orientational = round(np.log2(orien_force), 3)
 
         config.intermediate_args.exponent_conformational_forces_list.append(exponent_conformational)
@@ -557,6 +581,9 @@ class HamiltonianSpec:
     system_type: object
     mpi_command: object
     inptraj: object = None
+    cv_file: object = None
+    cv_key: object = None
+    cv_spec: object = None
 
     @classmethod
     def from_simulation(cls, sim):
@@ -567,6 +594,9 @@ class HamiltonianSpec:
             incrd=sim.incrd,
             restraint_file=sim.restraint_file,
             restraint_key=sim.restraint_key,
+            cv_file=getattr(sim, "cv_file", None),
+            cv_key=getattr(sim, "cv_key", None),
+            cv_spec=getattr(getattr(sim, "restraint_file", None), "cv_spec", None),
             working_directory=sim.working_directory,
             system_type=sim.system_type,
             mpi_command=sim.mpi_command,
@@ -812,7 +842,7 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                     receptor_adaptive_run=receptor_mbar_job.rv(),
                     flat_botton_run=flat_bottom_exp.rv(),  # flat bottom results
                     temperature=config.intermediate_args.temperature,
-                    max_conformation_force=max(config.intermediate_args.exponent_conformational_forces),
+                    max_conformation_force=config.intermediate_args.strongest_conformational_exponent,
                     max_orientational_force=max(config.intermediate_args.exponent_orientational_forces),
                     boresch_df=config.inputs["restraints"],  # restraints
                     complex_filename=config.endstate_files.complex_parameter_filename,
@@ -1025,8 +1055,30 @@ def apply_converged_schedule(production_config: Config, converged_config: Config
     if con_exps and len(con_exps) == len(orient_exps):
         m.exponent_conformational_forces = con_exps
         m.exponent_orientational_forces = orient_exps
-        m.conformational_restraints_forces = np.exp2(con_exps)
         m.orientational_restraint_forces = np.exp2(orient_exps)
+        if m.rmsd_mode:
+            # The conformational slot holds Angstrom tolerances, so there is no 2^p to apply. Keep the
+            # tolerance list, the anchor and the Boresch distance ladder in step with the merged
+            # schedule -- deepcopy does NOT re-run __post_init__, the lesson of commit 5adfa35.
+            m.conformational_restraints_forces = np.asarray(con_exps, dtype=float)
+            m.rmsd_tolerance_windows = list(con_exps)
+            m.strongest_conformational_restraint = min(con_exps)
+            m.strongest_conformational_exponent = min(con_exps)
+            m.boresch_distance_forces = np.exp2(
+                [
+                    interpolate_partner(
+                        conv.exponent_conformational_forces_list,
+                        [float(np.log2(f)) for f in conv.boresch_distance_forces],
+                        c,
+                    )
+                    for c in con_exps
+                ]
+            )
+        else:
+            m.conformational_restraints_forces = np.exp2(con_exps)
+            m.strongest_conformational_restraint = float(max(np.exp2(con_exps)))
+            m.strongest_conformational_exponent = float(max(con_exps))
+            m.boresch_distance_forces = np.exp2(con_exps)
     return merged
 
 

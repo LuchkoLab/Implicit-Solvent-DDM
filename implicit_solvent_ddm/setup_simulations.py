@@ -2,6 +2,7 @@
 Setup simulations for the Double Decoupling Method (DDM) workflow.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Union
 from copy import copy
@@ -15,6 +16,27 @@ from toil.job import Promise
 # its endstate<->floor link is the one measured to collapse at short run length; the complex leg's
 # equivalent junction has never been measured.
 LONG_WINDOW_LEGS = ("receptor",)
+
+
+def cv_key_for(restraint_key):
+    """Map a restraint dict key onto its collective-variable sibling.
+
+    The two dicts are keyed identically apart from the suffix, so a window's ``cv.in`` needs no
+    separate bookkeeping -- ``complex_0.5_8.0_rst`` pairs with ``complex_0.5_8.0_cv``.
+
+    Parameters
+    ----------
+    restraint_key : str or None
+        Key into ``RestraintMaker.restraints``.
+
+    Returns
+    -------
+    str or None
+        The matching ``cv_files`` key, or None when there is no restraint key.
+    """
+    if not restraint_key:
+        return None
+    return re.sub(r"_rst$", "_cv", restraint_key)
 
 
 @dataclass
@@ -40,9 +62,10 @@ class SimulationSetup:
         - Sets the topology file, number of cores, and directory structure based on system type.
         - For GPU-enabled systems (`complex` and `receptor`), reduces CPU core allocation to 0.1.
         """
-        # Round and store max exponents
+        # The pinned anchor: largest spring constant in force mode, SMALLEST tolerance in rmsd
+        # mode, where the tightest flat bottom is the smallest number.
         self.max_conformational_exponent = round(
-            max(self.config.intermediate_args.exponent_conformational_forces), 3
+            self.config.intermediate_args.strongest_conformational_exponent, 3
         )
         self.max_orientational_exponent = round(
             max(self.config.intermediate_args.exponent_orientational_forces), 3
@@ -225,6 +248,8 @@ class SimulationSetup:
                 dirstruct=self.dirstruct,
                 system_type=self.system_type,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 working_directory=self.config.system_settings.working_directory,
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
@@ -270,6 +295,8 @@ class SimulationSetup:
                 dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -311,6 +338,8 @@ class SimulationSetup:
                 dirstruct="dirstruct_halo",
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -347,6 +376,8 @@ class SimulationSetup:
                 dirstruct="dirstruct_halo",
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -395,6 +426,8 @@ class SimulationSetup:
                 dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -482,6 +515,8 @@ class SimulationSetup:
                 dirstruct=dirstruct_type,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,

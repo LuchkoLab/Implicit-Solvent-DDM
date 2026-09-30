@@ -16,7 +16,7 @@ from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.matrix_order import CycleSteps
 from implicit_solvent_ddm.postTreatment import create_mdout_dataframe
-from implicit_solvent_ddm.restraints import RestraintMaker
+from implicit_solvent_ddm.restraints import RestraintMaker, rmsd_series_for_trajectory
 from implicit_solvent_ddm.simulations import Simulation
 from itertools import islice
 
@@ -205,6 +205,7 @@ class IntermidateRunner(Job):
             orientational_forces=self.config.intermediate_args.exponent_orientational_forces_list,
             charges_windows=self.config.intermediate_args.charges_lambda_window,
             external_dielectic=self.config.intermediate_args.gb_extdiel_windows,
+            restraint_coordinate="rmsd" if self.config.intermediate_args.rmsd_mode else "force",
             endstate_label=self.config.endstate_method.endstate_state_label,
             lj_windows=self.config.intermediate_args.lj_scale_windows,
         )
@@ -395,6 +396,66 @@ class IntermidateRunner(Job):
 
         return self
     
+    def _rmsd_post_analysis_inputs(self, completed_sim, md_traj):
+        """Prepare the analytic restraint term for one trajectory's post-analysis row.
+
+        Parameters
+        ----------
+        completed_sim : Simulation
+            The finished MD window whose trajectory is about to be re-scored.
+        md_traj : toil.fileStore.FileID or list
+            That window's trajectory.
+
+        Returns
+        -------
+        rmsd_series_job : toil.job.Job or None
+            The job computing the per-group RMSD series, or None when not in RMSD mode. The caller
+            must attach each post-analysis job BENEATH it -- Toil refuses a promise to a job that is
+            not a successor of the promising one.
+        nfe_params : dict or None
+            Flat-bottom parameters and per-group tolerance scales for ``band_restraint_energy``.
+        """
+        args = self.config.intermediate_args
+        if not args.rmsd_mode:
+            return None, None
+        # The runner is constructed with the RestraintMaker itself, so it is the reliable source.
+        # Reaching through completed_sim only works when that object is a live Simulation; on the
+        # post_only path it can be a HamiltonianSpec whose restraint_file was still an unresolved
+        # promise when the spec was built, so cv_spec came back None there.
+        spec_id = (
+            getattr(getattr(self, "restraints", None), "cv_spec", None)
+            or getattr(completed_sim, "cv_spec", None)
+            or getattr(getattr(completed_sim, "restraint_file", None), "cv_spec", None)
+        )
+        if spec_id is None:
+            # Failing loudly matters here: without the bias every window in the restraint band is the
+            # same Hamiltonian, so MBAR returns overlap ~1 and a restraint dG of ~0 -- a plausible
+            # number that is simply wrong, rather than an error anyone would notice.
+            raise RuntimeError(
+                "rmsd_mode is on but no collective-variable specification reached post-analysis for "
+                f"{completed_sim.system_type}; the restraint term could not be reconstructed"
+            )
+        series_job = self.addChild(
+            Job.wrapJobFn(
+                rmsd_series_for_trajectory,
+                spec_id,
+                completed_sim.system_type,
+                completed_sim.prmtop,
+                md_traj,
+            )
+        )
+        return series_job, {
+            "force_constant": args.rmsd_force_constant,
+            "r1": args.rmsd_r1,
+            "r2": args.rmsd_r2,
+            "r4": args.rmsd_r4,
+            "scales": {
+                "receptor": 1.0,
+                "site": args.rmsd_site_tolerance_scale,
+                "ligand": args.rmsd_ligand_tolerance_scale,
+            },
+        }
+
     def only_post_analysis(self, completed_sim: Simulation, md_traj, fileStore):
         """
         Run post-analysis calculations on a completed MD simulation.
@@ -425,6 +486,12 @@ class IntermidateRunner(Job):
         """
         fileStore.logToMaster("RUNNING POST only\n")
         fileStore.logToMaster(f"loaded dataframe: {self._loaded_dataframe}")
+
+        # RMSD mode: the post mdins carry no NFE, so sander returns the unbiased U0 and the restraint
+        # term is rebuilt analytically. One cpptraj-equivalent pass per TRAJECTORY, not per cell --
+        # every window in the band shares this series and differs only in its tolerance.
+        rmsd_series_job, nfe_params = self._rmsd_post_analysis_inputs(completed_sim, md_traj)
+        rmsd_series_rv = rmsd_series_job.rv() if rmsd_series_job is not None else None
 
         # Banded post-analysis: evaluate only the cells a K-state block chain needs.
         block_pairs = self._post_analysis_pairs(completed_sim.system_type, fileStore)
@@ -525,13 +592,19 @@ class IntermidateRunner(Job):
 
                 _export = self.config.system_settings.export_intermediate_files
                 post_process_job.export_network = _export
-                self.addChild(post_process_job)
+                if rmsd_series_job is not None:
+                    rmsd_series_job.addChild(post_process_job)
+                else:
+                    self.addChild(post_process_job)
 
                 data_frame = post_process_job.addFollowOnJobFn(
                     create_mdout_dataframe,
                     post_process_job.directory_args,
                     post_process_job.dirstruct,
                     post_process_job.output_dir,
+                    rmsd_series=rmsd_series_rv,
+                    nfe_params=nfe_params,
+                    endstate_label=self.config.endstate_method.endstate_state_label,
                     # When export is off the mdout is never written to the network;
                     # read it from the jobStore via the post job's returned FileID
                     # promise, and skip the parquet cache write (compress=False) so
@@ -591,6 +664,7 @@ class IntermidateRunner(Job):
         orientational,
         mdin,
         restraint_file,
+        cv_file=None,
         charge=1.0,
         charge_parm=None,
         gb_extdiel=None,
@@ -631,6 +705,8 @@ class IntermidateRunner(Job):
         # scaling restraint windows
         else:
             restraint_file = restraint_file.rv()
+        if cv_file is not None and hasattr(cv_file, "rv"):
+            cv_file = cv_file.rv()
 
         new_job = Simulation(
             executable=self.config.system_settings.executable,
@@ -645,6 +721,7 @@ class IntermidateRunner(Job):
             incrd=self.config.inputs["endstate_complex_lastframe"],
             input_file=mdin,
             restraint_file=restraint_file,
+            cv_file=cv_file,
             working_directory=self.config.system_settings.working_directory,
             system_type="complex",
             directory_args=dirs_args[0],
@@ -663,6 +740,7 @@ class IntermidateRunner(Job):
         conformational,
         mdin,
         restraint_file,
+        cv_file=None,
         charge=1.0,
         charge_parm=None,
     ):
@@ -697,6 +775,8 @@ class IntermidateRunner(Job):
             )
         else:
             restraint_file = restraint_file.rv()
+        if cv_file is not None and hasattr(cv_file, "rv"):
+            cv_file = cv_file.rv()
         new_job = Simulation(
             executable=self.config.system_settings.executable,
             mpi_command=self.config.system_settings.mpi_command,
@@ -706,6 +786,7 @@ class IntermidateRunner(Job):
             incrd=self.config.inputs["ligand_endstate_frame"],
             input_file=mdin,
             restraint_file=restraint_file,
+            cv_file=cv_file,
             working_directory=self.config.system_settings.working_directory,
             system_type="ligand",
             directory_args=dirs_args[0],
@@ -719,6 +800,7 @@ class IntermidateRunner(Job):
         conformational,
         mdin,
         restraint_file,
+        cv_file=None,
         gb_extdiel=None,
     ):
         # ALS only inserts INTERIOR windows, never the ladder floor, so the long-window dispatch in
@@ -754,6 +836,8 @@ class IntermidateRunner(Job):
             )
         else:
             restraint_file = restraint_file.rv()
+        if cv_file is not None and hasattr(cv_file, "rv"):
+            cv_file = cv_file.rv()
 
         new_job = Simulation(
             executable=self.config.system_settings.executable,
@@ -764,6 +848,7 @@ class IntermidateRunner(Job):
             incrd=self.config.inputs["receptor_endstate_frame"],
             input_file=mdin,
             restraint_file=restraint_file,
+            cv_file=cv_file,
             working_directory=self.config.system_settings.working_directory,
             system_type="receptor",
             directory_args=dirs_args,
