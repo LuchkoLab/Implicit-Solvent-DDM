@@ -1514,7 +1514,7 @@ def improve_dielectric_overlap(
         nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     ).rv()
 
-    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
+    max_con = config.intermediate_args.strongest_conformational_exponent  # smallest tolerance in rmsd mode
 
     if system_type == "complex":
         runner._add_complex_simulation(
@@ -1714,7 +1714,7 @@ def improve_dielectric_overlap_both(
         nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     ).rv()
 
-    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
+    max_con = config.intermediate_args.strongest_conformational_exponent  # smallest tolerance in rmsd mode
     max_orient = max(config.intermediate_args.exponent_orientational_forces_list)
 
     complex_runner._add_complex_simulation(
@@ -1786,7 +1786,7 @@ def improve_charge_overlap(
 
     setup_job = job.addChildJobFn(initilized_jobs)
     before = len(runner.simulations)
-    max_con = max(config.intermediate_args.exponent_conformational_forces_list)
+    max_con = config.intermediate_args.strongest_conformational_exponent  # smallest tolerance in rmsd mode
 
     if system_type == "complex":
         runner._add_complex_simulation(
