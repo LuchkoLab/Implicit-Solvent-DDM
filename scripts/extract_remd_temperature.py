@@ -23,6 +23,9 @@ Usage
     # one solute, explicit output
     python scripts/extract_remd_temperature.py path/to/remd/MCL-1_ligand-1 -T 298.0 -o out.nc
 
+    # DCD instead of Amber NetCDF
+    python scripts/extract_remd_temperature.py path/to/remd -T 298.0 --format dcd
+
     # see the cpptraj input without running it
     python scripts/extract_remd_temperature.py path/to/remd -T 298.0 --dry-run
 
@@ -36,6 +39,8 @@ import subprocess as sp
 import sys
 
 REPLICA_GLOB = "*.nc.[0-9][0-9][0-9]"
+# output extension -> cpptraj trajout keyword
+TRAJ_FORMATS = {"nc": "netcdf", "dcd": "dcd"}
 
 
 def replica_trajectories(solute_dir):
@@ -124,15 +129,23 @@ def _temps_via_pytraj(trajs):
     return sorted(temps)
 
 
-def cpptraj_input(parm, trajs, target_temp, out_traj):
+def cpptraj_input(parm, trajs, target_temp, out_traj, traj_format="nc"):
     """Same form as implicit_solvent_ddm/templates/cpptraj_remd.sh."""
     return (
         f"parm {parm}\n"
         f"trajin {trajs[0]} remdtraj remdtrajtemp {target_temp} "
         f"trajnames {','.join(trajs[1:])}\n"
-        f"trajout {out_traj} nobox\n"
+        f"trajout {out_traj} {TRAJ_FORMATS[traj_format]} nobox\n"
         "go\n"
     )
+
+
+def format_from_path(path):
+    """Output format implied by a filename extension, or None if unrecognised."""
+    if not path:
+        return None
+    extension = os.path.splitext(path)[1].lstrip(".").lower()
+    return extension if extension in TRAJ_FORMATS else None
 
 
 def write_endpoint_frames(parm, traj, prefix):
@@ -181,14 +194,16 @@ def frame_count(parm, traj):
 
 
 def extract(solute_dir, target_temp, out_traj=None, dry_run=False, force=False,
-            endpoints=True, replica=1):
+            endpoints=True, replica=1, traj_format="nc"):
     trajs = replica_trajectories(solute_dir)
     if not trajs:
         return None
 
     name = os.path.basename(os.path.normpath(solute_dir))
     parm = topology(solute_dir)
-    out_traj = out_traj or os.path.join(solute_dir, f"{name}_{target_temp}K.nc")
+    out_traj = out_traj or os.path.join(
+        solute_dir, f"{name}_{target_temp}K.{traj_format}"
+    )
 
     if not exchanges(solute_dir):
         source = trajs[replica - 1]
@@ -217,7 +232,7 @@ def extract(solute_dir, target_temp, out_traj=None, dry_run=False, force=False,
             raise SystemExit(message + " Pass --force to run anyway.")
         print(f"  WARNING {message}", file=sys.stderr)
 
-    script = cpptraj_input(parm, trajs, target_temp, out_traj)
+    script = cpptraj_input(parm, trajs, target_temp, out_traj, traj_format)
     print(f"\n=== {name}  ({len(trajs)} replicas)")
     if rungs:
         print(f"    ladder: {', '.join(f'{rung:g}' for rung in rungs)} K")
@@ -257,7 +272,9 @@ def main():
     parser.add_argument("-T", "--target-temp", type=float, default=298.0,
                         help="target temperature in K; must match a ladder rung exactly (default: 298.0)")
     parser.add_argument("-o", "--output", default=None,
-                        help="output trajectory (single-solute mode only; default <solute>_<T>K.nc beside the replicas)")
+                        help="output trajectory (single-solute mode only; default <solute>_<T>K.<format> beside the replicas)")
+    parser.add_argument("-f", "--format", choices=sorted(TRAJ_FORMATS), default=None,
+                        help="output trajectory format (default: inferred from -o, else nc)")
     parser.add_argument("--dry-run", action="store_true", help="print the cpptraj input and stop")
     parser.add_argument("--force", action="store_true", help="run even if the temperature is not a ladder rung")
     parser.add_argument("--no-endpoints", dest="endpoints", action="store_false",
@@ -284,8 +301,9 @@ def main():
     if not solute_dirs:
         raise SystemExit(f"no replica trajectories ({REPLICA_GLOB}) under {root}")
 
+    traj_format = args.format or format_from_path(args.output) or "nc"
     written = [extract(d, args.target_temp, args.output, args.dry_run, args.force,
-                       args.endpoints, args.replica) for d in solute_dirs]
+                       args.endpoints, args.replica, traj_format) for d in solute_dirs]
     print(f"\n{len([w for w in written if w])} trajector"
           f"{'y' if len(written) == 1 else 'ies'} at {args.target_temp} K.")
 

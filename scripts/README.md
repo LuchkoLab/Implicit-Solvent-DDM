@@ -24,7 +24,14 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `remd_ensemble_clusters.py` | **Do the complex and apo receptor REMD ensembles share basins?** — strips the ligand, clusters both ensembles together, and cross-tabulates cluster membership by origin. Answers whether a REMD floor window could cross the holo↔apo barrier, and emits apo seed frames for a multi-seeded window. On MCL-1: 14 clusters, **0 mixed** | yes |
 | `filter_restraints.py` | **Drop restraints touching a selection from a DISANG file** — writes the kept `&rst` blocks through verbatim, terminator included. Used to free a floppy region whose restraint energy dominates the endstate seam without bearing on binding | no |
 | `two_state_overlap.py` | **MBAR overlap between the endstate and one restraint window, with and without a freed selection** — no sander: the two states differ only by the conformational restraint, so the reduced potential difference *is* the restraint energy, computed straight from coordinates and the DISANG file | no |
-| `extract_remd_temperature.py` | **Pull the target-temperature trajectory out of a finished REMD leg** — cpptraj `remdtraj` over the `remd.nc.00*` replica set, one output per solute under a `remd/` tree, plus first/last-frame restarts. Also handles the `-rem 0` equilibration leg, where each replica is already a fixed rung and only the endpoints are written (standalone form of `simulations.ExtractTrajectories`) | yes |
+| `extract_remd_temperature.py` | **Pull the target-temperature trajectory out of a finished REMD leg** — cpptraj `remdtraj` over the `remd.nc.00*` replica set, one output per solute under a `remd/` tree, plus first/last-frame restarts, in NetCDF or DCD (`--format`). Also handles the `-rem 0` equilibration leg, where each replica is already a fixed rung and only the endpoints are written (standalone form of `simulations.ExtractTrajectories`) | yes |
+| `remd_mixing.py` | **Is the REMD ladder actually mixing?** — per-pair acceptance, round trips, per-rung residence and occupancy from a `rem.log`. Catches the failure acceptance rates hide: a replica trapped on the top rung, which stops every round trip while the other rungs keep swapping | no |
+| `dg_vs_experiment.py` | **Computed ΔG vs experiment, and vs the replicates** — reads every `deltaG_*.h5` under one or more run directories, labels each run by the flat-bottom protocol its own `restraint.RST` carries (so mixed-protocol ligands are dropped rather than averaged), and plots replicate-vs-replicate, each run vs experiment, and the published ABFE reference on shared axes | no |
+| `lj_step_estimators.py` | **Is the complex LJ step's ΔG trustworthy despite near-zero overlap?** From the cached energies only: BAR, forward (insertion) and reverse (deletion) exponential averaging with bootstrap errors, the cached MBAR value, BAR on each half of the run, and the effective number of frames carrying each one-sided average. Agreement within ~1 kcal/mol means the thin link is not biasing the step; disagreement means it needs intermediate LJ windows | no |
+| `pocket_compression_check.py` | **Why does the complex LJ-off → LJ-on step have no overlap even when the ligand stays put?** Compares the `no_interactions` and `interactions` windows (same restraints, only ligand–protein LJ differs): where the conformational-network pairs around the pocket sit in their ±0.5 Å flat-bottom well, how far pocket atoms close on the decoupled ligand, and the restraint energy a narrower well would add. Prints a provisional verdict: A (pocket closes inside the free play → narrow the well), B (walls engaged but soft → force constant), C (network doesn't see it) | no (pytraj) |
+| `cycle_audit.py` | **Why do replicates disagree? Where the complex and receptor legs fail to cancel** — four subcommands: `cancel` (per-band complex+receptor sums and per-GB-step mismatch, cache only), `saltbridge` (salt-bridge state of a freed selection's charged residues per GB window and leg), `pose` (the ligand pose each replicate held vs the input), `seam` (receptor endstate → weakest-window gap by region, plus an endstate × reference cross check that tells a bad endstate from a bad reference). MBAR overlap cannot see any of these — each leg is its own MBAR problem | yes (pytraj, not AMBER) |
+| `extend_weak_windows.py` | **Does more sampling in the weak restraint windows lower the replicate spread?** `setup` writes one restart job per window at or below `--max-exponent` (default −8.5) continuing it to `--target-ns` (default 20), plus a SLURM array script; each task fails on NaN/Infinity/overflow in its mdout. `analyze` re-solves the band from the `--anchor` window (default −8.0) down to the weakest with MBAR on restraint energies computed from coordinates (states differ only by force constants), for the original frames, original + extension, and extension only, then substitutes each into the replicate's ΔG_bind and reports the SD across replicates. Aborts if its energies disagree with the cached post-analysis matrix | setup: no; runs: pmemd |
+| `relax_binding_pose.py` | **Pre-step: relax the one input binding pose ONCE, before any replicate** — restrained minimise → heat → equilibrate → minimise under the production GB settings (`igb`/`saltcon`/`extdiel`, not `min.mdin`'s `saltcon=0`), with the ligand heavy atoms + pocket C-alphas held to the input pose in every stage. Writes the complex/receptor/ligand restarts every replicate shares, a pose-RMSD plateau check, and fails on NaN/Infinity mdouts | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
 
 ---
@@ -465,3 +472,156 @@ work. They belong here too — move them with `git mv` when convenient.
 `new_scheduler.py` (untracked, repo root) is a **rejected dead end** — its per-runner round-robin GPU
 assignment double-books GPU 0. See "Ruled Out / Dead Ends" in `research/STATUS.md`. Build on
 `runner.py` instead.
+
+---
+
+## `remd_mixing.py` — is the ladder mixing, or just swapping?
+
+**Question.** Acceptance rate is the number everyone quotes and it is the wrong one on its own. What
+the endstate needs is **round trips**: a configuration that walks from the target rung to the top of
+the ladder and back, which is what decorrelates the 298 K ensemble the restraints and the windows are
+built from. A ladder can swap busily at every rung and deliver zero round trips if one replica gets
+stuck at an end.
+
+**What it reports.** Per adjacent pair: attempts, accepted, acceptance, and the energy gap in units
+of the fluctuation (`dE/sigma`). Per replica: completed round trips and rungs visited, split into
+first/second half so a ladder that degrades mid-run shows up. Per rung: mean and longest residence
+in exchange attempts, against the `1/acceptance` a diffusive walk would give. Plus the occupancy
+table — every replica should spend ~1/N of its time on every rung.
+
+    python scripts/remd_mixing.py <run>/remd/<system>/rem.log --ps-per-exchange 2.0
+
+`--ps-per-exchange` is `nstlim * dt` from the REMD mdin (500 * 0.004 = 2 ps here) and only converts
+round-trip counts into ns.
+
+**Read it like this.** Acceptance under ~15% on a pair is a bottleneck; over ~60% means two rungs are
+redundant. A rung whose residence is an order of magnitude past `1/rate` is trapping whatever lands
+on it — look at that replica's `Eptot`, and if it sits hundreds of kcal/mol above the rest, the
+ladder has lost it for good (`dBeta * dE` of 7-8 is an acceptance of ~1e-4).
+
+---
+
+## `relax_binding_pose.py` — one shared, relaxed starting pose for every replicate
+
+**Why.** The benchmark structures are raw tleap output that has never been through dynamics, and
+`restraint_reference: pose_medoid` failed because each replicate derived its reference from its own
+stochastic sampling (`research/STATUS.md`, Ruled Out). The invariant that matters is that runs with
+different seeds see the *same* reference file. This script makes that file once, from the fixed input
+pose. **Run it once per system and point every replicate at the output. Re-running it per replicate
+brings the problem back.**
+
+**What it does.** Four `ntr=1` stages, each referenced to the **input** pose (`-ref` never advances,
+so the pose cannot drift stage by stage): `01_min` → `02_heat` (10 K → T, 2 fs, TEMP0 ramp) →
+`03_equil` (`--equil-ns`, production `dt`) → `04_min`. The restraint (`--pose-weight`, default
+5 kcal/mol/Å²) sits on the ligand heavy atoms plus the pocket C-alphas from `build_pocket_atoms`,
+the same selection the flat-bottom restraint and pose clustering use. The rest of the receptor relaxes
+freely. `ig` is fixed (`--ig`), so a re-run on the same build and GPU reproduces.
+
+    python scripts/relax_binding_pose.py MCL-1_ligand-1.parm7 MCL-1_ligand-1.rst7 \
+        -o relaxed/MCL-1_ligand-1 --igb 2 --saltcon 0.3 --equil-ns 2
+
+    # MCL-1: track the floppy regions, which is where an unfinished relaxation shows
+    python scripts/relax_binding_pose.py ... --region loop=:22-32@CA --region Cterm=:146-152@CA
+
+    # igb5 benchmark configs
+    python scripts/relax_binding_pose.py ... --igb 5
+
+Match `--igb`/`--saltcon`/`--extdiel`/`--rgbmax` to the run's intermediate mdin. `--dt 0.004` (the
+default) needs the HMR topology, as production does. `--dry-run` writes the mdins and prints the
+commands.
+
+**Outputs.** `<stem>_relaxed.rst7` (→ `intermediate_states_arguments.restraint_reference`),
+`<stem>_receptor_relaxed.rst7`, `<stem>_ligand_relaxed.rst7` (atom order of the complex topology, so
+check that it matches the separate receptor/ligand `.parm7`), `pose_rmsd.csv` and `relax_summary.txt`.
+Per equilibration frame it tracks the ligand heavy-atom RMSD to the input (pocket-superposed), the
+receptor C-alpha RMSD (heavy atoms for a host with no backbone), and every `--region NAME=MASK`; the
+summary adds the EPtot drift. It warns when any of them rises by more than 0.25 Å between the 2nd
+and last quarter of the equilibration.
+
+**The ligand RMSD cannot tell you the relaxation is finished** — the ligand is held, so it stays flat
+whatever the protein does. Watch the protein and, for MCL-1, **always pass
+`--region loop=:22-32@CA --region Cterm=:146-152@CA`**: on ligand-17 at 2 ns the whole-protein RMSD
+rose only 0.20 Å (under the tolerance) while the loop rose 0.64 Å and EPtot fell 44 kcal/mol. The
+loop's final shape also matters downstream: it is the conformation the loop ramp will hold the loop
+to at the top of the restraint ladder.
+
+**Limits.** It only produces the files. The workflow's `restraint_reference` knows only `lastframe`
+and `pose_medoid`, so feeding this structure in as the start point does not by itself make it the
+restraint reference.
+
+---
+
+## `cycle_audit.py` — where do the complex and receptor legs stop cancelling?
+
+**Why.** The two protein legs are each ~2,700 kcal/mol and ΔG_bind is their small difference, so the
+cycle only works when both legs sample the *same* protein. MBAR overlap cannot see a failure of that
+kind: each leg is a separate MBAR problem, and a leg can be well overlapped and precise (per-step errors
+~0.05 kcal/mol) for an ensemble that differs from the other leg's. On MCL-1/ligand-17 (2 ns, igb2) the
+three replicates gave −5.2 / −1.8 / +18.9 kcal/mol and each failed at a different step. This script
+finds which.
+
+    R=fragment-opt-abfe-benchmark/isdmm_runs
+    A=fragment-opt-abfe-benchmark/topologies_and_structure/MCL-1/ligand-17/complex/amber
+    python scripts/cycle_audit.py cancel     $R/mcl1_7remd_2ns_rep{1,2,3} --system MCL-1_ligand-17
+    python scripts/cycle_audit.py saltbridge $R/mcl1_7remd_2ns_rep{1,2,3} --system MCL-1_ligand-17 --free ':22-32'
+    python scripts/cycle_audit.py pose       $R/mcl1_7remd_2ns_rep{1,2,3} --system MCL-1_ligand-17 \
+        --input-parm $A/MCL-1_ligand-17.parm7 --input-rst7 $A/MCL-1_ligand-17.rst7
+    python scripts/cycle_audit.py seam       $R/mcl1_7remd_2ns_rep{1,2,3} --system MCL-1_ligand-17 \
+        --input-parm $A/MCL-1_ligand-17.parm7 --input-rst7 $A/MCL-1_ligand-17.rst7 --free ':22-32' --region C-term=:146-152
+
+Each run directory is one replicate (the directory holding `.cache/`). `-o PREFIX` writes CSVs.
+
+**Read it in this order.**
+
+1. **`cancel`** (seconds, cache only). The paired rows (`gas -> gb`, `gb`, `gb -> charge`, `restraint`,
+   `restraint -> endstate`) should be small and equal across replicates; a replicate that is off in one
+   row names the failing step. The GB per-step table should be ~0 everywhere. A mismatch many times the
+   step's MBAR error is a real ensemble difference, not noise.
+2. **`seam`** if `restraint -> endstate` is off. `disjoint=True` means no endstate frame looks like a window
+   frame (overlap ~0). The region split says whether one floppy region or the whole protein carries the gap.
+   In the cross-check, **a high column is a bad reference, a high row a bad endstate.** On ligand-17, rep2's
+   column was ~3× the others for every endstate, so its `pose_medoid` reference was the problem, not its REMD.
+3. **`saltbridge`** if `gb` is off. `mismatch` is the total-variation distance between the two legs'
+   partner-state occupancies (0 same, 1 disjoint). On ligand-17 rep3, ASP25↔LYS27 reached 0.70 at ε=4 while
+   rep1/rep2 had every loop salt bridge identical in both legs — the freed loop sampling differently per leg.
+   Differing *between replicates* is harmless; differing *between legs* is what fails to cancel.
+4. **`pose`** to see how far the held reference pose sits from the input (rep2/rep3: ~7 Å, rep1: 3.2 Å).
+
+**Assumptions.** Receptor residue numbering is the complex's with the ligand removed (checked; the script
+exits if not). The receptor endstate is auto-found under `<run>/*/remd/*receptor*/*K.nc`; pass
+`--receptor-endstate` (one per run) otherwise. `seam` scores restraint energy straight from coordinates and the
+weakest window's `restraint.RST` — exact, since that is the only term differing between the two states (see
+`two_state_overlap.py`). The pymbar `****` banner during `seam` is its normal convergence printout.
+
+---
+
+## `pocket_compression_check.py` — is the pocket closing inside the restraints' free play?
+
+**Why.** With the Boresch restraints holding (MCL-1 ligands 17 and 4), the complex `no_interactions → interactions`
+step still has overlap 0.002–0.03: with LJ off, ligand–protein contacts close by ~0.35 Å, and the r⁻¹² wall turns that
+into a +27 kcal/mol median penalty (0.1% of LJ-off frames resemble LJ-on ones). The conformational network is a
+flat-bottom well — zero force within d₀ ± 0.5 Å — so a stronger force constant cannot stop motion inside it. This
+script tells whether that free play is where the pocket closes, before any restraint change.
+
+    python scripts/pocket_compression_check.py fragment-opt-abfe-benchmark/isdmm_runs/mcl1_rampbb_10ns_rep1 \
+        --system MCL-1_ligand-17
+
+The two windows share one `restraint.RST` and differ only in ligand–protein LJ, so the comparison is controlled (the
+script warns if their restraints differ). Pocket-contact atoms are receptor atoms within `--contact` (4.5 Å) of the
+ligand in the reference; far control pairs lie beyond `--far` (15 Å) and should not move between windows.
+
+**Read it in this order:** section 1's median shift for `pocket heavy-heavy` (negative = compressed with LJ off) against
+its `past_wall` fraction; section 2 confirms the atoms really close on the ligand; section 3 says where the pairs of the
+clashing atoms sit (inside the free zone vs past the wall); section 4 compares the restraint energy a `--narrow` (±0.1 Å)
+well would put on the LJ-off frames with the LJ penalty they carry now. The verdict line is a heuristic — the tables
+are the result. Default `--stride 10` (200 frames per 10 ns window).
+
+**Result on MCL-1 ligands 17 and 4 (verdict C):** the pocket does not deform — pocket pair distances are identical
+with LJ on and off (shift ≤ 0.003 Å, 0% past the wall) and clashing atoms sit at d₀ — yet 18–25% of pocket atoms end up
+> 0.3 Å closer to the LJ-off ligand. A ±0.1 Å well would add ~1,400 kcal/mol of restraint energy, so narrowing it is out.
+Sections 5–7 test the follow-up explanation, the decoupled ligand wobbling as a rigid body inside the harmonic Boresch
+restraints: 5 the ligand's pose spread relative to the pocket per window (RMSD, centroid shift, rotation); 6 each Boresch
+coordinate's SD per window next to the thermal prediction √(kT/2k); 7 which ligand atoms come within `--lig-contact`
+(2.2 Å) of the protein with LJ off, with their lever arm from the anchor L1 (far atoms loaded = rotation about the
+anchor). A broader LJ-off pose with near-thermal Boresch SDs points to stiffer Boresch force constants as the fix.
+

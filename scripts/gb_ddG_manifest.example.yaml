@@ -1,0 +1,99 @@
+# Example manifest for gb_ddG_bar.py -- relative binding free energy between two GB models via BAR.
+#
+#   module load amber                 # sander on PATH
+#   conda activate .../isddm_env      # numpy/pandas/pymbar + implicit_solvent_ddm importable
+#   python gb_ddG_bar.py --selftest                      # verify the BAR math (no sander)
+#   python gb_ddG_bar.py --manifest this.yaml --out ddG_gb.csv
+#
+# Every path can be absolute or relative to the CWD. "A" = trajectories sampled under igb_A,
+# "B" = trajectories sampled under igb_B; list ALL replicas for each. `coord` is any valid
+# rst7/ncrst matching that leg's parm (e.g. the workflow's {solu}_{temp}K_lastframe.rst7) -- sander
+# imin=5 needs a -c reference even though energies come from the -y trajectory.
+
+temperature: 298.0        # K (must match how the end states were run)
+igb_A: 2                  # OBC   (sampled model A)
+igb_B: 5                  # OBC2  (sampled model B)
+
+# Per-model radii: GB radii live in the PRMTOP, not the mdin, so a model whose radii differ needs its
+# OWN topology for the re-score. igb=2/5 both use mbondi2 (one `parm` per leg is fine). igb=8 (GBn2)
+# is parameterized for mbondi3 -> `igb=8` on an mbondi2 prmtop is NOT real GBn2. For an igb_B=8 run,
+# replace `parm` with `parm_A` (igb_A radii) + `parm_B` (igb_B radii) on EVERY leg -- complex, host,
+# AND guest -- since ddG = complex - host - guest and each leg is re-scored under both models
+# independently. Make each leg's mbondi3 copy once (same atoms/order, radii only):
+#   parmed -p <leg>.mbondi2.parm7  ==>  changeRadii mbondi3  ==>  outparm <leg>.mbondi3.parm7
+#n_bootstrap: 0          # across-replica bootstrap for the ddG CI (0 -> analytical BAR error only)
+seed: 0
+
+# Optional: a production end-state mdin to inherit GB params (cut / rgbmax / gbsa / saltcon / extdiel)
+# so the re-score matches production settings except the GB model. Omit to use implicit-solvent
+# defaults (extdiel=78.5, saltcon=0, cut=9999, rgbmax=25, gbsa=0).
+reference_mdin: /storage/storage1/sayoub/different_gbs/igb_2/shared_files/four_fento_time_step_mdin_template.mdin
+
+pairs:
+  - name: cb7_adn
+    legs:
+      complex:
+        parm:  /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep1/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass.parm7
+        # For an igb_B=8 (GBn2) run, DROP `parm` above and give per-model radii instead:
+        #parm_A: /path/to/cb7_adn_ligand_1_Hmass.mbondi2.parm7   # igb_A=2  (OBC,  mbondi2)
+        #parm_B: /path/to/cb7_adn_ligand_1_Hmass.mbondi3.parm7   # igb_B=8  (GBn2, mbondi3)
+        coord: /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep5/rerun_rep1/minimization/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_min_restrt.rst7
+        A: [
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep1/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+
+        ]
+        B: [
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep1/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep2/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep3/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep4/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep5/rerun_rep1/remd/cb7_adn_ligand_1_Hmass/cb7_adn_ligand_1_Hmass_298K.nc
+
+        ]
+      host:                                  # the receptor (CB7)
+        parm:  /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep5/rerun_rep5/receptor_system-ligand_system_Mfp_Mfp-ligand_system_yMi_yMi/no_gb/1.0/0.0/4.0/receptor_system-ligand_system_Mfp_Mfp-ligand_system_yMi_yMi.parm7
+        # For an igb_B=8 (GBn2) run, DROP `parm` above and give per-model radii instead:
+        #parm_A: /path/to/receptor.mbondi2.parm7   # igb_A=2  (OBC,  mbondi2)
+        #parm_B: /path/to/receptor.mbondi3.parm7   # igb_B=8  (GBn2, mbondi3)
+        coord: /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep5/rerun_rep1/minimization/receptor_system-ligand_system_mQl_mQl/receptor_system-ligand_system_mQl_mQl_min_restrt.rst7
+        A: [
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/host_files/receptor_300K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/receptor_system-ligand_system_vdv_vdv/receptor_rep2_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep3/rerun_rep3/remd/receptor_system-ligand_system_RAm_RAm/receptor_rep3_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep4/rerun_rep4/remd/receptor_system-ligand_system_kMb_kMb/receptor_rep4_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep5/rerun_rep5/remd/receptor_system-ligand_system_Mfp_Mfp/receptor_rep5_298K.nc
+        ]
+        B: [
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep1/rerun_rep1/remd/receptor_system-ligand_system_yIp_yIp/adn_receptor_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep2/rerun_rep1/remd/receptor_system-ligand_system_RuI_RuI/adn_rep_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep3/rerun_rep1/remd/receptor_system-ligand_system_JnS_JnS/adn_rep_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep4/rerun_rep1/remd/receptor_system-ligand_system_tZk_tZk/adn_rep_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep5/rerun_rep1/remd/receptor_system-ligand_system_mQl_mQl/cb7_adn_rep_1_Hmass_298K.nc
+        ]
+      guest:                                 # the ligand (adenine)
+        parm:  /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep1/rerun_rep1/remd/ligand_system_ain/ligand_system_ain.parm7
+        # For an igb_B=8 (GBn2) run, DROP `parm` above and give per-model radii instead:
+        #parm_A: /path/to/ligand.mbondi2.parm7   # igb_A=2  (OBC,  mbondi2)
+        #parm_B: /path/to/ligand.mbondi3.parm7   # igb_B=8  (GBn2, mbondi3)
+        coord: /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep1/rerun_rep1/minimization/ligand_system_mQl/ligand_system_mQl_min_restrt.rst7
+        A: [
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep1/rerun_rep1/remd/ligand_system_ain/ligand_system_ain_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep2/rerun_rep2/remd/ligand_system_ZTz/ligand_adn_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep3/rerun_rep3/remd/ligand_system_Djp/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep4/rerun_rep4/remd/ligand_system_aXk/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_2/cb7_re_parameterization/rep5/rerun_rep5/remd/ligand_system_DJr/ligand_system_DJr_298K.nc
+        ]
+        B: [
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep1/rerun_rep1/remd/ligand_system_yIp/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep2/rerun_rep1/remd/ligand_system_RuI/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep3/rerun_rep1/remd/ligand_system_JnS/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep4/rerun_rep1/remd/ligand_system_tZk/adn_ligand_1_Hmass_298K.nc,
+          /storage/storage1/sayoub/different_gbs/igb_5/cb7_re_parameterization/rep5/rerun_rep1/remd/ligand_system_mQl/adn_ligand_1_Hmass_298K.nc
+        ]
+    # Optional -> adds ddG_ABFE / ddG_diff columns. One FINAL binding dG (kcal/mol) per REPLICA per
+    # model, as a list; the script uses ddG_ABFE = mean(dG_bind_B) - mean(dG_bind_A) + across-replica SEM.
+    abfe: {dG_bind_A: [-30.084028, -30.21082, -29.787067, -29.966944, -29.872441], dG_bind_B: [-36.550864, -36.442103, -36.671225, -36.317533, -36.32579]}
