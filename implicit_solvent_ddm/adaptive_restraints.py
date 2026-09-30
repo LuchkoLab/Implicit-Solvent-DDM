@@ -763,7 +763,7 @@ def compute_mbar(
                 states = order[matrix_order.halo_restraint_matrix:]
             else:
                 states = order[1 : matrix_order.apo_end_restraint_matrix + 1]
-            endstate_label = config.endstate_method.endstate_state_label
+            endstate_label = matrix_order.endstate_label
             return [state for state in states if state[0] != endstate_label]
         if band_name == "dielectric":
             if system == "complex":
