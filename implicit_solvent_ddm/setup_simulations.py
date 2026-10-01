@@ -221,6 +221,16 @@ class SimulationSetup:
             )
             num_acelerators=self.config.system_settings.num_accelerators
             cpu_required=0.1
+        elif self.config.intermediate_args.decouple_in_solvent:
+            mdin_file = self.config.inputs["default_mdin"]
+            temp_args["igb"] = f"igb_{self.config.intermediate_args.igb_solvent}"
+            temp_args["extdiel"] = 78.5
+            temp_args["filename"] = "state_4_prod"
+            temp_args["igb_value"] = self.config.intermediate_args.igb_solvent
+            temp_args["runtype"] = (
+                f"Running production Simulation in state 4 (GB solvent). Max conformational force: {self.max_conformational_exponent}"
+            )
+            num_acelerators=None
         # scale ligand charge
         else:
             mdin_file = self.config.inputs["no_solvent_mdin"]
@@ -277,8 +287,11 @@ class SimulationSetup:
 
         else:
             dirstruct_args = "dirstruct_halo"
-
-
+        mdin = (
+            self.config.inputs["no_solvent_mdin"]
+            if self.system_type == "receptor"
+            else self._decoupled_mdin(temp_args)
+        )
 
         self.simulations.append(
             Simulation(
@@ -288,7 +301,7 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["no_solvent_mdin"],
+                input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
@@ -322,6 +335,7 @@ class SimulationSetup:
         temp_args["state_label"] = f"lj_{lj_scale}"
         temp_args["filename"] = f"state_7_lj{lj_scale}_prod"
         temp_args["runtype"] = f"Running production simulation in state 7: ligand-receptor LJ at {lj_scale} in vacuum"
+        mdin = self._decoupled_mdin(temp_args)
 
         self.simulations.append(
             Simulation(
@@ -331,7 +345,7 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["no_solvent_mdin"],
+                input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
@@ -360,6 +374,7 @@ class SimulationSetup:
         temp_args["runtype"] = (
             "Running production simulation in state 7a: Turing back on interactions with recetor and guest in vacuum"
         )
+        mdin = self._decoupled_mdin(temp_args)
 
         self.simulations.append(
             Simulation(
@@ -369,7 +384,72 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["no_solvent_mdin"],
+                input_file=mdin,
+                restraint_file=self.restraints,
+                directory_args=temp_args,
+                system_type=self.system_type,
+                dirstruct="dirstruct_halo",
+                working_directory=self.config.system_settings.working_directory,
+                restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
+                memory=self.config.system_settings.memory,
+                disk=self.config.system_settings.disk,
+                sim_debug=self.config.workflow.debug,
+                accelerators=self.config.system_settings.num_accelerators,
+            )
+        )
+
+    def _decoupled_mdin(self, temp_args: dict) -> FileID:
+        """Return the mdin for a decoupled-ligand complex window, moving it into GB water when decoupling in solvent.
+
+        Parameters
+        ----------
+        temp_args : dict
+            Directory arguments of the window, updated in place.
+
+        Returns
+        -------
+        FileID
+            ``default_mdin`` in solvent, ``no_solvent_mdin`` otherwise.
+        """
+        if not self.config.intermediate_args.decouple_in_solvent:
+            return self.config.inputs["no_solvent_mdin"]
+        igb = self.config.intermediate_args.igb_solvent
+        temp_args["extdiel"] = 78.5
+        temp_args["igb"] = f"igb_{igb}"
+        temp_args["igb_value"] = igb
+        temp_args["runtype"] = temp_args["runtype"].replace("in vacuum", "in GB solvent")
+        return self.config.inputs["default_mdin"]
+
+    def setup_screening_simulation(self, restraint_key: str, prmtop: FileID, screen_scale: float):
+        """
+        Add an uncharged-ligand complex window in GB water with the ligand SCREEN scaled by ``screen_scale``.
+
+        Parameters
+        ----------
+        restraint_key : str
+            Key of the max-restraint complex restraint file.
+        prmtop : FileID
+            Topology from ``alter_topology(..., set_charge=0.0, screen_scale=screen_scale)``.
+        screen_scale : float
+            Scale on the ligand GB SCREEN parameters, between 0 and 1.
+        """
+        temp_args = copy(self.no_gb_args)
+        temp_args["state_label"] = f"screening_{screen_scale}"
+        temp_args["filename"] = f"state_7_screen{screen_scale}_prod"
+        temp_args["runtype"] = f"Running production simulation in state 7: ligand GB screening at {screen_scale} in vacuum"
+        mdin = self._decoupled_mdin(temp_args)
+
+        self.simulations.append(
+            Simulation(
+                executable=self.config.system_settings.executable,
+                mpi_command=self.config.system_settings.mpi_command,
+                num_cores=self.num_cores,
+                CUDA=self.config.system_settings.CUDA,
+                prmtop=prmtop,
+                incrd=self.binding_mode,
+                input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
@@ -411,12 +491,17 @@ class SimulationSetup:
             f"Running production Simulation in state 8. Changing extdiel to: {extdiel}."
         )
 
+        engine = dict(
+            executable=self.config.system_settings.executable,
+            num_cores=self.num_cores,
+            CUDA=self.config.system_settings.CUDA,
+            accelerators=self.config.system_settings.num_accelerators,
+        )
+        engine.update(self.config.intermediate_args.gb_dielectric_engine())
         self.simulations.append(
             Simulation(
-                executable=self.config.system_settings.executable,
+                **engine,
                 mpi_command=self.config.system_settings.mpi_command,
-                num_cores=self.num_cores,
-                CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
                 input_file=mdin,
@@ -431,7 +516,6 @@ class SimulationSetup:
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
-                accelerators=self.config.system_settings.num_accelerators,
             )
         )
 

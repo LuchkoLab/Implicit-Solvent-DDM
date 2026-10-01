@@ -762,6 +762,10 @@ class IntermediateStateArgs:
         Lambda windows for turning on/off partial charges.
     gb_extdiel_windows : list of float, optional
         Scaling factors for the GB external dielectric (normalized 0–1).
+    decouple_in_solvent : bool, optional
+        Decouple the ligand in GB water instead of the gas phase (default False).
+    screening_windows : list of float, optional
+        Ligand GB SCREEN scales for the in-solvent screening windows, strictly in (0, 1).
     min_degree_overlap : float
         Minimum acceptable overlap value for replica exchange (default 0.03).
     unrestrained_receptor_mask : str, optional
@@ -789,6 +793,9 @@ class IntermediateStateArgs:
     charges_lambda_window: List[float] = field(default_factory=list)
     lj_scale_windows: List[float] = field(default_factory=list)  # ligand-receptor LJ scales for complex windows between no_interactions (0) and interactions (1); empty -> no intermediate LJ windows
     gb_extdiel_windows: List[float] = field(default_factory=list)
+    gb_dielectric_cpu_cores: Optional[int] = None  # run GB-dielectric MD on CPU pmemd.MPI with this many ranks; pmemd.cuda ignores extdiel. None -> default engine
+    decouple_in_solvent: bool = False  # decouple the ligand in GB water: no gas phase, no GB-dielectric band
+    screening_windows: List[float] = field(default_factory=list)  # ligand GB SCREEN scales between interactions and uncharged electrostatics; needs decouple_in_solvent
     min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
     post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
 
@@ -915,6 +922,19 @@ class IntermediateStateArgs:
     # The one exponent whose MD runs long, rounded like the workflow_phases window loop so the
     # float compare in SimulationSetup is exact. None -> feature off.
     long_restraint_window_exponent: Optional[float] = field(init=False, default=None)
+
+    def gb_dielectric_engine(self) -> dict:
+        """Simulation keyword overrides for GB-dielectric windows.
+
+        Returns
+        -------
+        dict
+            CPU ``pmemd.MPI`` settings when ``gb_dielectric_cpu_cores`` is set, else empty.
+        """
+        if not self.gb_dielectric_cpu_cores:
+            return {}
+        return dict(executable="pmemd.MPI", num_cores=int(self.gb_dielectric_cpu_cores), CUDA=False,
+                    accelerators=None)
 
     @property
     def rmsd_mode(self) -> bool:
@@ -1082,6 +1102,15 @@ class IntermediateStateArgs:
                 "receptor_ramp_mask and unrestrained_receptor_mask act on the pairwise network, "
                 "which rmsd_tolerance_windows replaces"
             )
+        self.screening_windows = sorted({float(s) for s in self.screening_windows})
+        if any(not 0.0 < s < 1.0 for s in self.screening_windows):
+            raise ValueError(f"screening_windows must lie strictly between 0 and 1, got {self.screening_windows}")
+        if self.screening_windows and not self.decouple_in_solvent:
+            raise ValueError("screening_windows requires decouple_in_solvent: True")
+        if self.decouple_in_solvent and self.gb_extdiel_windows:
+            raise ValueError("decouple_in_solvent has no GB-dielectric band; remove gb_extdiel_windows")
+        if self.gb_dielectric_cpu_cores is not None and int(self.gb_dielectric_cpu_cores) < 1:
+            raise ValueError(f"gb_dielectric_cpu_cores must be >= 1, got {self.gb_dielectric_cpu_cores}")
         if self.rmsd_site_atoms not in ("heavy", "global"):
             raise ValueError(f"rmsd_site_atoms must be 'heavy' or 'global', got {self.rmsd_site_atoms!r}")
         if self.receptor_ramp_mask and self.unrestrained_receptor_mask:
@@ -1156,7 +1185,8 @@ class IntermediateStateArgs:
         Raises
         ------
         ValueError
-            If any required MDIN keys are missing from the template file.
+            If any required MDIN keys are missing from the template file, or ``gbsa`` is non-zero
+            with ``decouple_in_solvent``.
         """
         required_keys = {"igb", "$restraint", "$extdiel", "nmropt"}
 
@@ -1175,7 +1205,12 @@ class IntermediateStateArgs:
                 f"Missing required MDIN arguments: {sorted(missing_keys)}.\n"
                 f"Please add them to your file: {mdin_path}"
             )
-    
+
+        # decoupled ligand atoms would still change the receptor's surface area
+        gbsa = re.search(r"\bgbsa\s*=\s*(\d+)", contents)
+        if self.decouple_in_solvent and gbsa and int(gbsa.group(1)) != 0:
+            raise ValueError("decouple_in_solvent requires gbsa=0 in the MDIN template")
+
     def _write_restraint_template(
         self,
         template_paths: Union[str, tuple[str, str]],
@@ -1339,6 +1374,10 @@ class Config:
         # Disable GB dielectric scaling if no windows were specified
         if not self.intermediate_args.gb_extdiel_windows:
             self.workflow.gb_extdiel_windows = False
+
+        # The in-solvent cycle has no gas-phase receptor state
+        if self.intermediate_args.decouple_in_solvent:
+            self.workflow.remove_GB_solvent_receptor = False
 
         # If receptor coordinates are provided, mark receptor as already prepared
         if self.endstate_files.receptor_coordinate_filename is not None:

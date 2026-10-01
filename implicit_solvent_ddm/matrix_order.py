@@ -21,6 +21,8 @@ class CycleSteps:
     # Only the ordering and the anchor selector change; every length, and therefore every band
     # index below, is identical in both modes.
     restraint_coordinate: str = "force"
+    screening_windows: list[float] = field(default_factory=list)
+    in_solvent: bool = False
     endstate: list[tuple[str, str, str, str]] = field(default_factory=list, init=False)
     no_gb: list[tuple[str, str, str, str]] = field(init=False)
     no_interactions: list[tuple[str, str, str, str]] = field(init=False)
@@ -37,6 +39,9 @@ class CycleSteps:
             float(force) for force in self.orientational_forces
         ]
 
+        if self.in_solvent and self.external_dielectic:
+            raise ValueError("in_solvent cycles have no GB-dielectric band; external_dielectic must be empty")
+
         self.endstate = [(self.endstate_label, "78.5", "1.0", "0.0")]
 
         self.no_gb = [("no_gb", "0.0", "1.0", f"{self._strongest()}")]
@@ -44,7 +49,7 @@ class CycleSteps:
         self.interations = [
             (
                 "interactions",
-                "0.0",
+                self._decoupled_extdiel,
                 "0.0",
                 f"{self._strongest()}_{max(self.orientational_forces)}",
             )
@@ -53,7 +58,7 @@ class CycleSteps:
         self.no_interactions = [
             (
                 "no_interactions",
-                "0.0",
+                self._decoupled_extdiel,
                 "0.0",
                 f"{self._strongest()}_{max(self.orientational_forces)}",
             )
@@ -73,12 +78,30 @@ class CycleSteps:
         return [
             (
                 f"lj_{float(lj_scale)}",
-                "0.0",
+                self._decoupled_extdiel,
                 "0.0",
                 f"{self._strongest()}_{max(self.orientational_forces)}",
             )
             for lj_scale in sorted(self.lj_windows)
         ]
+
+    @property
+    def screening(self):
+        """Ligand GB-screening windows, ascending, between interactions and uncharged electrostatics."""
+        return [
+            (
+                f"screening_{float(screen_scale)}",
+                "78.5",
+                "0.0",
+                f"{self._strongest()}_{max(self.orientational_forces)}",
+            )
+            for screen_scale in sorted(self.screening_windows)
+        ]
+
+    @property
+    def _decoupled_extdiel(self) -> str:
+        """External dielectric of the decoupled-ligand states: water in solvent, gas otherwise."""
+        return "78.5" if self.in_solvent else "0.0"
 
     @property
     def _rmsd(self) -> bool:
@@ -183,10 +206,11 @@ class CycleSteps:
 
     @property
     def ligand_charges(self):
-        temp_charges = self.charges_windows.copy()
+        # in solvent the q=1 window is the restraint anchor, so it is not repeated
+        temp_charges = [c for c in self.charges_windows if not (self.in_solvent and c == 1.0)]
         temp_charges.sort(reverse=True)
         return [
-            ("electrostatics", "0.0", f"{charge}", f"{self._strongest()}")
+            ("electrostatics", self._decoupled_extdiel, f"{charge}", f"{self._strongest()}")
             for charge in temp_charges
         ]
 
@@ -198,6 +222,8 @@ class CycleSteps:
     def receptor_order(self) -> list:
         # GB-dielectric band (when external_dielectic is non-empty) splices between the restraint windows
         # and the gas no_gb anchor: endstate -> restraints(ASC) -> GB(eps DESC) -> no_gb(gas).
+        if self.in_solvent:
+            return self.endstate + self.apply_restraints
         return (
             self.endstate
             + self.apply_restraints
@@ -211,6 +237,7 @@ class CycleSteps:
             self.no_interactions
             + self.lj_scaled
             + self.interations
+            + self.screening
             + self.complex_GB_exl_windows
             + self.complex_charges
             + self.remove_restraints
@@ -219,7 +246,9 @@ class CycleSteps:
 
     @property
     def start_ligand_charge_matrix(self):
-        return len(self.endstate) + len(self.apply_restraints)
+        """Index in ``ligand_order`` of the full-charge state the ligand charge band starts from."""
+        start = len(self.endstate) + len(self.apply_restraints)
+        return start - 1 if self.in_solvent else start
 
     @property
     def start_complex_charge_matrix(self):
@@ -227,12 +256,14 @@ class CycleSteps:
             len(self.no_interactions)
             + len(self.lj_scaled)
             + len(self.interations)
+            + len(self.screening)
             + len(self.external_dielectic)
         )
 
     @property
     def start_gb_extdiel_matrix(self):
         # index of the interactions state, the gas anchor the GB band starts from
+        self._require_gas_cycle("start_gb_extdiel_matrix")
         return len(self.no_interactions) + len(self.lj_scaled)
 
     @property
@@ -240,6 +271,7 @@ class CycleSteps:
         # Index in receptor_order of the FIRST GB-dielectric window (just after endstate + restraints).
         # The receptor dielectric BAND (for ALS) is [start_receptor_gb_matrix - 1 : start + G + 1], i.e.
         # the max-restraint water anchor -> G GB windows -> the gas no_gb anchor (inclusive).
+        self._require_gas_cycle("start_receptor_gb_matrix")
         return len(self.endstate) + len(self.apply_restraints)
 
     @property
@@ -252,10 +284,56 @@ class CycleSteps:
             len(self.no_interactions)
             + len(self.lj_scaled)
             + len(self.interations)
+            + len(self.screening)
             + len(self.complex_GB_exl_windows)
             + len(self.complex_charges)
             - 1
         )
 
+    def _require_gas_cycle(self, name: str):
+        """Raise for an index that only exists in the gas-phase cycle.
+
+        Parameters
+        ----------
+        name : str
+            Property being accessed.
+
+        Raises
+        ------
+        ValueError
+            If the cycle decouples in solvent.
+        """
+        if self.in_solvent:
+            raise ValueError(f"{name} is undefined for an in_solvent cycle (no GB-dielectric band)")
+
     def construct_order(self):
         return []
+
+
+def cycle_steps_from_config(config) -> CycleSteps:
+    """Build the rounded ``CycleSteps`` for a workflow config.
+
+    Parameters
+    ----------
+    config : Config
+        Workflow configuration.
+
+    Returns
+    -------
+    CycleSteps
+        Cycle order with restraint values rounded to 3 decimals.
+    """
+    args = config.intermediate_args
+    cycle_steps = CycleSteps(
+        conformation_forces=args.exponent_conformational_forces_list,
+        orientational_forces=args.exponent_orientational_forces_list,
+        charges_windows=args.charges_lambda_window,
+        external_dielectic=args.gb_extdiel_windows,
+        endstate_label=config.endstate_method.endstate_state_label,
+        lj_windows=args.lj_scale_windows,
+        restraint_coordinate="rmsd" if args.rmsd_mode else "force",
+        screening_windows=args.screening_windows,
+        in_solvent=args.decouple_in_solvent,
+    )
+    cycle_steps.round(3)
+    return cycle_steps

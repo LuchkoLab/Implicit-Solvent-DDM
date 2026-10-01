@@ -65,6 +65,8 @@ class ConsolidateData(Job):
     plot_overlap_matrix: bool
         If true, an overlap-matrix heatmap PDF is written for each leg (complex, receptor, ligand).
         The raw overlap matrices are written as .h5 regardless of this flag.
+    decouple_in_solvent: bool
+        If true, the ligand is decoupled in GB water and the leg endpoints follow the in-solvent cycle.
 
     Methods
     -------
@@ -91,6 +93,7 @@ class ConsolidateData(Job):
         receptor_filename,
         endstate_label: str = "endstate",
         plot_overlap_matrix: bool = False,
+        decouple_in_solvent: bool = False,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -126,6 +129,8 @@ class ConsolidateData(Job):
         self.receptor_name = re.sub(r"\..*", "", os.path.basename(receptor_filename))
         self.working_path = working_path
         self.plot_overlap_matrix = plot_overlap_matrix
+        self.decouple_in_solvent = decouple_in_solvent
+        self.decoupled_extdiel = "78.5" if decouple_in_solvent else "0.0"
 
     @property
     def mbar_model(self) -> MBAR:
@@ -192,15 +197,20 @@ class ConsolidateData(Job):
         """Get the ligand free energy contribution for DeltaG"""
         return self.ligand_fe.loc[
             (self.endstate_label, "78.5", "1.0", "0.0"),
-            [("electrostatics", "0.0", "0.0", self.max_con_force)],
+            [("electrostatics", self.decoupled_extdiel, "0.0", self.max_con_force)],
         ].values[0]
 
     @property
     def _get_receptor_deltaG(self):
         """Get the receptor free energy contribution for DeltaG"""
+        end = (
+            ("lambda_window", "78.5", "1.0", self.max_con_force)
+            if self.decouple_in_solvent
+            else ("no_gb", "0.0", "1.0", self.max_con_force)
+        )
         return self.receptor_fe.loc[
             (self.endstate_label, "78.5", "1.0", "0.0"),
-            [("no_gb", "0.0", "1.0", self.max_con_force)],
+            [end],
         ].values[0]
 
     @property
@@ -209,7 +219,7 @@ class ConsolidateData(Job):
         return self.complex_fe.loc[
             (
                 "no_interactions",
-                "0.0",
+                self.decoupled_extdiel,
                 "0.0",
                 f"{self.max_con_force}_{self.max_orien_force}",
             ),
@@ -441,7 +451,8 @@ def create_mdout_dataframe(
     # constant and every window in the band shares U0, so this reproduces exactly what AMBER would
     # have applied -- MULTI_RMSD was measured equal to cpptraj `rms ... mass` to 3e-5 A. Omitting it
     # would make every band window the same Hamiltonian, giving overlap 1 and a restraint dG of 0.
-    if rmsd_series is not None and run_args["state_label"] != endstate_label:
+    # the flat-bottom endstate pair (no_flat_bottom / endstate) is never RMSD-restrained
+    if rmsd_series is not None and run_args["state_label"] not in (endstate_label, "no_flat_bottom"):
         tolerance = float(run_args["conformational_restraint"])
         series_length = len(next(iter(rmsd_series.values())))
         if series_length != len(data):

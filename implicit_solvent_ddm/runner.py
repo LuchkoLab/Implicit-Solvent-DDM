@@ -14,7 +14,7 @@ from toil.job import FileID, Job, JobFunctionWrappingJob, PromisedRequirement
 
 from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.config import Config
-from implicit_solvent_ddm.matrix_order import CycleSteps
+from implicit_solvent_ddm.matrix_order import CycleSteps, cycle_steps_from_config
 from implicit_solvent_ddm.postTreatment import create_mdout_dataframe
 from implicit_solvent_ddm.restraints import RestraintMaker, rmsd_series_for_trajectory
 from implicit_solvent_ddm.simulations import Simulation
@@ -200,16 +200,7 @@ class IntermidateRunner(Job):
         if system_type in self._block_pairs_cache:
             return self._block_pairs_cache[system_type]
 
-        cycle_steps = CycleSteps(
-            conformation_forces=self.config.intermediate_args.exponent_conformational_forces_list,
-            orientational_forces=self.config.intermediate_args.exponent_orientational_forces_list,
-            charges_windows=self.config.intermediate_args.charges_lambda_window,
-            external_dielectic=self.config.intermediate_args.gb_extdiel_windows,
-            restraint_coordinate="rmsd" if self.config.intermediate_args.rmsd_mode else "force",
-            endstate_label=self.config.endstate_method.endstate_state_label,
-            lj_windows=self.config.intermediate_args.lj_scale_windows,
-        )
-        cycle_steps.round(3)
+        cycle_steps = cycle_steps_from_config(self.config)
         order = {
             "complex": cycle_steps.complex_order,
             "ligand": cycle_steps.ligand_order,
@@ -708,15 +699,22 @@ class IntermidateRunner(Job):
         if cv_file is not None and hasattr(cv_file, "rv"):
             cv_file = cv_file.rv()
 
-        new_job = Simulation(
+        # honour the CUDA flag like the static path; host-guest (cb7) runs with CUDA falsy
+        engine = dict(
             executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
             num_cores=self.config.num_cores_per_system.complex_ncores,
-            # ALS pilot (and the revived adaptive path) must honour the CUDA flag exactly like the
-            # static path (setup_simulations.setup_apply_restraint_windows): complex runs on GPU for
-            # protein-ligand. The previous hardcoded CUDA=False only happened to match host-guest
-            # (cb7), where config.system_settings.CUDA is already falsy.
             CUDA=self.config.system_settings.CUDA,
+            accelerators=(
+                self.config.system_settings.num_accelerators
+                if self.config.system_settings.CUDA
+                else None
+            ),
+        )
+        if gb_extdiel is not None:
+            engine.update(self.config.intermediate_args.gb_dielectric_engine())
+        new_job = Simulation(
+            **engine,
+            mpi_command=self.config.system_settings.mpi_command,
             prmtop=parm_file,
             incrd=self.config.inputs["endstate_complex_lastframe"],
             input_file=mdin,
@@ -726,11 +724,6 @@ class IntermidateRunner(Job):
             system_type="complex",
             directory_args=dirs_args[0],
             dirstruct="dirstruct_halo",
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
         )
 
         self.simulations.append(new_job)
@@ -765,9 +758,10 @@ class IntermidateRunner(Job):
         if charge_parm is not None:
             parm_file = charge_parm.rv()
             dirs_args[0].update({"state_label": "electrostatics"})  # type: ignore
-            dirs_args[0].update({"igb": "igb_6"})
             dirs_args[0].update({"filename": "state_4_prod"})
-            dirs_args[0].update({"extdiel": 0.0})
+            if not self.config.intermediate_args.decouple_in_solvent:
+                dirs_args[0].update({"igb": "igb_6"})
+                dirs_args[0].update({"extdiel": 0.0})
             dirs_args[0].update(
                 {
                     "runtype": f"Scailing ligand charges: {charge}",
@@ -839,11 +833,22 @@ class IntermidateRunner(Job):
         if cv_file is not None and hasattr(cv_file, "rv"):
             cv_file = cv_file.rv()
 
-        new_job = Simulation(
+        # receptor requests a GPU when CUDA is set so Toil pins it to its own device
+        engine = dict(
             executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
             num_cores=self.config.num_cores_per_system.receptor_ncores,
             CUDA=self.config.system_settings.CUDA,
+            accelerators=(
+                self.config.system_settings.num_accelerators
+                if self.config.system_settings.CUDA
+                else None
+            ),
+        )
+        if gb_extdiel is not None:
+            engine.update(self.config.intermediate_args.gb_dielectric_engine())
+        new_job = Simulation(
+            **engine,
+            mpi_command=self.config.system_settings.mpi_command,
             prmtop=self.config.endstate_files.receptor_parameter_filename,
             incrd=self.config.inputs["receptor_endstate_frame"],
             input_file=mdin,
@@ -853,13 +858,6 @@ class IntermidateRunner(Job):
             system_type="receptor",
             directory_args=dirs_args,
             dirstruct="dirstruct_apo",
-            # Receptor runs on GPU when CUDA is set (mirrors setup_apply_restraint_windows: a
-            # non-ligand system requests an accelerator so Toil pins it to a distinct device).
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
         )
 
         self.simulations.append(new_job)

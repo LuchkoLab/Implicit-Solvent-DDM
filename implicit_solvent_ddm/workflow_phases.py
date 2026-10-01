@@ -365,6 +365,10 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
     # Calculate the pinned restraint anchor (mode-aware: max spring, or min RMSD tolerance)
     max_conformational_force = config.intermediate_args.strongest_conformational_restraint
     max_orientational_force = max(config.intermediate_args.orientational_restraint_forces)
+    in_solvent = config.intermediate_args.decouple_in_solvent
+    # in solvent the decoupled states also drop the ligand GB screening
+    decoupled_screen = 0.0 if in_solvent else None
+    complex_anchor_key = f"complex_{max_conformational_force}_{max_orientational_force}_rst"
 
     
     # Setup runner jobs for MD simulations
@@ -375,19 +379,20 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
     
     # Setup ligand charge scaling simulations
     for charge in config.intermediate_args.charges_lambda_window:
-        # Scale ligand charges in isolated ligand system
-        ligand_simulations.setup_ligand_charge_simulation(
-            prmtop=job.addChildJobFn(
-                alter_topology,
-                solute_amber_parm=config.endstate_files.ligand_parameter_filename,
-                solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
-                ligand_mask=config.amber_masks.ligand_mask,
-                receptor_mask=config.amber_masks.receptor_mask,
-                set_charge=charge,
-            ).rv(),
-            charge=charge,
-            restraint_key=f"ligand_{max_conformational_force}_rst",
-        )
+        # Scale ligand charges in isolated ligand system; in solvent q=1 is the restraint anchor
+        if not (in_solvent and charge == 1.0):
+            ligand_simulations.setup_ligand_charge_simulation(
+                prmtop=job.addChildJobFn(
+                    alter_topology,
+                    solute_amber_parm=config.endstate_files.ligand_parameter_filename,
+                    solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
+                    ligand_mask=config.amber_masks.ligand_mask,
+                    receptor_mask=config.amber_masks.receptor_mask,
+                    set_charge=charge,
+                ).rv(),
+                charge=charge,
+                restraint_key=f"ligand_{max_conformational_force}_rst",
+            )
         
         # Scale ligand charges within the complex
         complex_simulations.setup_ligand_charge_simulation(
@@ -410,10 +415,10 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
             prmtop=config.endstate_files.receptor_parameter_filename,
         )
 
-    # Setup complex ligand exclusion simulations (gas phase)
+    # Setup complex ligand exclusion simulations (gas phase; LJ 0 + SCREEN 0 in solvent)
     if config.workflow.complex_ligand_exclusions:
         complex_simulations.setup_remove_gb_solvent_simulation(
-            restraint_key=f"complex_{max_conformational_force}_{max_orientational_force}_rst",
+            restraint_key=complex_anchor_key,
             prmtop=job.addChildJobFn(
                 alter_topology,
                 solute_amber_parm=config.endstate_files.complex_parameter_filename,
@@ -421,7 +426,9 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                 ligand_mask=config.amber_masks.ligand_mask,
                 receptor_mask=config.amber_masks.receptor_mask,
                 set_charge=0.0,
-                exculsions=True,
+                exculsions=not in_solvent,
+                lj_scale=0.0 if in_solvent else None,
+                screen_scale=decoupled_screen,
             ).rv(),
         )
 
@@ -438,6 +445,7 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     receptor_mask=config.amber_masks.receptor_mask,
                     set_charge=0.0,
                     lj_scale=lj_scale,
+                    screen_scale=decoupled_screen,
                 ).rv(),
                 lj_scale=lj_scale,
             )
@@ -453,7 +461,24 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                 ligand_mask=config.amber_masks.ligand_mask,
                 receptor_mask=config.amber_masks.receptor_mask,
                 set_charge=0.0,
+                screen_scale=decoupled_screen,
             ).rv(),
+        )
+
+    # Ligand GB screening windows between interactions and uncharged electrostatics
+    for screen_scale in config.intermediate_args.screening_windows:
+        complex_simulations.setup_screening_simulation(
+            restraint_key=complex_anchor_key,
+            prmtop=job.addChildJobFn(
+                alter_topology,
+                solute_amber_parm=config.endstate_files.complex_parameter_filename,
+                solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+                ligand_mask=config.amber_masks.ligand_mask,
+                receptor_mask=config.amber_masks.receptor_mask,
+                set_charge=0.0,
+                screen_scale=screen_scale,
+            ).rv(),
+            screen_scale=screen_scale,
         )
     
     # Setup GB external dielectric scaling simulations
@@ -851,6 +876,7 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                     working_path=config.system_settings.cache_directory_output,
                     endstate_label=config.endstate_method.endstate_state_label,
                     plot_overlap_matrix=config.workflow.plot_overlap_matrix,
+                    decouple_in_solvent=config.intermediate_args.decouple_in_solvent,
                 )
             )
             
@@ -997,18 +1023,24 @@ def _pilot_band_passes(job, complex_runner, receptor_runner, pilot_config: Confi
     reads its own banded overlap and inserts in its own coordinate; the converged config (expanded window
     lists) is threaded into the next pass and ultimately returned for the production rebuild (Stage D).
     """
-    # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
-    diel = job.addChildJobFn(
-        pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
-    )
     # Pass 2 — charge band on the complex leg. adaptive_lambda_windows -> (results, config, runner).
-    charge = diel.addFollowOnJobFn(
-        adaptive_lambda_windows,
-        diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
-        diel.rv(2),  # dielectric-converged config
-        "complex",
-        charge_scaling=True,
-    )
+    if pilot_config.intermediate_args.decouple_in_solvent:
+        # no dielectric band to schedule
+        charge = job.addChildJobFn(
+            adaptive_lambda_windows, complex_runner, pilot_config, "complex", charge_scaling=True
+        )
+    else:
+        # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
+        diel = job.addChildJobFn(
+            pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
+        )
+        charge = diel.addFollowOnJobFn(
+            adaptive_lambda_windows,
+            diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
+            diel.rv(2),  # dielectric-converged config
+            "complex",
+            charge_scaling=True,
+        )
     # Pass 3 — restraint band on the complex leg.
     restr = charge.addFollowOnJobFn(
         adaptive_lambda_windows,

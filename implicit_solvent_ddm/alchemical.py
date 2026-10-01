@@ -122,6 +122,7 @@ def alter_topology(
     exculsions=False,
     set_charge=0.0,
     lj_scale=None,
+    screen_scale=None,
 ) -> str:
     """
     Simple command to alter the ligand charge and/or turn off non-bonded interactions with receptor w/ligand.
@@ -142,6 +143,8 @@ def alter_topology(
         Specify the percent charge of all ligand atoms. 0.2 -> 20% total charges.
     lj_scale: float, optional
         Scale on the ligand-receptor Lennard-Jones interaction; None leaves it unchanged.
+    screen_scale: float, optional
+        Scale on the ligand GB SCREEN parameters; None leaves them unchanged.
     Returns
     -------
     toil.fileStores.FileID
@@ -178,6 +181,11 @@ def alter_topology(
     for index, new_charge in enumerate(reduce_charge):
         solute_parm.atoms[ligand_atoms[index]].charge = new_charge
     saved_filename += f"charge_{set_charge}_"
+
+    if screen_scale is not None:
+        for index in ligand_atoms:
+            solute_parm.atoms[index].screen *= screen_scale
+        saved_filename += f"screen_{screen_scale}_"
 
     if lj_scale is not None:
         saved_filename += f"lj_{lj_scale}_"
