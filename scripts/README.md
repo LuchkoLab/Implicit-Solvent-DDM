@@ -37,6 +37,8 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `relax_binding_pose.py` | **Pre-step: relax the one input binding pose ONCE, before any replicate** — restrained minimise → heat → equilibrate → minimise under the production GB settings (`igb`/`saltcon`/`extdiel`, not `min.mdin`'s `saltcon=0`), with the ligand heavy atoms + pocket C-alphas held to the input pose in every stage. Writes the complex/receptor/ligand restarts every replicate shares, a pose-RMSD plateau check, and fails on NaN/Infinity mdouts | yes |
 | `nfe_rmsd_probe.py` | **Can AMBER give us a GPU RMSD restraint, and is it best-fit?** — stands up `infe=1` + `&pmd` + `MULTI_RMSD` from scratch and checks that it runs, that the CV is rotation/translation invariant and equals cpptraj `rms … mass`, that it applies force rather than only monitoring, and that `cv_ni` does not silently truncate | yes |
 | `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
+| `gpu_packing_benchmark.py` | **How many windows can share one GPU?** — runs N concurrent `pmemd.cuda` copies of one finished window on a single device (sweep of N, MPS off and on) and reports total and per-copy ns/day, GPU utilisation and memory, CPU time per copy, and whether every copy's EPtot series matches the first run (same seed) | yes (GPU) |
+| `run_apo_receptor_md.py` | **Unbiased apo receptor endstate, shared across ligands** — the workflow's minimization (`templates/min.mdin`) then the complex's basic-MD endstate mdin with an empty DISANG and a fixed seed, so one 100 ns 298 K receptor trajectory per replicate can be passed as `receptor_coordinate_filename` (with `--ignore_receptor`) instead of a REMD ladder that unfolds the protein | yes (GPU) |
 
 ---
 
@@ -699,3 +701,29 @@ trajectory.
     python scripts/nfe_rmsd_probe.py --probe 3 --nstlim 25000 --k 50 --prmtop ... --inpcrd ...
 
 Probe 3 always runs new MD — you cannot show that a force is applied without integrating it.
+
+## `gpu_packing_benchmark.py` — how many windows can share one GPU?
+
+A ~2,500-atom GB window leaves most of a GPU idle, but the workflow gives each window a whole device.
+This runs 1, 2, 4, ... copies of one finished window on device 0 at once, first time-sliced and then
+under a private CUDA MPS daemon, and writes one CSV row per (MPS, N) cell (rewritten after every cell).
+The mdin is rebuilt from the window's own `mdout` echo with `nstlim` (default 125000 = 500 ps) and a fixed
+`ig` overridden, so the restraint network and output frequency match production. Every copy uses the same
+seed, so `max_abs_dEPtot_vs_first` checks that packing and MPS leave the trajectory unchanged.
+`sum_ns_day` (the copies' own mdout ns/day added up) is the steady-state throughput; `total_ns_day`
+also charges each copy's ~4 s startup. Ask for one CPU core per copy: `cpu_frac_per_copy` near 1
+means each copy holds a core, and with fewer cores than copies the result measures the CPU, not the GPU.
+
+    salloc --partition=gpu --gres=gpu:1 --cpus-per-task=20 --mem=40G --time=00:30:00
+    python scripts/gpu_packing_benchmark.py <window dir> --nstlim 50000 --copies 1 2 4 8 12 16 --mps on
+
+MCL-1/ligand-17 (2,471 atoms, 85k restraints) on an RTX 5000 Ada: time-slicing gives no gain; under MPS the
+GPU total is 1,735 / 2,726 / 3,327 / 3,480 / 3,489 ns/day at 1 / 2 / 4 / 8 / 16 copies.
+
+## `run_apo_receptor_md.py` — unbiased apo receptor endstate
+
+    python scripts/run_apo_receptor_md.py --prmtop <receptor.parm7> --inpcrd <receptor_relaxed.rst7> \
+        --md-mdin input_files/four_fento_basic_md.mdin --out <dir> --ig 1001
+
+Writes `<name>_298.0K.nc` (and a last-frame restart) under `--out`; `--dry-run` writes the inputs and prints
+the two pmemd commands. Both steps are checked for completion and NaN energies.
