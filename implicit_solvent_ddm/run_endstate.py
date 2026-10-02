@@ -35,6 +35,7 @@ def _pose_medoid_args(user_config: Config, directory_args: dict) -> dict:
         cluster_cutoff=args.pose_cluster_cutoff,
         pocket_radius=args.pose_pocket_radius,
         cluster_stride=args.pose_cluster_stride,
+        cluster_skip=args.pose_cluster_skip,
         working_directory=user_config.system_settings.working_directory,
         directory_args=directory_args,
     )

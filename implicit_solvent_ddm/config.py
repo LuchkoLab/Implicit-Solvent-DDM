@@ -816,6 +816,7 @@ class IntermediateStateArgs:
     pose_cluster_cutoff: float = 2.0  # A, average-linkage cutoff on no-fit ligand RMSD
     pose_pocket_radius: float = 8.0  # A around the ligand defining the pocket atoms to superpose on
     pose_cluster_stride: int = 0  # 0 -> auto, caps the O(n^2) matrix at ~2000 frames
+    pose_cluster_skip: int = 0  # frames dropped from the start of the endstate before clustering (burn-in)
 
     @property
     def freed_receptor_mask(self) -> Optional[str]:
@@ -1124,6 +1125,9 @@ class IntermediateStateArgs:
             raise ValueError(
                 f"boresch_anchors must be 'pocket_backbone' or 'legacy', got {self.boresch_anchors!r}"
             )
+
+        if int(self.pose_cluster_skip) < 0:
+            raise ValueError(f"pose_cluster_skip must be >= 0, got {self.pose_cluster_skip!r}")
 
         if self.restraint_reference not in ("lastframe", "pose_medoid"):
             if not os.path.isfile(str(self.restraint_reference)):

@@ -886,6 +886,7 @@ class ExtractTrajectories(Job):
         cluster_cutoff=2.0,
         pocket_radius=8.0,
         cluster_stride=0,
+        cluster_skip=0,
         working_directory=None,
         directory_args=None,
     ):
@@ -911,6 +912,7 @@ class ExtractTrajectories(Job):
         self.cluster_cutoff = cluster_cutoff
         self.pocket_radius = pocket_radius
         self.cluster_stride = cluster_stride
+        self.cluster_skip = int(cluster_skip)
         self.working_directory = working_directory
         self.directory_args = directory_args
 
@@ -1045,9 +1047,10 @@ class ExtractTrajectories(Job):
         from implicit_solvent_ddm import pose_clusters
 
         traj = pose_clusters.load_trajectory(self.read_solute, read_target_traj)
-        if len(traj) < pose_clusters.MIN_CLUSTER_FRAMES:
+        if len(traj) - self.cluster_skip < pose_clusters.MIN_CLUSTER_FRAMES:
             fileStore.logToMaster(
-                f"[POSE] only {len(traj)} frames, too few to cluster; using lastframe"
+                f"[POSE] only {len(traj)} frames ({self.cluster_skip} skipped), too few "
+                f"to cluster; using lastframe"
             )
             return None
 
@@ -1060,6 +1063,7 @@ class ExtractTrajectories(Job):
                 cutoff=self.cluster_cutoff,
                 radius=self.pocket_radius,
                 stride=self.cluster_stride,
+                skip=self.cluster_skip,
             )
         except ValueError as exc:
             fileStore.logToMaster(

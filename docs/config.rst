@@ -220,6 +220,7 @@ Intermidate arugments
             pose_cluster_cutoff: 2.0 # A, only read when restraint_reference is pose_medoid
             pose_pocket_radius: 8.0 # A around the ligand
             pose_cluster_stride: 0 # 0 -> auto
+            pose_cluster_skip: 0 # frames dropped from the start before clustering
 
 Lets skip ``mdin_intermidate_config`` for now and look at the following keys. ``igb_solvent`` GB version for all calculation: GB-OBC (igb=2). ``temperature`` Temperature to run intermediate simulations if complete end-state simulations are provided. Note this temperature will be used for target temperature extraction if user wishes to run REMD at the end-states. ``exponent_conformational_forces`` Strength of harmonic conformational restraints are specified by a list of integers to calculate powers of 2, for example -8 gives a restraint coefficient of 2^-8 kcal/mol = 0.00390625 kcal/mol. ``exponent_orientational_forces`` Strength of harmonic orientational restraints are specified by a list of integers to calculate powers of 2. ``restraint_type`` Orientational restraint type to generate orientational based on center of mass of ligand and receptor. default:2. ``charges_lambda_window`` Values to use for linear scaling the ligand electrostatics such as 50% orginal ligand net charge to 100% fully charge. Lastly. ``gb_extdiel_windows`` Values to use when scaling the GB external dielectric.
 
@@ -236,7 +237,9 @@ the average-linkage distance cutoff in Angstrom on the no-fit ligand RMSD. ``pos
 the radius in Angstrom around the ligand defining the pocket atoms every frame is superposed on:
 receptor C-alpha atoms when the receptor has a backbone, all receptor heavy atoms otherwise, so
 host-guest systems work too. ``pose_cluster_stride`` is the frame stride, where ``0`` sizes it
-automatically to keep the pairwise distance matrix near 2000 frames. When the flag is on the run also
+automatically to keep the pairwise distance matrix near 2000 frames. ``pose_cluster_skip`` drops that
+many frames from the start of the endstate trajectory before clustering, so a burn-in cannot pick the
+reference; it does not change which frames the endstate is scored on. When the flag is on the run also
 writes ``summary.txt``, ``assignments.csv``, ``pose_analysis.png`` and ``dendrogram.png`` next to the
 endstate trajectory, and logs a warning if no cluster holds a majority of the frames.
 

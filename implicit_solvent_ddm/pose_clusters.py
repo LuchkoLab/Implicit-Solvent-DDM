@@ -516,7 +516,7 @@ def analyze(traj, ligand_mask, receptor_mask, cutoff=2.0, radius=8.0, stride=0,
     Returns a dict with ``summary``, ``labels``, ``frames``, ``linkage``, ``report``,
     ``proj``, ``d_init``, ``proj_init``, ``stride`` and ``pocket_label``.
     """
-    stride = resolve_stride(len(traj), stride, cap=frame_cap)
+    stride = resolve_stride(len(traj) - int(skip), stride, cap=frame_cap)
     pocket_indices, ligand_indices, pocket_label = build_pocket_atoms(
         traj.top, _frame_xyz(traj[0]), ligand_mask, receptor_mask, radius
     )
