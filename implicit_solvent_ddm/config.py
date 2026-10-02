@@ -159,6 +159,12 @@ class SystemSettings:
         CUDA MPS (``nvidia-cuda-mps-control -d``) to run concurrently rather than serialize.
         Defaults to 0, which requests no GPU and preserves the behaviour of configs written
         before this option existed.
+    windows_per_gpu : int
+        Number of GPU MD windows packed onto each allocated device under the
+        ``single_machine`` batch system. Values above 1 need the CUDA MPS daemon on the
+        node; without it the windows time-slice and gain nothing. Each packed window
+        holds about one CPU core, so that many cores are kept out of the CPU job pool.
+        Defaults to 1, one window per GPU.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -175,6 +181,7 @@ class SystemSettings:
     num_accelerators: int = field(default=0)
     mbar_accelerators: int = field(default=0)
     remd_accelerators: int = field(default=0)
+    windows_per_gpu: int = field(default=1)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
     export_intermediate_files: bool = field(default=True)
@@ -215,6 +222,11 @@ class SystemSettings:
                 self.mbar_accelerators,
             )
             self.mbar_accelerators = 1
+
+        if not isinstance(self.windows_per_gpu, int) or self.windows_per_gpu < 1:
+            raise ValueError(
+                f"system_settings.windows_per_gpu must be an integer >= 1, got {self.windows_per_gpu!r}"
+            )
 
     @property
     def top_directory_path(self):

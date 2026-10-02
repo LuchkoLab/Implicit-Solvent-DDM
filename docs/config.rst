@@ -73,7 +73,32 @@ The hardware parameters denote the software and hardware resources there user wi
 
 The ``working_directory`` keyword is the working directory for exporting output data. Following ``executable`` TheAmber MD engine the user wishes to execute(``sander``, ``sander.MPI``, ``pmemd``,
 ``pmemd.MPI``, ``pmemd.cuda`` or ``pmemd.cuda.MPI``) for the the end-state and intermediate MD simulations. The ``mpi_command`` used to run MPI programs on the computer system;
-e.g., ``mpirun``, ``mpiexec``, or ``srun``. The ``output_directory_name`` keyword is the name of output directory. The ``CUDA`` keyword specifies whether to use GPU acceleration: ``False`` means it will run on CPUs, while ``True`` runs on GPUs. 
+e.g., ``mpirun``, ``mpiexec``, or ``srun``. The ``output_directory_name`` keyword is the name of output directory. The ``CUDA`` keyword specifies whether to use GPU acceleration: ``False`` means it will run on CPUs, while ``True`` runs on GPUs.
+
+Packing GPU windows
+'''''''''''''''''''
+
+.. code-block:: yaml
+
+    hardware_parameters:
+        CUDA: True
+        executable: pmemd.cuda
+        windows_per_gpu: 4
+
+``windows_per_gpu`` (default ``1``) sets how many ``pmemd.cuda`` windows share each allocated GPU under
+Toil's ``single_machine`` batch system. It is ignored (reset to ``1``) for other batch systems.
+
+- **CUDA MPS is required.** Start the daemon on the node before the workflow
+  (``nvidia-cuda-mps-control -d``). Without it the windows time-slice and gain nothing; the leader
+  prints a warning if the daemon is not found.
+- **One core per slot.** Each packed window holds about one CPU core, so ``maxCores`` is lowered by
+  ``n_gpus * windows_per_gpu`` to keep CPU post-analysis off those cores. With ``--maxCores`` unset,
+  the core count comes from ``SLURM_CPUS_PER_TASK``, else the process CPU affinity.
+- **REMD** requests ``remd_accelerators * windows_per_gpu`` slots, so it still claims whole devices.
+
+Benchmark (MCL-1 ligand-17 window, 2,471 atoms, RTX 5000 Ada, ``scripts/gpu_packing_benchmark.py``):
+the GPU total is 1,735 / 2,726 / 3,327 / 3,480 ns/day at 1 / 2 / 4 / 8 copies under MPS, with identical
+energies. Without MPS it stays flat at ~1,400-1,750 ns/day. ``4`` reaches ~95% of the plateau.
 
 Specify number of performance cores  
 """""""""""""""""""""""""""""""""""
