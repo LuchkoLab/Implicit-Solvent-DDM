@@ -53,11 +53,15 @@ def run_remd(job, user_config: Config):
         user_config.system_settings.remd_executable
         or user_config.system_settings.executable
     )
-    remd_accelerators = user_config.system_settings.remd_accelerators
+    # Packed slots: request windows_per_gpu slots per device so REMD still claims whole GPUs.
+    remd_accelerators = (
+        user_config.system_settings.remd_accelerators
+        * user_config.system_settings.windows_per_gpu
+    )
     ngroups = user_config.endstate_method.remd_args.ngroups
-    if user_config.system_settings.CUDA and 0 < remd_accelerators < ngroups:
+    if user_config.system_settings.CUDA and 0 < user_config.system_settings.remd_accelerators < ngroups:
         job.log(
-            f"[REMD] {ngroups} replicas share {remd_accelerators} GPU(s). AMBER binds one "
+            f"[REMD] {ngroups} replicas share {user_config.system_settings.remd_accelerators} GPU(s). AMBER binds one "
             "device per MPI rank, so the extra ranks serialize unless the CUDA MPS daemon "
             "(nvidia-cuda-mps-control -d) is running on the node."
         )
