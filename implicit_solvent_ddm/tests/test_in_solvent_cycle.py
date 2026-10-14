@@ -7,7 +7,7 @@ import pytest
 from implicit_solvent_ddm import block_mbar, setup_simulations
 from implicit_solvent_ddm.matrix_order import CycleSteps
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
-from implicit_solvent_ddm.tests.test_lj_window_and_dihedral_bounds import PARM, _cb7_topology
+from test_lj_window_and_dihedral_bounds import PARM, _cb7_topology
 
 CON = [-8.0, 4.0]
 ORIENT = [-4.0, 8.0]
