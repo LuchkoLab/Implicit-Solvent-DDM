@@ -361,7 +361,8 @@ class ConsolidateData(Job):
         deltaG_df[f"{self.ligand_name}_endstate->no_charges"] = [
             self._get_ligand_deltaG
         ]
-        deltaG_df[f"{self.receptor_name}_endstate->no_gb"] = [self._get_receptor_deltaG]
+        receptor_end = "restrained" if self.decouple_in_solvent else "no_gb"
+        deltaG_df[f"{self.receptor_name}_endstate->{receptor_end}"] = [self._get_receptor_deltaG]
         deltaG_df["boresch_restraints"] = [self._get_boresch_standard_state]
         deltaG_df["flat_bottom_contribution"] = [self._flat_bottom_contribution]
         deltaG_df[f"{self.complex_name}_no-interactions->endstate"] = [
