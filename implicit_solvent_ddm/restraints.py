@@ -1496,7 +1496,8 @@ def write_restraint_forces(
 
     The flat-bottom COM term is deliberately absent: it is an ENDSTATE-only restraint, applied by
     ``setup_simulations.setup_post_endstate_simulation`` as the ``flat_bottom``/``no_flat_bottom``
-    pair whose exponential average becomes ``_flat_bottom_contribution``. It was previously passed in
+    pair whose exponential average is reported as ``_flat_bottom_contribution`` (not added to the
+    total, since the complex endstate already carries the restraint). It was previously passed in
     here, but a Toil ``FileID`` subclasses ``str``, so what got concatenated was a jobStore path
     rather than restraint text -- AMBER ignored the stray line and the term was never applied. Every
     result to date is therefore correct, and dropping it changes no energy.
