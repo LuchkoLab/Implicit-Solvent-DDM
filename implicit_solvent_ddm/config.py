@@ -816,7 +816,7 @@ class IntermediateStateArgs:
     # --- Conformational-restraint selection ---
     unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
 
-    receptor_ramp_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms whose network restraints are ramped rather than dropped: free near the endstate (keeps the seam), frozen at the top of the ladder (keeps the complex and receptor legs identical in the GB/charge/LJ windows). Mutually exclusive with unrestrained_receptor_mask, which frees the selection in EVERY window and let MCL-1 loop 22-32 sample differently per leg.
+    receptor_ramp_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms whose network restraints are ramped rather than dropped: free near the endstate (keeps the seam), frozen at the top of the ladder (keeps the complex and receptor legs identical in the GB/charge/LJ windows). Can be combined with unrestrained_receptor_mask on different atoms (e.g. ramp ':22-32', drop '@H*'); pairs are dropped first, then the rest of the selection is ramped. Do not ramp and drop the same region: freeing loop 22-32 in every window let it sample differently per leg.
     receptor_ramp_slope: float = 2.0  # ramp exponent = E_max - slope*(E_max - E_con): equals the network at the top, 2^-32 at E_con=-14 for slope 2.
 
     # --- Boresch anchor selection ---
@@ -833,7 +833,8 @@ class IntermediateStateArgs:
     @property
     def freed_receptor_mask(self) -> Optional[str]:
         """Receptor atoms not held by the network in every window; never usable as Boresch anchors."""
-        return self.receptor_ramp_mask or self.unrestrained_receptor_mask
+        masks = [m for m in (self.receptor_ramp_mask, self.unrestrained_receptor_mask) if m]
+        return "|".join(f"({m})" for m in masks) if len(masks) > 1 else (masks[0] if masks else None)
 
     @property
     def ramp_kwargs(self) -> dict:
@@ -1126,11 +1127,6 @@ class IntermediateStateArgs:
             raise ValueError(f"gb_dielectric_cpu_cores must be >= 1, got {self.gb_dielectric_cpu_cores}")
         if self.rmsd_site_atoms not in ("heavy", "global"):
             raise ValueError(f"rmsd_site_atoms must be 'heavy' or 'global', got {self.rmsd_site_atoms!r}")
-        if self.receptor_ramp_mask and self.unrestrained_receptor_mask:
-            raise ValueError(
-                "receptor_ramp_mask and unrestrained_receptor_mask are mutually exclusive: "
-                "one ramps the selection, the other drops it from every window"
-            )
         if float(self.receptor_ramp_slope) < 1.0:
             raise ValueError("receptor_ramp_slope must be >= 1 so the ramp is at or below the network")
         if self.boresch_anchors not in ("pocket_backbone", "legacy"):
