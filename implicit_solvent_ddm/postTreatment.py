@@ -244,12 +244,12 @@ class ConsolidateData(Job):
     @property
     def compute_binding_deltaG(self) -> float:
         """Compute the total sum of DeltaG"""
+        # the complex endstate is already flat-bottom restrained; _flat_bottom_contribution is reported only
         return (
             self._get_complex_deltaG
             + self._get_ligand_deltaG
             + self._get_receptor_deltaG
             + self._get_boresch_standard_state
-            + self._flat_bottom_contribution
         )
 
     def _export_overlap_matrices(self):
