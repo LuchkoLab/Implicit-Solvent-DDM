@@ -321,6 +321,103 @@ def report(data, ps_per_exchange=None):
     return "\n".join(out)
 
 
+def rung_energy_blocks(data, block):
+    """Mean potential energy at each rung over consecutive blocks of exchanges.
+
+    Parameters
+    ----------
+    data : dict
+        Output of ``parse_remlog``.
+    block : int
+        Exchanges per block.
+
+    Returns
+    -------
+    numpy.ndarray
+        ``(n_rungs, n_blocks)`` mean EPtot, kcal/mol.
+    """
+    rung, eptot = data["rung"], data["eptot"]
+    n_blocks = int(np.ceil(len(rung) / block))
+    out = np.full((len(data["temps"]), n_blocks), np.nan)
+    for b in range(n_blocks):
+        r, e = rung[b * block:(b + 1) * block], eptot[b * block:(b + 1) * block]
+        for k in range(len(data["temps"])):
+            out[k, b] = e[r == k].mean()
+    return out
+
+
+def sub_ladder_trips(rung, top, start, stop):
+    """Round trips between the bottom rung and rung ``top`` within an exchange window.
+
+    Parameters
+    ----------
+    rung : numpy.ndarray
+        ``(n_exchange, n_replica)`` rung index of each replica.
+    top : int
+        Rung index treated as the top.
+    start, stop : int
+        Exchange window.
+
+    Returns
+    -------
+    int
+        Completed trips summed over replicas.
+    """
+    trips = 0
+    for r in range(rung.shape[1]):
+        last_end = None
+        for value in rung[start:stop, r]:
+            if value == 0:
+                trips += last_end == "top"
+                last_end = "bottom"
+            elif value >= top and last_end == "bottom":
+                last_end = "top"
+    return trips
+
+
+def bottom_suppliers(rung, block):
+    """Which replicas occupy the bottom rung in each block of exchanges.
+
+    Parameters
+    ----------
+    rung : numpy.ndarray
+        ``(n_exchange, n_replica)`` rung index of each replica.
+    block : int
+        Exchanges per block.
+
+    Returns
+    -------
+    list of tuple
+        Per block: number of distinct replicas seen at the bottom rung, and the largest single
+        replica's share of that block.
+    """
+    out = []
+    for b in range(int(np.ceil(len(rung) / block))):
+        r = rung[b * block:(b + 1) * block]
+        at_bottom = np.argwhere(r == 0)[:, 1]
+        counts = np.bincount(at_bottom, minlength=rung.shape[1])
+        out.append((int((counts > 0).sum()), counts.max() / max(counts.sum(), 1)))
+    return out
+
+
+def drift_report(data, block):
+    """Text block: per-rung EPtot over time and sub-ladder round trips per half."""
+    temps, rung = data["temps"], data["rung"]
+    energies = rung_energy_blocks(data, block)
+    lines = [f"\nEPtot per rung, mean over {block}-exchange blocks (a trend = the rung's ensemble drifts)"]
+    for k, t in enumerate(temps):
+        row = energies[k]
+        lines.append(f"  {t:7.2f} K " + " ".join(f"{x:8.1f}" for x in row) + f"   last-first {row[-1] - row[0]:+7.1f}")
+    half = len(rung) // 2
+    lines.append("\nround trips to a lower top rung (first half / second half)")
+    for top in range(len(temps) - 1, 0, -1):
+        lines.append(f"  298 -> {temps[top]:7.2f} K: {sub_ladder_trips(rung, top, 0, half):5d} / "
+                     f"{sub_ladder_trips(rung, top, half, len(rung)):5d}")
+    lines.append(f"\nreplicas supplying the {temps[0]:.2f} K rung per block (distinct replicas, largest share)")
+    lines.append("  " + "  ".join(f"{n}/{share:.2f}" for n, share in bottom_suppliers(rung, block)))
+    return "\n".join(lines)
+
+
 def write_csv(path, data):
     """Per-pair acceptance and per-replica round trips, as one flat CSV."""
     temps = data["temps"]
@@ -349,11 +446,15 @@ def main():
         help="nstlim * dt from the REMD mdin, to report round trips in ns",
     )
     parser.add_argument("--csv", default=None, help="also write the numbers here")
+    parser.add_argument("--blocks", type=int, default=None,
+                        help="also report per-rung EPtot over blocks of this many exchanges and sub-ladder trips")
     args = parser.parse_args()
 
     data = parse_remlog(args.remlog)
     print(f"# {os.path.abspath(args.remlog)}")
     print(report(data, ps_per_exchange=args.ps_per_exchange))
+    if args.blocks:
+        print(drift_report(data, args.blocks))
     if args.csv:
         write_csv(args.csv, data)
         print(f"\nwrote {args.csv}")
