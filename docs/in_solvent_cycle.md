@@ -34,6 +34,10 @@ Validation at config load:
 
 ## Cycle
 
+![In-solvent cycle](in_solvent_cycle.png)
+
+Regenerate with `python scripts/plot_in_solvent_cycle.py`.
+
 All states use `igb = igb_solvent`, `extdiel = 78.5` and the user's `saltcon`, and are scored
 with `post_mdin`.
 
