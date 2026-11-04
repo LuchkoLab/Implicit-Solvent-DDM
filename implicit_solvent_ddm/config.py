@@ -261,6 +261,12 @@ class ParameterFiles:
     receptor_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
     # Set by Config when intermediate_states_arguments.restraint_reference is a file
     restraint_reference_coordinate: Optional[Union[str, FileID]] = field(default=None)
+    # Endstate trajectories to reuse when workflow_jobs.run_endstate_method is False and the endstate
+    # method is not 0 (refining a finished run): the endstate keeps its method's label, so the
+    # endstate cells already scored are reused, while *_coordinate_filename stays the run's starting
+    # structure (it seeds the flat-bottom and the endstate column's -c).
+    complex_endstate_trajectory: Optional[Union[str, FileID]] = field(default=None)
+    ligand_endstate_trajectory: Optional[Union[str, FileID]] = field(default=None)
 
     # Misc
     ignore_unique_naming: bool = False
@@ -407,6 +413,8 @@ class ParameterFiles:
             "ligand_initial_coordinate",
             "receptor_initial_coordinate",
             "restraint_reference_coordinate",
+            "complex_endstate_trajectory",
+            "ligand_endstate_trajectory",
         ]
 
         for attr in file_attributes:
@@ -1544,6 +1552,25 @@ class Config:
                     "but did not provide ligand parameter and coordinate files. "
                     "Please ensure `ligand_parameter_filename` is set in the config."
                 )
+        elif not self.workflow.run_endstate_method:
+            # Reusing a finished run's endstates: the endstate trajectories must be given explicitly,
+            # because the coordinate files are single starting frames.
+            files = self.endstate_files
+            for leg in ("complex", "ligand"):
+                traj = getattr(files, f"{leg}_endstate_trajectory")
+                parm = getattr(files, f"{leg}_parameter_filename")
+                if traj is None or parm is None:
+                    raise ValueError(
+                        f"run_endstate_method: False with endstate_method "
+                        f"'{self.endstate_method.endstate_method_type}' needs "
+                        f"{leg}_endstate_trajectory and {leg}_parameter_filename"
+                    )
+                n_frames = pt.iterload(str(traj), str(parm)).n_frames
+                if n_frames < 2:
+                    raise ValueError(
+                        f"{leg}_endstate_trajectory {traj} has {n_frames} frame(s) for {parm} "
+                        "(atom-count mismatch, or not a trajectory)"
+                    )
 
     def _valid_amber_masks(self):
         """

@@ -605,10 +605,15 @@ def user_defined_endstate(job, user_config: Config):
         user_config (Config): _description_
     """
     job.fileStore.logToMaster("Extracting Complex Trajectory")
+    files = user_config.endstate_files
+    # A finished run being refined names its endstate trajectories explicitly; otherwise the
+    # coordinate files ARE the endstate trajectories (endstate_method 0).
+    complex_endstate = files.complex_endstate_trajectory or files.complex_coordinate_filename
+    ligand_endstate = files.ligand_endstate_trajectory or files.ligand_coordinate_filename
     extract_complex = job.addChild(
         ExtractTrajectories(
             user_config.endstate_files.complex_parameter_filename,
-            user_config.endstate_files.complex_coordinate_filename,
+            complex_endstate,
             **_pose_medoid_args(
                 user_config,
                 {
@@ -625,7 +630,7 @@ def user_defined_endstate(job, user_config: Config):
     extract_ligand_traj = extract_complex.addChild(
         ExtractTrajectories(
             user_config.endstate_files.ligand_parameter_filename,
-            user_config.endstate_files.ligand_coordinate_filename,
+            ligand_endstate,
         )
     )
     # user_config.inputs["endstate_ligand_traj"] = extract_ligand_traj.rv(0)
