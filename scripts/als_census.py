@@ -127,6 +127,9 @@ def scan_leg(task):
         n_frames = df.groupby(level=list(range(df.index.nlevels))).size()
         df = df / ar.kcal_per_kt(temperature)
         pairs = ar.adjacent_pair_overlaps(ar.subsample_like_production(df))
+        failed = int((pairs.status == "solve_failed").sum())
+        if failed:  # never cache a failed solve: it would read as a zero-overlap gap
+            return {**status, "status": "pair_failed", "detail": f"{failed} pair solve(s) failed"}
         if os.path.exists(overlap_file):
             full = pd.read_hdf(overlap_file).to_numpy()
             pairs["o_fullN"] = [min(full[i][i + 1], full[i + 1][i]) for i in pairs.i]
