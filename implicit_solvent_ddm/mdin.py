@@ -26,7 +26,7 @@ def generate_extdiel_mdin(
 ) -> FileID:
     """Write an mdin with a unique external dielectric for the generalized-Born solvent.
 
-    ``nstlim``/``ntwx`` shorten the run for the ALS pilot (no-ops when ``None`` -> production length).
+    ``nstlim``/``ntwx`` override the run length (no-ops when ``None`` -> production length).
     ``saltcon`` defaults to 0 across the GB-dielectric band: with salt the Debye screening makes the GB
     polar term no longer exactly linear in ``lambda = 1 - 1/eps``, which is the property the band relies
     on for uniform overlap. Pass ``saltcon=None`` to leave the user's value untouched.
@@ -105,25 +105,6 @@ def get_mdins(job, user_mdin_ID: FileID, nfe_cv_file=None, nfe_output_freq=250):
     return (default_mdin, no_solvent_mdin, post_mdin, post_nosolv, post_saltfree)
 
 
-def pilot_md_steps(mdin_text, pilot_ps, pilot_frames, pilot_nstlim=None, dt_default=0.001):
-    """Return ``(nstlim, ntwx)`` for the ALS pilot from the user mdin's timestep (pure, testable).
-
-    The pilot is **always 50 ps** (the paper's value, ``pilot_ps``) regardless of the user's timestep:
-    ``nstlim = round(pilot_ps / dt)`` where ``dt`` is read from the user mdin (e.g. dt=0.002 ps ->
-    25000 steps for 50 ps). ``pilot_nstlim``, if given, overrides this (for tiny test systems where
-    50 ps is absurd). ``ntwx`` is chosen so ~``pilot_frames`` trajectory frames are written over the
-    window, making the MBAR sample count independent of ``dt`` and of the user's production ``ntwx``
-    (which is tuned for a much longer run and would otherwise leave a 50 ps pilot far too thin).
-
-    ``dt_default`` (AMBER's own default, 0.001 ps) is used only if no ``dt`` is found in the mdin.
-    """
-    match = re.search(r"\bdt\s*=\s*([0-9.eE+-]+)", mdin_text)
-    dt = float(match.group(1)) if match else dt_default
-    nstlim = int(pilot_nstlim) if pilot_nstlim is not None else max(1, round(pilot_ps / dt))
-    ntwx = max(1, round(nstlim / max(1, int(pilot_frames))))
-    return nstlim, ntwx
-
-
 def long_window_md_steps(mdin_text, target_ns, dt_default=0.001):
     """Return ``(nstlim, ntwx, ntpr)`` running ONE window for ``target_ns`` ns at the user's frame
     count, or ``None`` when nothing should change (pure, testable).
@@ -194,7 +175,7 @@ def long_window_md_steps(mdin_text, target_ns, dt_default=0.001):
 
 def get_long_window_mdin(job, user_mdin_ID: FileID, target_ns: float = None, nfe_cv_file=None,
                          nfe_output_freq=250):
-    """Write the long-run mdin for the lowest restraint window. Mirrors ``get_pilot_mdin``.
+    """Write the long-run mdin for the lowest restraint window.
 
     Returns ``(long_mdin, nstlim, ntwx)``, stored at ``config.inputs["long_window_mdin"]`` and
     consumed only by ``SimulationSetup._restraint_window_mdin``.
@@ -224,49 +205,6 @@ def get_long_window_mdin(job, user_mdin_ID: FileID, target_ns: float = None, nfe
                        nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq)
     )
     return long_mdin, nstlim, ntwx
-
-
-def get_pilot_mdin(
-    job,
-    user_mdin_ID: FileID,
-    pilot_ps: float = 50.0,
-    pilot_frames: int = 100,
-    pilot_nstlim: int = None,
-    nfe_cv_file=None,
-    nfe_output_freq=250,
-):
-    """Write the short-pilot intermediate mdins for the ALS pilot (always 50 ps by default).
-
-    Returns a ``(pilot_default, pilot_no_solvent)`` pair, both shortened to ``pilot_ps`` (50 ps,
-    converted to steps via the user mdin's ``dt``) with ``ntwx`` set for ~``pilot_frames`` frames:
-
-    * ``pilot_default``    — the solvated/default mdin (restraint windows, solvated charge states).
-    * ``pilot_no_solvent`` — the ``igb=6`` gas-phase mdin (no_interactions / interactions / igb=6
-      charge states). This MUST be shortened too: the pilot runs the FULL cycle, and those gas-phase
-      states use ``no_solvent_mdin``; if only the default mdin is shortened they run at full production
-      length (the bug this fixes). Stored at ``config.inputs["pilot_mdin"]`` /
-      ``config.inputs["pilot_no_solvent_mdin"]``. Used ONLY when ``workflow.adaptive_lambda`` is set.
-
-    NOTE: GB-external-dielectric pilot states are shortened separately by ``generate_extdiel_mdin`` (it
-    takes the same ``nstlim``/``ntwx`` derived here via ``pilot_md_steps``); see
-    ``workflow_phases.adaptive_restraint_pilot``.
-    """
-    mdin_global = job.fileStore.readGlobalFile(user_mdin_ID)
-    with open(mdin_global) as fh:
-        nstlim, ntwx = pilot_md_steps(fh.read(), pilot_ps, pilot_frames, pilot_nstlim)
-    pilot_default = job.fileStore.writeGlobalFile(
-        make_mdin_file(mdin_global, "pilot_mdin", nstlim=nstlim, ntwx=ntwx,
-                       nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq)
-    )
-    pilot_no_solvent = job.fileStore.writeGlobalFile(
-        make_mdin_file(
-            mdin_global, "pilot_no_solv_mdin", turn_off_solvent=True, nstlim=nstlim, ntwx=ntwx,
-            nfe_cv_file=nfe_cv_file, nfe_output_freq=nfe_output_freq,
-        )
-    )
-    # nstlim/ntwx are returned too so the GB-dielectric band can shorten its per-epsilon mdins
-    # (generate_extdiel_mdin) to the same pilot length when an ALS insertion adds a new dielectric window.
-    return pilot_default, pilot_no_solvent, nstlim, ntwx
 
 
 def make_mdin_file(
@@ -301,7 +239,7 @@ def make_mdin_file(
         re-scoring analysis (gb_ddG_bar.py) to score a trajectory under an explicit igb.
     nstlim: int, optional
         If provided, override the MD step count (``nstlim``) in the mdin. No-op when ``None`` so the
-        production mdins stay byte-identical; set only for the short ALS pilot.
+        production mdins stay byte-identical; set for the long restraint window.
     ntwx: int, optional
         If provided, override the trajectory write interval. No-op when ``None``.
     ntpr: int, optional
@@ -355,9 +293,8 @@ def make_mdin_file(
             line = re.sub(r"ntx\s*=\s*\d+", ntx, line)
         if not post_process:
             line = re.sub(r"extdiel\s*=\s*\$extdiel", extdiel, line)
-        # ALS short-pilot: override MD length (nstlim) and trajectory write interval (ntwx). Both are
-        # no-ops when None, so the four production intermediate mdins remain byte-identical (flag-off
-        # regression). ntwx is set so the 50 ps pilot writes ~pilot_frames frames for MBAR.
+        # Override MD length (nstlim) and trajectory write interval (ntwx). Both are no-ops when
+        # None, so the four production intermediate mdins remain byte-identical.
         if nstlim is not None:
             line = re.sub(r"nstlim\s*=\s*\d+", f"nstlim = {nstlim}", line)
         if ntwx is not None:

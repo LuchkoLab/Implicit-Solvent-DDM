@@ -45,11 +45,6 @@ def test_legs_outside_long_window_legs_are_untouched(leg):
     assert _setup(system_type=leg)._restraint_window_mdin(FLOOR) == "DEFAULT"
 
 
-def test_als_pilot_never_gets_the_long_mdin():
-    # the pilot swaps default_mdin for the 50 ps pilot mdin; it must stay uniformly short
-    assert _setup(als_pilot=True)._restraint_window_mdin(FLOOR) == "DEFAULT"
-
-
 def test_missing_key_falls_back_to_default():
     # a jobstore/config predating the feature must resume without KeyError
     setup = _setup()

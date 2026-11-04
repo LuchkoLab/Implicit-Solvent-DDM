@@ -41,7 +41,4 @@ workflow:
     restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
     charges_lambda_window: [0.0, 0.5, 1.0]
     temperature: 298  # match the MD (mdin temp0=298) and the 298K endstate trajectories
-    candidate_pool_step: 0.25
-    max_adaptive_iterations: 10
-    batch_insertion: True
-    prune_after_convergence: True
+    als_max_rounds: 2

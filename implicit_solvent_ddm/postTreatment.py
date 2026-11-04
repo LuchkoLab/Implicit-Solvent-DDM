@@ -24,6 +24,24 @@ BOLTZMAN = 1.380658e-23
 JOULES_PER_KCAL = 4184
 
 
+def cache_output_path(working_path, complex_filename) -> str:
+    """Directory a run's results go to: ``<working_path>/.cache/<complex name>``.
+
+    Parameters
+    ----------
+    working_path : str
+        ``system_settings.cache_directory_output``.
+    complex_filename : str
+        Complex topology path; its basename without extensions names the directory.
+
+    Returns
+    -------
+    str
+    """
+    name = re.sub(r"\..*", "", os.path.basename(str(complex_filename)))
+    return os.path.join(f"{working_path}", f".cache/{name}")
+
+
 class ConsolidateData(Job):
     """Consolidate all completed simulation data into .h5 files and export to .cache/ directory
 
@@ -380,6 +398,8 @@ class ConsolidateData(Job):
 
         # export MBAR overlap matrices for all three legs (raw .h5 always; PDFs when requested)
         self._export_overlap_matrices()
+
+        return deltaG_df
 
 
 def create_mdout_dataframe(

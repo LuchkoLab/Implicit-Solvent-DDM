@@ -620,6 +620,20 @@ def extend_schedule(config, insertions: dict):
     if insertions.get("dielectric"):
         args.gb_extdiel_windows = union(old.gb_extdiel_windows, insertions["dielectric"])
 
+    block_size = getattr(old, "post_analysis_block_size", None)
+    if block_size and getattr(old, "block_anchor_states", None) is None:
+        # Fix the block ends at the ones the scored data were cut at, so each new state joins the
+        # block spanning its neighbours instead of shifting every later block (block_mbar.leg_blocks).
+        from implicit_solvent_ddm import block_mbar
+        from implicit_solvent_ddm.matrix_order import cycle_steps_from_config
+
+        cycle = cycle_steps_from_config(config)
+        args.block_anchor_states = {
+            leg: block_mbar.anchor_states(order, int(block_size), block_mbar.band_boundaries(order))
+            for leg, order in (("complex", cycle.complex_order), ("ligand", cycle.ligand_order),
+                               ("receptor", cycle.receptor_order))
+        }
+
     new = copy.copy(config)
     new.intermediate_args = args
     new.inputs = dict(config.inputs)

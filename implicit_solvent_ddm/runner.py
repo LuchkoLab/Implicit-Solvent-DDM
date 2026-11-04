@@ -36,7 +36,7 @@ class IntermidateRunner(Job):
     - Launching intermediate MD simulations (if not already run),
     - Collecting and caching output data (parsed from mdout),
     - Running post-analysis jobs (e.g., energy decomposition),
-    - Supporting adaptive workflows and optional "post-only" modes.
+    - Optional "post-only" mode (score trajectories already on disk).
 
     Parameters
     ----------
@@ -57,8 +57,6 @@ class IntermidateRunner(Job):
         If True, skips MD simulations and runs post-analysis only.
     config : Config
         Global configuration object for the workflow.
-    adaptive : bool, optional
-        Enables adaptive lambda window or restraint scheduling if True.
     loaded_dataframe : list, optional
         Tracks previously parsed output directories to avoid reprocessing.
     post_output : list or list of pd.DataFrame, optional
@@ -117,7 +115,6 @@ class IntermidateRunner(Job):
         post_only: bool,
         config: Config,
         post_process_saltfree_mdin: Optional[FileID] = None,
-        adaptive: bool = False,
         loaded_dataframe: Optional[list] = None,
         post_output: Optional[Union[list, list[pd.DataFrame]]] = None,
         traj_map: Optional[dict] = None,
@@ -149,25 +146,21 @@ class IntermidateRunner(Job):
         self.saltfree_mdin = post_process_saltfree_mdin
         self.post_only = post_only
         self.config = config
-        self.adaptive = adaptive
         # Mutable-default fix: fresh per-instance lists, so production runners don't alias one
-        # shared module-level list. Callers that WANT to share by reference (e.g. new_runner
-        # threading post_output across pilot iterations) pass explicit non-None lists.
+        # shared module-level list. Callers that want to share by reference pass explicit lists.
         self.post_output = post_output if post_output is not None else []
         self.ligand_output = []
         self.receptor_output = []
         self.complex_output = []
         self._loaded_dataframe = loaded_dataframe if loaded_dataframe is not None else []
-        # {output_dir -> trajectory FileID promise}. Shared by reference across pilot
-        # passes (threaded via new_runner) exactly like post_output / _loaded_dataframe, so
-        # each post pass can set inptraj straight from the jobStore and never read the
-        # network output_dir. Accumulates every window's trajectory across pilot iterations.
+        # {output_dir -> trajectory FileID promise}, so a post pass can set inptraj straight from
+        # the jobStore and never read the network output_dir.
         self.traj_map = traj_map if traj_map is not None else {}
         # Per-window post-analysis scoping (merged MD->post pipeline). When set, the post_only pass
         # scores ONLY the completed window(s) whose output_dir is in this set -- the trajectory-row
         # for that window -- leaving the inner Hamiltonian loop (every state's re-score of that
-        # trajectory) intact. None (default) preserves the legacy whole-list behaviour, so the ALS
-        # pilot / new_runner paths are byte-identical. Robust to on-disk state: unlike a lone
+        # trajectory) intact. None (default) preserves the legacy whole-list behaviour. Robust to
+        # on-disk state: unlike a lone
         # traj_map entry, this filter holds even on warm/export-on runs where other windows' mdouts
         # exist on disk.
         self.restrict_completed = restrict_completed
@@ -208,7 +201,9 @@ class IntermidateRunner(Job):
         }[system_type]
 
         bounds = block_mbar.band_boundaries(order)
-        pairs = block_mbar.required_pairs(order, block_size, bounds)
+        # ALS fixes the block ends at its first insertion so new states join an existing block
+        anchors = (getattr(self.config.intermediate_args, "block_anchor_states", None) or {}).get(system_type)
+        pairs = block_mbar.required_pairs(order, block_size, bounds, anchors)
         fileStore.logToMaster(
             f"[block_mbar] {system_type}: block_size={block_size}, {len(order)} states -> "
             f"{len(pairs)} evaluations instead of {len(order) ** 2} "
@@ -328,7 +323,7 @@ class IntermidateRunner(Job):
                 # No-network hand-off: if this window's trajectory was produced with export
                 # off, its FileID is in the shared traj_map -> set inptraj straight from the
                 # jobStore so the guard below is satisfied and _get_md_traj/os.listdir (the
-                # network read) is never reached. Covers production Phase 6 and every pilot pass.
+                # network read) is never reached.
                 if simulation.inptraj is None and simulation.output_dir in self.traj_map:
                     simulation.inptraj = self.traj_map[simulation.output_dir]
                 # Post-analysis logic
@@ -379,7 +374,7 @@ class IntermidateRunner(Job):
         # so it re-scores straight from the jobStore -- the Toil-promise hand-off used
         # when export is off (no network trajectory copy). Carried on `self` and read
         # off the resolved runner exactly like self.post_output reaches MBAR. MERGE (do not
-        # reset) so it accumulates every window's trajectory across pilot passes.
+        # reset) so it accumulates every window's trajectory.
         for sim in md_jobs:
             sim.export_network = _export
             self.addChild(sim)
@@ -561,9 +556,8 @@ class IntermidateRunner(Job):
             # In-memory dedup (authoritative): skip any cell whose output_dir was already
             # scored/scheduled this run. Dedup previously hung off has_post_analysis_data (the
             # NETWORK parquet check); with export_intermediate_files=False that parquet never
-            # exists, so without this guard the same cell (repeated labels, or the same cell
-            # re-encountered across pilot passes that share _loaded_dataframe by reference) would
-            # be recomputed and re-appended -> duplicate MBAR rows ("Index contains duplicates").
+            # exists, so without this guard the same cell (repeated labels) would be recomputed
+            # and re-appended -> duplicate MBAR rows ("Index contains duplicates").
             if post_process_job.output_dir in self._loaded_dataframe:
                 continue
 
@@ -649,249 +643,6 @@ class IntermidateRunner(Job):
         except (ValueError, OSError):
             return False
     
-    def _add_complex_simulation(
-        self,
-        conformational,
-        orientational,
-        mdin,
-        restraint_file,
-        cv_file=None,
-        charge=1.0,
-        charge_parm=None,
-        gb_extdiel=None,
-    ):
-        con_force = float(round(conformational, 3))
-        orient_force = float(round(orientational, 3))
-
-        dirs_args = (
-            {
-                "topology": self.config.endstate_files.complex_parameter_filename,
-                "state_label": "lambda_window",
-                "extdiel": 78.5,
-                "charge": charge,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "conformational_restraint": con_force,
-                "orientational_restraints": orient_force,
-                "filename": f"state_8_{con_force}_{orient_force}_prod",
-                "runtype": f"Running restraint window. Conformational restraint: {con_force} and orientational restraint: {orient_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
-        )
-
-        parm_file = self.config.endstate_files.complex_parameter_filename
-
-        # scaling GB external dielectric
-        if gb_extdiel is not None:
-            # prmtop was create with charge = 0
-            parm_file = charge_parm.rv()  # type: ignore
-            dirs_args[0].update({"state_label": "gb_dielectric"})
-            dirs_args[0].update({"extdiel": gb_extdiel})
-            dirs_args[0].update({"charge": charge})
-        # scaling ligand charge windows
-        elif charge_parm is not None:
-            parm_file = charge_parm.rv()
-            dirs_args[0].update({"state_label": "electrostatics"})  # type: ignore
-
-        # scaling restraint windows
-        else:
-            restraint_file = restraint_file.rv()
-        if cv_file is not None and hasattr(cv_file, "rv"):
-            cv_file = cv_file.rv()
-
-        # honour the CUDA flag like the static path; host-guest (cb7) runs with CUDA falsy
-        engine = dict(
-            executable=self.config.system_settings.executable,
-            num_cores=self.config.num_cores_per_system.complex_ncores,
-            CUDA=self.config.system_settings.CUDA,
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
-        )
-        if gb_extdiel is not None:
-            engine.update(self.config.intermediate_args.gb_dielectric_engine())
-        new_job = Simulation(
-            **engine,
-            mpi_command=self.config.system_settings.mpi_command,
-            prmtop=parm_file,
-            incrd=self.config.inputs["endstate_complex_lastframe"],
-            input_file=mdin,
-            restraint_file=restraint_file,
-            cv_file=cv_file,
-            working_directory=self.config.system_settings.working_directory,
-            system_type="complex",
-            directory_args=dirs_args[0],
-            dirstruct="dirstruct_halo",
-        )
-
-        self.simulations.append(new_job)
-
-    def _add_ligand_simulation(
-        self,
-        conformational,
-        mdin,
-        restraint_file,
-        cv_file=None,
-        charge=1.0,
-        charge_parm=None,
-    ):
-        con_force = float(round(conformational, 3))
-
-        dirs_args = (
-            {
-                "topology": self.config.endstate_files.ligand_parameter_filename,
-                "state_label": "lambda_window",
-                "conformational_restraint": con_force,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "extdiel": 78.5,
-                "charge": charge,
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "filename": f"state_2_{con_force}_prod",
-                "runtype": f"Running restraint window, Conformational restraint: {con_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
-        )
-
-        parm_file = self.config.endstate_files.ligand_parameter_filename
-        if charge_parm is not None:
-            parm_file = charge_parm.rv()
-            dirs_args[0].update({"state_label": "electrostatics"})  # type: ignore
-            dirs_args[0].update({"filename": "state_4_prod"})
-            if not self.config.intermediate_args.decouple_in_solvent:
-                dirs_args[0].update({"igb": "igb_6"})
-                dirs_args[0].update({"extdiel": 0.0})
-            dirs_args[0].update(
-                {
-                    "runtype": f"Scailing ligand charges: {charge}",
-                }
-            )
-        else:
-            restraint_file = restraint_file.rv()
-        if cv_file is not None and hasattr(cv_file, "rv"):
-            cv_file = cv_file.rv()
-        new_job = Simulation(
-            executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
-            num_cores=self.config.num_cores_per_system.ligand_ncores,
-            CUDA=self.config.system_settings.CUDA,
-            prmtop=parm_file,
-            incrd=self.config.inputs["ligand_endstate_frame"],
-            input_file=mdin,
-            restraint_file=restraint_file,
-            cv_file=cv_file,
-            working_directory=self.config.system_settings.working_directory,
-            system_type="ligand",
-            directory_args=dirs_args[0],
-            dirstruct="dirstruct_apo",
-        )
-
-        self.simulations.append(new_job)
-
-    def _add_receptor_simulation(
-        self,
-        conformational,
-        mdin,
-        restraint_file,
-        cv_file=None,
-        gb_extdiel=None,
-    ):
-        # ALS only inserts INTERIOR windows, never the ladder floor, so the long-window dispatch in
-        # SimulationSetup._restraint_window_mdin does not apply here.
-        con_force = float(round(conformational, 3))
-
-        dirs_args = {
-            "topology": self.config.endstate_files.receptor_parameter_filename,
-            "state_label": "lambda_window",
-            "extdiel": 78.5,
-            "charge": 1.0,
-            "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-            "igb_value": self.config.intermediate_args.igb_solvent,
-            "conformational_restraint": con_force,
-            "filename": f"state_2_{con_force}_prod",
-            "runtype": f"Running restraint window, Conformational restraint: {con_force}",
-            "topdir": self.config.system_settings.top_directory_path,
-        }
-
-        # GB-dielectric window: the apo host carries its FULL charge (q=1; no ligand to decharge), so the
-        # default receptor topology is reused — only the external dielectric (and state label) change. The
-        # restraint_file is passed as a RESOLVED max-restraint file (not a promise), mirroring the complex
-        # gb_extdiel branch in _add_complex_simulation.
-        if gb_extdiel is not None:
-            dirs_args.update(
-                {
-                    "state_label": "gb_dielectric",
-                    "extdiel": gb_extdiel,
-                    "charge": 1.0,
-                    "filename": f"state_8_{gb_extdiel}_prod",
-                    "runtype": f"Running receptor GB window. extdiel: {gb_extdiel}",
-                }
-            )
-        else:
-            restraint_file = restraint_file.rv()
-        if cv_file is not None and hasattr(cv_file, "rv"):
-            cv_file = cv_file.rv()
-
-        # receptor requests a GPU when CUDA is set so Toil pins it to its own device
-        engine = dict(
-            executable=self.config.system_settings.executable,
-            num_cores=self.config.num_cores_per_system.receptor_ncores,
-            CUDA=self.config.system_settings.CUDA,
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
-        )
-        if gb_extdiel is not None:
-            engine.update(self.config.intermediate_args.gb_dielectric_engine())
-        new_job = Simulation(
-            **engine,
-            mpi_command=self.config.system_settings.mpi_command,
-            prmtop=self.config.endstate_files.receptor_parameter_filename,
-            incrd=self.config.inputs["receptor_endstate_frame"],
-            input_file=mdin,
-            restraint_file=restraint_file,
-            cv_file=cv_file,
-            working_directory=self.config.system_settings.working_directory,
-            system_type="receptor",
-            directory_args=dirs_args,
-            dirstruct="dirstruct_apo",
-        )
-
-        self.simulations.append(new_job)
-
-    @classmethod
-    def new_runner(
-        cls: Type["IntermidateRunner"],
-        config: Config,
-        obj: dict,
-        post_only: bool = True,
-        simulations: Optional[list] = None,
-    ):
-        """Build a runner that shares ``post_output``/``_loaded_dataframe`` by reference with ``obj``.
-
-        ``post_only`` selects the MD pass (``False``) or the post-analysis pass (``True``) of the ALS
-        pilot's two-phase sub-runner; ``simulations`` overrides the simulation list (e.g. to run ONLY
-        the newly-inserted pilot windows) while still accumulating into the shared ``post_output``.
-        Defaults preserve the original behaviour (post-only over ``obj['simulations']``).
-        """
-        return cls(
-            simulations=simulations if simulations is not None else obj["simulations"],
-            restraints=obj["restraints"],
-            config=config,
-            post_process_distruct=obj["post_process_distruct"],
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            post_process_saltfree_mdin=config.inputs.get("post_saltfree_mdin"),
-            adaptive=True,
-            post_only=post_only,
-            post_output=obj["post_output"],
-            loaded_dataframe=obj["_loaded_dataframe"],
-            traj_map=obj["traj_map"],
-        )
-
     @staticmethod
     def _get_md_traj(simulation: Simulation, fileStore):
         """Return an absolute path to completed AMBER (.nc) trajectory filename.
@@ -960,25 +711,3 @@ class IntermidateRunner(Job):
             return "post_process_apo"
 
         return "post_process_halo"
-
-
-def run_post_pass_with_traj(job, runner, config, md_runner, simulations=None):
-    """Follow-on of an ALS-pilot MD pass: run its post-analysis pass with NO network read.
-
-    The MD pass (``md_runner``) and the post pass are different Toil jobs, so the freshly-run
-    window's trajectory FileID(s) live in ``md_runner.traj_map`` and are NOT in the pre-MD
-    ``runner``'s dict. Fold them into ``runner``'s shared, accumulated ``traj_map`` (which
-    already carries every EARLIER pass's windows), then build the ``post_only=True`` runner
-    from ``runner.__dict__`` so it shares that merged map by reference. ``run(post_only=True)``
-    sets ``inptraj`` from ``traj_map`` (jobStore) instead of listing the network ``output_dir``.
-    Returns the post runner (rv) carrying ``post_output`` + the accumulated ``traj_map`` for the
-    next pass. Mirrors the production Phase 5->6 seam (workflow_phases.run_post_analysis_...).
-    """
-    runner.traj_map.update(md_runner.traj_map)
-    post_runner = runner.new_runner(
-        config, runner.__dict__, post_only=True, simulations=simulations
-    )
-    job.addChild(post_runner)
-    return post_runner.rv()
-
-    # /nas0/ayoub/sampl9_runs/sampl9_extend_windows_diel/WP6_G2_Hmass/lambda_window/1.0/78.5/-0.2857142857142864/3.7142857142857135/WP6_G2_Hmass_state_8_0.8203353560076375_13.1253656961222_prod_traj.nc

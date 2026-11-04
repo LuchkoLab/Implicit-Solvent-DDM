@@ -6,16 +6,20 @@ providing a clean separation of concerns and improved maintainability.
 """
 
 import copy
+import glob
+import json
 import logging
+import os
+import shutil
 from dataclasses import dataclass, field
 import numpy as np
+import pandas as pd
 from toil.job import JobFunctionWrappingJob
 
 from implicit_solvent_ddm.config import Config
 from implicit_solvent_ddm.mdin import (
     get_mdins,
     generate_extdiel_mdin,
-    get_pilot_mdin,
     get_long_window_mdin,
 )
 from implicit_solvent_ddm.restraints import (
@@ -26,20 +30,18 @@ from implicit_solvent_ddm.restraints import (
 )
 from implicit_solvent_ddm.alchemical import alter_topology, split_complex_system
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
-from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
+from implicit_solvent_ddm.runner import IntermidateRunner
+from implicit_solvent_ddm import als_refine
 from implicit_solvent_ddm.adaptive_restraints import (
-    interpolate_partner,
     run_exponential_averaging,
     run_compute_mbar,
-    adaptive_lambda_windows,
-    pilot_dielectric_scheduler,
 )
 from implicit_solvent_ddm.run_endstate import (
     run_remd,
     run_basic_md,
     user_defined_endstate,
 )
-from implicit_solvent_ddm.postTreatment import ConsolidateData
+from implicit_solvent_ddm.postTreatment import ConsolidateData, cache_output_path
 
 logger = logging.getLogger(__name__)
 
@@ -113,31 +115,6 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
     # Setup flat bottom restraint potentials
     flat_bottom_template = mdins.addChild(FlatBottom(config=config))
     config.inputs["flat_bottom_restraint"] = flat_bottom_template.rv(0)
-
-    # ALS pilot: emit a short-MD intermediate mdin used ONLY by the adaptive pilot (Phase 4.5). Behind
-    # the adaptive_lambda flag so the static path is byte-identical (no extra job, no inputs key).
-    # Always 50 ps by default (pilot_ps), with the step count derived from the user mdin's timestep and
-    # ntwx set for ~pilot_frames frames (get_pilot_mdin). pilot_nstlim is an explicit step override for
-    # tiny test systems where 50 ps is absurd.
-    if config.workflow.adaptive_lambda:
-        pilot_mdin = mdins.addChildJobFn(
-            get_pilot_mdin,
-            config.intermediate_args.mdin_intermediate_file,
-            config.intermediate_args.pilot_ps,
-            config.intermediate_args.pilot_frames,
-            config.intermediate_args.pilot_nstlim,
-            nfe_cv_file=nfe_cv_file,
-            nfe_output_freq=config.intermediate_args.rmsd_output_freq,
-        )
-        # rv(0) = default (solvated) pilot mdin; rv(1) = no-solvent (igb=6 gas-phase) pilot mdin. Both
-        # are swapped into the pilot config so EVERY pilot MD state runs at 50 ps (not just the
-        # default-mdin states).
-        config.inputs["pilot_mdin"] = pilot_mdin.rv(0)
-        config.inputs["pilot_no_solvent_mdin"] = pilot_mdin.rv(1)
-        # Pilot MD length (steps) + trajectory interval, reused by the GB-dielectric band to shorten the
-        # per-epsilon extdiel mdins it generates for ALS-inserted windows.
-        config.inputs["pilot_nstlim_steps"] = pilot_mdin.rv(2)
-        config.inputs["pilot_ntwx"] = pilot_mdin.rv(3)
 
     return config
 
@@ -493,12 +470,6 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
             set_charge=0.0,
         ).rv()
         
-        # Pilot setups shorten the per-epsilon extdiel mdins to the pilot MD length; production keeps full
-        # length (nstlim/ntwx = None -> no-op). The als_pilot marker is set only on the pilot deepcopy in
-        # adaptive_restraint_pilot, so the static/production path is byte-identical.
-        gb_nstlim = config.inputs.get("pilot_nstlim_steps") if config.inputs.get("als_pilot") else None
-        gb_ntwx = config.inputs.get("pilot_ntwx") if config.inputs.get("als_pilot") else None
-
         # Interpolate GB external dielectric constant
         for dielectric in config.intermediate_args.gb_extdiel_windows:
             complex_simulations.setup_gb_external_dielectric(
@@ -509,8 +480,6 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     generate_extdiel_mdin,
                     user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
                     gb_extdiel=dielectric,
-                    nstlim=gb_nstlim,
-                    ntwx=gb_ntwx,
                     nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
                     nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
@@ -529,8 +498,6 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     generate_extdiel_mdin,
                     user_mdin_ID=config.intermediate_args.mdin_intermediate_file,
                     gb_extdiel=dielectric,
-                    nstlim=gb_nstlim,
-                    ntwx=gb_ntwx,
                     nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
                     nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
@@ -821,8 +788,10 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
         
     Returns
     -------
-    tuple[JobFunctionWrappingJob, JobFunctionWrappingJob, JobFunctionWrappingJob]
-        MBAR analysis jobs for complex, ligand, and receptor systems and flat bottom energy post-analysis results
+    dict or Config
+        ``{"consolidate": <one-row deltaG DataFrame or None>, "pairs": {leg: DataFrame} or None}``,
+        as promises: the binding free energy ConsolidateData wrote, and (with ``adaptive_lambda``) each
+        leg's adjacent two-state overlaps for post-production ALS. The config when post-analysis is off.
     """
     # Run MBAR analysis for each system
     # intermediate_jobs returns: [complex_post_analysis, receptor_post_analysis, ligand_post_analysis, flat_bottom_exp, restraints]
@@ -858,7 +827,21 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
             accelerators=config.system_settings.mbar_accelerators,  # 0 = CPU (pymbar); keeps the analysis tail GPU-free so GPUs release during post-processing. Set system_settings.mbar_accelerators=1 when MBAR is JAX/GPU-accelerated.
         )
         
+        # Post-production ALS reads each leg's adjacent two-state overlaps; one job per leg, after
+        # its MBAR, re-subsamples the leg's energy matrix and solves the pairs.
+        pairs = None
+        if config.workflow.adaptive_lambda:
+            pairs = {
+                leg: mbar_job.addFollowOnJobFn(leg_pair_overlaps, mbar_job.rv(), leg).rv()
+                for leg, mbar_job in (
+                    ("complex", complex_mbar_job),
+                    ("ligand", ligand_mbar_job),
+                    ("receptor", receptor_mbar_job),
+                )
+            }
+
         # Consolidate output data if enabled
+        consolidation_job = None
         if config.workflow.consolidate_output:
             consolidation_job = job.addFollowOn(
                 ConsolidateData(
@@ -886,276 +869,334 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                 message="✓ Phase 7 Complete: Free energy computation and consolidation completed"
             )
         
-        return consolidation_job.rv()
+        return {
+            "consolidate": consolidation_job.rv() if consolidation_job is not None else None,
+            "pairs": pairs,
+        }
 
     return config
 
 
-def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Config):
-    """Phase 4.5: Adaptive Lambda Scheduler pilot (OBSERVATIONAL, flag-gated).
-
-    Runs a SHORT-MD copy of the intermediate cycle and drives the R-ADD restraint scheduler
-    (``adaptive_lambda_windows``) to convergence on the COMPLEX leg, then LOGS the converged restraint
-    schedule. **It does not feed production**: the production Phases 5/6/7 still read the Phase-4 seed
-    setups, so the validated free-energy path is byte-for-byte unchanged. The converged config is
-    returned for a future Step 5b (rebuild + re-thread) but is ignored by the DAG in 5a.
-
-    The pilot is isolated from production two ways, both set on a deepcopy ``pilot_config`` (the
-    production ``config`` is never mutated):
-      * **short MD** — ``inputs["default_mdin"]`` is swapped to the short ``inputs["pilot_mdin"]`` so
-        every pilot window (including ALS-inserted ones) runs at ``pilot_nstlim``;
-      * **separate output tree** — ``system_settings.output_directory_name`` gets a ``_pilot`` suffix so
-        the pilot's short trajectories never land in the production dirs (else production
-        ``_check_mdout`` would skip MD and compute ΔG on 50-ps data).
-
-    Only the complex leg is run: ``adaptive_lambda_windows("complex", ...)`` needs only the complex
-    ``post_output``, and the complex ``SimulationSetup`` already carries every ``complex_order`` state
-    (anchors, charges, restraint windows, endstate) so the pilot MBAR has all columns.
+# --------------------------------------------------------------------------------------------------
+# Phases 4 -> 7, and post-production adaptive lambda scheduling (ALS)
+# --------------------------------------------------------------------------------------------------
+def chain_phases_4_to_7(decomposition, endstate, config, flags: Config, audit: bool = False):
+    """Wire Phase 4 -> Phases 5/6 -> aggregation -> Phase 7 behind a Phase-3 job.
 
     Parameters
     ----------
-    decomposition_jobs, endstate_jobs : resolved Phase-3 / Phase-2 outputs (restraint templates and
-        endstate trajectories) — reused read-only, exactly as Phase 4 consumes them.
-    config : Config
-        The Phase-1 config (carries ``inputs["pilot_mdin"]`` when the flag is on).
+    decomposition : Job
+        Phase-3 job (``decompose_system_and_generate_restraints``).
+    endstate : Promise or tuple
+        Phase-2 endstate results.
+    config : Config or Promise
+        Config handed to Phase 4.
+    flags : Config
+        A resolved config whose workflow switches are read while wiring.
+    audit : bool, optional
+        Put ``audit_existing_windows`` between Phase 4 and the MD, so windows already on disk are
+        checked against the restraints and topologies this pass regenerated.
+
+    Returns
+    -------
+    tuple
+        ``(phase4, phases56, phase7)``; ``phase7`` is None under ``md_only``, which stops after MD.
     """
-    if config.inputs.get("pilot_mdin") is None:
-        # Misconfigured (flag on but no pilot_nstlim): fail loud rather than silently piloting at
-        # production length, which would defeat the whole point of a cheap pilot.
-        raise ValueError(
-            "adaptive_restraint_pilot: config.inputs['pilot_mdin'] is unset. Set "
-            "intermediate_args.pilot_nstlim with workflow.adaptive_lambda=True."
+    decomposition.addFollowOnJobFn(
+        initilized_jobs,
+        message="✓ Phase 3 Complete: System decomposition and restraint generation finished",
+    )
+    phase4 = decomposition.addFollowOnJobFn(
+        setup_intermediate_simulations, decomposition.rv(), endstate, config
+    )
+    phase4.addFollowOnJobFn(
+        initilized_jobs, message="✓ Phase 4 Complete: Intermidate simulations setup finished"
+    )
+    gate = phase4
+    if audit:
+        gate = phase4.addFollowOnJobFn(
+            audit_existing_windows, phase4.rv(1), phase4.rv(2), phase4.rv(3)
         )
 
-    pilot_config = copy.deepcopy(config)
-    # Short MD for the whole pilot cycle. The cycle uses TWO MD mdins: default (solvated) for restraint
-    # windows + solvated charge states, and no_solvent (igb=6) for the gas-phase no_interactions /
-    # interactions / igb=6 charge states. Swap BOTH to their 50 ps pilot versions — swapping only
-    # default_mdin leaves the gas-phase states running at full production length.
-    pilot_config.inputs["default_mdin"] = pilot_config.inputs["pilot_mdin"]
-    pilot_config.inputs["no_solvent_mdin"] = pilot_config.inputs["pilot_no_solvent_mdin"]
-    # A pilot must be uniformly short; the als_pilot marker below already covers this.
-    pilot_config.inputs.pop("long_window_mdin", None)
-    # ALS needs only adjacent overlaps, so score the pilot as a BAR chain; pruning reads non-adjacent
-    # overlaps and needs every cell. Production keeps its own block size (merge_pilot_windows copies
-    # only the window lists).
-    pilot_config.intermediate_args.post_analysis_block_size = (
-        None if pilot_config.intermediate_args.prune_after_convergence else 2
+    # Phases 5 + 6 (merged): every MD window is submitted first and each window's post-analysis row
+    # is coupled to its own MD job, so the N^2 CPU post-analysis backfills cores as trajectories land.
+    phases56 = gate.addFollowOnJobFn(
+        run_intermediate_and_post,
+        phase4.rv(0),  # config
+        phase4.rv(1),  # complex simulations
+        phase4.rv(2),  # receptor simulations
+        phase4.rv(3),  # ligand simulations
+        phase4.rv(4),  # flat bottom simulations
     )
-    # The ALS restraint overlap is a banded MBAR over the restraint windows + their max-restraint
-    # anchor only (adaptive_lambda_windows -> compute_mbar(restraint_band=True)); the endstate is not in
-    # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate
-    # re-scoring from the pilot and guarantees no endstate column/rows leak into the pilot data.
-    pilot_config.workflow.end_state_postprocess = False
-    # Mark this as the pilot setup so the GB-dielectric setup loop shortens its per-epsilon extdiel mdins
-    # to the pilot MD length (setup_intermediate_simulations checks inputs["als_pilot"]); production is
-    # unaffected since this marker lives only on the pilot deepcopy.
-    pilot_config.inputs["als_pilot"] = True
-    # Isolate the pilot output tree (top_directory_path = working_directory/output_directory_name).
-    pilot_config.system_settings.output_directory_name = (
-        pilot_config.system_settings.output_directory_name + "_pilot"
+    phases56.addFollowOnJobFn(
+        initilized_jobs,
+        message="✓ Phases 5-6 Complete: Intermediate MD + energy post-processing finished",
     )
+    if flags.workflow.md_only:
+        # No post rows were created, so there is nothing to aggregate or solve.
+        phases56.addFollowOnJobFn(
+            initilized_jobs,
+            message="✓ md_only: MD complete. Re-run with md_only off and the same "
+                    "output_directory_name to score the trajectories.",
+        )
+        return phase4, phases56, None
 
+    # A follow-on of the dispatcher waits for its whole MD + post subtree, so every row is resolved.
+    aggregate = phases56.addFollowOnJobFn(
+        _aggregate_post_output, phases56.rv(0), phases56.rv(1), phases56.rv(2), phases56.rv(3)
+    )
+    aggregate.addFollowOnJobFn(
+        initilized_jobs, message="--> Moving to phase 7: Free energy computation and consolidation"
+    )
+    phase7 = aggregate.addFollowOnJobFn(
+        compute_free_energy_and_consolidate,
+        aggregate.rv(0),  # complex post-output bundle
+        aggregate.rv(1),  # receptor post-output bundle
+        aggregate.rv(2),  # ligand post-output bundle
+        aggregate.rv(3),  # flat bottom post-output bundle
+        phase4.rv(0),  # config
+    )
+    phase7.addFollowOnJobFn(
+        initilized_jobs, message="✓ Phase 7 Complete: Free energy computation and consolidation finished"
+    )
+    return phase4, phases56, phase7
+
+
+def _restraint_blocks(text: str) -> list:
+    """The ``&rst ... /`` blocks of a restraint file, whitespace-normalised and sorted.
+
+    The conformational network comes from a set of atom pairs, so two generations of the same
+    network can list identical blocks in a different order.
+    """
+    blocks = [" ".join(block.split()) for block in text.split("&rst")[1:]]
+    return sorted(blocks)
+
+
+def _topology_body(path: str) -> list:
+    """Topology lines without the ``%VERSION`` stamp parmed writes with the current time."""
+    with open(path) as fh:
+        return [line for line in fh if not line.startswith("%VERSION")]
+
+
+def audit_existing_windows(job, *setups):
+    """Check every window already on disk against the inputs this pass regenerated.
+
+    A warm resume reuses a window's trajectory and its scored cells, and scores new cells for it
+    under the regenerated Hamiltonians. That is only consistent if the restraint file and topology
+    the window originally ran with are the ones this pass rebuilt. Each exported window directory
+    keeps a copy of both, so they are compared before any new MD starts.
+
+    Parameters
+    ----------
+    job : JobFunctionWrappingJob
+    *setups : SimulationSetup
+        Phase-4 setups (complex, receptor, ligand).
+
+    Raises
+    ------
+    RuntimeError
+        If any existing window's restraint file or topology differs from the regenerated one.
+    """
+    checked, differ = 0, []
+    for setup in setups:
+        for sim in setup.simulations:
+            if sim.inptraj is not None or sim.directory_args.get("state_label") == "no_flat_bottom":
+                continue
+            if not IntermidateRunner._check_mdout(sim):
+                continue
+            checked += 1
+            problems = []
+            on_disk = os.path.join(sim.output_dir, "restraint.RST")
+            restraint = sim.restraint_file
+            if isinstance(restraint, RestraintMaker):
+                restraint = restraint.restraints.get(sim.restraint_key)
+            if restraint is not None and os.path.exists(on_disk):
+                with open(job.fileStore.readGlobalFile(restraint)) as fh:
+                    new = fh.read()
+                with open(on_disk) as fh:
+                    old = fh.read()
+                if new != old and _restraint_blocks(new) != _restraint_blocks(old):
+                    problems.append("restraint file")
+            parms = glob.glob(os.path.join(sim.output_dir, "*.parm7"))
+            if sim.prmtop is not None and len(parms) == 1:
+                if _topology_body(job.fileStore.readGlobalFile(sim.prmtop)) != _topology_body(parms[0]):
+                    problems.append("topology")
+            if problems:
+                differ.append(f"{sim.output_dir}: {', '.join(problems)}")
     job.fileStore.logToMaster(
-        f"[ALS][pilot] Phase 4.5 starting. pilot output dir: "
-        f"{pilot_config.system_settings.top_directory_path}"
+        f"[ALS] audit: {checked} existing windows checked against the regenerated inputs, "
+        f"{len(differ)} differ"
     )
-
-    # Reuse Phase 4 verbatim on the pilot config -> pilot SimulationSetup objects (short mdin, isolated
-    # dir). rv(0) carries the binding modes + pilot mdin + seed _list; rv(1) is the complex setup.
-    setup_pilot = job.addChildJobFn(
-        setup_intermediate_simulations,
-        decomposition_jobs,
-        endstate_jobs,
-        pilot_config,
-    )
-
-    return setup_pilot.addFollowOnJobFn(
-        _pilot_md_post_drive,
-        setup_pilot.rv(0),  # pilot config (binding modes + pilot mdin + seed _list)
-        setup_pilot.rv(1),  # complex SimulationSetup
-        setup_pilot.rv(2),  # receptor SimulationSetup (for the matched dielectric band)
-    ).rv()
-
-
-def _pilot_runner(simulations, pilot_config, distruct, post_only):
-    """Build one pilot IntermidateRunner (short MD or post-analysis pass)."""
-    return IntermidateRunner(
-        simulations,
-        pilot_config.inputs["restraints"],
-        post_process_no_solv_mdin=pilot_config.inputs["post_nosolv_mdin"],
-        post_process_mdin=pilot_config.inputs["post_mdin"],
-        post_process_saltfree_mdin=pilot_config.inputs.get("post_saltfree_mdin"),
-        post_process_distruct=distruct,
-        post_only=post_only,
-        config=pilot_config,
-    )
-
-
-def _pilot_md_post_drive(job, pilot_config: Config, complex_setup, receptor_setup):
-    """Run the complex AND receptor pilot legs (short MD -> post-analysis), then drive the band passes.
-
-    Both legs are needed because the GB-dielectric band is scheduled on a MATCHED complex+receptor
-    schedule (so the host desolvation cancels). Each leg runs MD (``post_only=False``) then post-analysis
-    (``post_only=True``); a follow-on join then drives the per-band R-ADD passes in
-    ``_pilot_band_passes``. ``run()`` returns the runner with a populated ``post_output``.
-    """
-    # Initial pilot legs: MD pass then post pass. The post pass reads inptraj from the MD
-    # pass's traj_map (jobStore) instead of the network output_dir. Because producer
-    # (c_md) != consumer, the post runner is built off c_md.rv() via run_post_pass_with_traj
-    # (runner and md_runner are the same c_md here -- it is both the first MD and the map source).
-    c_md = job.addChild(_pilot_runner(complex_setup.simulations, pilot_config, "post_process_halo", False))
-    c_post = c_md.addFollowOnJobFn(run_post_pass_with_traj, c_md.rv(), pilot_config, c_md.rv())
-    r_md = job.addChild(_pilot_runner(receptor_setup.simulations, pilot_config, "post_process_apo", False))
-    r_post = r_md.addFollowOnJobFn(run_post_pass_with_traj, r_md.rv(), pilot_config, r_md.rv())
-
-    # The band passes run after BOTH legs' post-analysis (a follow-on of `job` waits on all its children).
-    drive = job.addFollowOnJobFn(
-        _pilot_band_passes, c_post.rv(), r_post.rv(), pilot_config
-    )
-    return drive.rv()
-
-
-def _pilot_band_passes(job, complex_runner, receptor_runner, pilot_config: Config):
-    """Drive the per-band R-ADD passes sequentially, threading the converged config forward.
-
-    Order: matched dielectric (complex + receptor) -> charge (complex) -> restraints (complex). Each pass
-    reads its own banded overlap and inserts in its own coordinate; the converged config (expanded window
-    lists) is threaded into the next pass and ultimately returned for the production rebuild (Stage D).
-    """
-    # Pass 2 — charge band on the complex leg. adaptive_lambda_windows -> (results, config, runner).
-    if pilot_config.intermediate_args.decouple_in_solvent:
-        # no dielectric band to schedule
-        charge = job.addChildJobFn(
-            adaptive_lambda_windows, complex_runner, pilot_config, "complex", charge_scaling=True
+    if differ:
+        shown = "\n  ".join(differ[:20])
+        raise RuntimeError(
+            f"{len(differ)} existing window(s) ran with inputs that differ from the ones this pass "
+            f"regenerated; resuming would score their trajectories under a different Hamiltonian:\n  {shown}"
         )
-    else:
-        # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
-        diel = job.addChildJobFn(
-            pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
-        )
-        charge = diel.addFollowOnJobFn(
-            adaptive_lambda_windows,
-            diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
-            diel.rv(2),  # dielectric-converged config
-            "complex",
-            charge_scaling=True,
-        )
-    # Pass 3 — restraint band on the complex leg.
-    restr = charge.addFollowOnJobFn(
-        adaptive_lambda_windows,
-        charge.rv(2),  # complex runner
-        charge.rv(1),  # charge-converged config
-        "complex",
-        restraints_scaling=True,
-    )
-    restr.addFollowOnJobFn(_log_pilot_schedule, restr.rv(1))
-    return restr.rv(1)
 
 
-def apply_converged_schedule(production_config: Config, converged_config: Config) -> Config:
-    """Pure: return a deep copy of ``production_config`` with the pilot's converged dielectric, charge,
-    AND restraint schedules applied (full-length mdin / production dir preserved).
+def leg_pair_overlaps(job, mbar_run, leg: str) -> pd.DataFrame:
+    """Two-state overlap of every adjacent pair in one leg, from its Phase-7 energy matrix.
 
-    * Dielectric + charge bands: the production setup loops iterate ``gb_extdiel_windows`` /
-      ``charges_lambda_window`` directly, so replacing those window-value lists is sufficient.
-    * Restraint band: the production setup (and ``RestraintMaker``) iterate the FORCE lists
-      ``conformational_restraints_forces`` / ``orientational_restraint_forces`` (= ``2**exponent``). The
-      pilot records its converged schedule in the PAIRED ``exponent_*_forces_list`` (seed + R-ADD
-      insertions, ``con``/``orient`` aligned by index), so we carry those into the production seed
-      exponents and recompute the forces. The caller must re-run
-      ``decompose_system_and_generate_restraints`` on the result so ``RestraintMaker`` materializes a
-      restraint file for every window — including the inserted ones — keyed by force.
+    Parameters
+    ----------
+    mbar_run : tuple
+        ``compute_mbar`` output; ``[1]`` is the cycle-ordered reduced-energy matrix.
+    leg : str
+        ``complex``, ``ligand`` or ``receptor`` (for the log).
 
-    R-ADD anchor protection keeps every inserted exponent strictly inside ``(min, max)``, so
-    ``max_*_restraint`` and the analytical Boresch ΔG are unchanged; re-decomposition only adds the
-    inserted *interior* restraint files.
+    Returns
+    -------
+    pandas.DataFrame
+        ``als_refine.adjacent_pair_overlaps`` table.
     """
-    merged = copy.deepcopy(production_config)
-    conv = converged_config.intermediate_args
-    m = merged.intermediate_args
+    pairs = als_refine.adjacent_pair_overlaps(als_refine.subsample_like_production(mbar_run[1]))
+    job.fileStore.logToMaster(
+        f"[ALS] {leg}: {len(pairs)} adjacent pairs, smallest two-state overlap "
+        f"{pairs.o_pair.min():.4f}"
+    )
+    return pairs
 
-    m.gb_extdiel_windows = list(conv.gb_extdiel_windows)
-    m.charges_lambda_window = list(conv.charges_lambda_window)
 
-    # Re-sync the production GB-dielectric setup GATE to the merged window list. The boolean
-    # ``workflow.gb_extdiel_windows`` is derived from the list ONLY in ``Config.__post_init__``
-    # (config.py: empty list -> flag False), so a seed config with no GB windows leaves the flag False.
-    # ``copy.deepcopy`` above does NOT re-run ``__post_init__``, so without this the production setup loop
-    # (``setup_intermediate_simulations``, gated on the flag) would SKIP the pilot-inserted GB windows
-    # even though ``compute_mbar``'s ``CycleSteps`` order is built from the *list* and expects them — the
-    # "('gb_dielectric', ...) absent from the MBAR dataframe columns" schedule/data mismatch. The list is
-    # the single source of truth for both legs (complex + receptor share this schedule).
-    merged.workflow.gb_extdiel_windows = bool(m.gb_extdiel_windows)
+def als_round(job, round_index: int, config: Config, endstate):
+    """One ALS round: Phase 3 -> window audit -> Phase 4 -> Phases 5/6 -> Phase 7.
 
-    con_exps = list(conv.exponent_conformational_forces_list)
-    orient_exps = list(conv.exponent_orientational_forces_list)
-    if con_exps and len(con_exps) == len(orient_exps):
-        m.exponent_conformational_forces = con_exps
-        m.exponent_orientational_forces = orient_exps
-        m.orientational_restraint_forces = np.exp2(orient_exps)
-        if m.rmsd_mode:
-            # The conformational slot holds Angstrom tolerances, so there is no 2^p to apply. Keep the
-            # tolerance list, the anchor and the Boresch distance ladder in step with the merged
-            # schedule -- deepcopy does NOT re-run __post_init__, the lesson of commit 5adfa35.
-            m.conformational_restraints_forces = np.asarray(con_exps, dtype=float)
-            m.rmsd_tolerance_windows = list(con_exps)
-            m.strongest_conformational_restraint = min(con_exps)
-            m.strongest_conformational_exponent = min(con_exps)
-            m.boresch_distance_forces = np.exp2(
-                [
-                    interpolate_partner(
-                        conv.exponent_conformational_forces_list,
-                        [float(np.log2(f)) for f in conv.boresch_distance_forces],
-                        c,
-                    )
-                    for c in con_exps
-                ]
+    Round 0 is ordinary production. Later rounds run on a config whose window lists were extended;
+    windows and energy cells already on disk are reused, so only the new ones are computed. The
+    endstate (Phase 2) is the same in every round.
+
+    Returns
+    -------
+    dict
+        ``{"config": <Phase-4 config>, "phase7": <Phase-7 dict>}`` as promises.
+    """
+    job.fileStore.logToMaster(
+        f"[ALS] round {round_index}: "
+        f"{len(config.intermediate_args.exponent_conformational_forces)} restraint windows, "
+        f"charges {sorted(config.intermediate_args.charges_lambda_window)}, "
+        f"lj {config.intermediate_args.lj_scale_windows}, "
+        f"screening {config.intermediate_args.screening_windows}"
+    )
+    decomposition = job.addChildJobFn(decompose_system_and_generate_restraints, endstate, config)
+    phase4, _, phase7 = chain_phases_4_to_7(decomposition, endstate, config, config, audit=True)
+    return {"config": phase4.rv(0), "phase7": phase7.rv()}
+
+
+_ROUND_FILES = ("deltaG_*.h5", "*_fe.h5", "*_error.h5", "*_O_MBAR.h5", "boresch_*.h5")
+
+
+def _write_round_snapshot(out_dir: str, round_index: int, plan, schedule_lists: dict):
+    """Copy this round's results and decisions to ``<out_dir>/als/round_XX/``."""
+    round_dir = os.path.join(out_dir, "als", f"round_{round_index:02d}")
+    os.makedirs(round_dir, exist_ok=True)
+    for pattern in _ROUND_FILES:
+        for path in glob.glob(os.path.join(out_dir, pattern)):
+            shutil.copy2(path, round_dir)
+    plan.records.to_csv(os.path.join(round_dir, "pairs.csv"), index=False)
+    with open(os.path.join(round_dir, "plan.json"), "w") as fh:
+        json.dump({**plan.summary(), "schedule": schedule_lists}, fh, indent=2)
+
+
+def _schedule_lists(config: Config) -> dict:
+    args = config.intermediate_args
+    return dict(
+        restraint=[list(pair) for pair in zip(args.exponent_conformational_forces_list,
+                                               args.exponent_orientational_forces_list)],
+        charges=sorted(args.charges_lambda_window),
+        lj=list(args.lj_scale_windows),
+        screening=list(args.screening_windows),
+        dielectric=list(args.gb_extdiel_windows),
+    )
+
+
+def refine_schedule(job, round_index: int, round_result: dict, endstate, history: list):
+    """Plan the next ALS round from this round's pairwise overlaps, then run it or stop.
+
+    Parameters
+    ----------
+    round_index : int
+        The round whose results are in ``round_result``.
+    round_result : dict
+        ``als_round`` output: the round's Phase-4 config and Phase-7 dict.
+    endstate : Promise or tuple
+        Phase-2 endstate results, reused unchanged.
+    history : list of dict
+        One summary row per earlier round.
+
+    Returns
+    -------
+    dict
+        Final stop reason, number of rounds, and the final window lists.
+    """
+    config = round_result["config"]
+    phase7 = round_result["phase7"]
+    args = config.intermediate_args
+    out_dir = cache_output_path(
+        config.system_settings.cache_directory_output,
+        config.endstate_files.complex_parameter_filename,
+    )
+    deltaG = phase7["consolidate"]
+    dG = float(deltaG["deltaG"].iloc[0]) if deltaG is not None else float("nan")
+
+    if round_index == 0 and args.refine_expected_deltaG is not None:
+        if not abs(dG - float(args.refine_expected_deltaG)) <= 1e-6:
+            raise RuntimeError(
+                f"[ALS] round 0 reproduced dG = {dG!r}, expected {args.refine_expected_deltaG!r}; the "
+                "resumed run is not scoring the same data, so nothing will be inserted"
             )
-        else:
-            m.conformational_restraints_forces = np.exp2(con_exps)
-            m.strongest_conformational_restraint = float(max(np.exp2(con_exps)))
-            m.strongest_conformational_exponent = float(max(con_exps))
-            m.boresch_distance_forces = np.exp2(con_exps)
-    return merged
 
-
-def merge_pilot_windows(job, production_config: Config, converged_config: Config):
-    """Close the loop (Toil wrapper): apply the pilot's converged dielectric + charge + RESTRAINT
-    schedules to a PRODUCTION config (full-length mdin, production output dir — NOT the pilot's short
-    mdin / ``_pilot`` dir) and return it.
-
-    The caller re-runs ``decompose_system_and_generate_restraints`` on the returned config so
-    ``RestraintMaker`` materializes restraint files for the pilot-inserted exponents (the seed
-    RestraintMaker only carries seed-window files), then rebuilds the production ``SimulationSetup``s —
-    so Phases 5/6/7 run full-length MD on the ALL pilot-determined windows (dielectric, charge, AND
-    restraint). The pure schedule merge lives in :func:`apply_converged_schedule` (unit-tested).
-    """
-    merged = apply_converged_schedule(production_config, converged_config)
-    m = merged.intermediate_args
-    job.fileStore.logToMaster(
-        f"[ALS][pilot] rebuilding production from converged schedule: "
-        f"{len(m.gb_extdiel_windows)} GB dielectric windows, "
-        f"{len(m.charges_lambda_window)} charge windows, "
-        f"{len(m.conformational_restraints_forces)} restraint windows"
+    plan = als_refine.plan_refinement(
+        phase7["pairs"],
+        als_refine.Schedule.from_config(config),
+        args.min_degree_overlap,
+        bands=args.als_bands,
+        pools={
+            "restraint": args.candidate_conformational_pool,
+            "charge": args.candidate_charge_pool,
+            "lj": args.candidate_lj_pool,
+            "screening": args.candidate_screening_pool,
+            "dielectric": args.candidate_dielectric_pool,
+        },
+        min_steps=args.als_min_step,
+        max_new_windows=args.als_max_new_windows_per_round,
     )
-    return merged
+    schedule = _schedule_lists(config)
+    _write_round_snapshot(out_dir, round_index, plan, schedule)
+    for gap in plan.endstate_gaps.itertuples(index=False):
+        job.fileStore.logToMaster(
+            f"[ALS] round {round_index}: weak endstate pair ({gap.leg}) {gap.a} -> {gap.b}: "
+            f"{gap.o_pair:.4f} (reported only)"
+        )
+    row = dict(round=round_index, deltaG=dG, threshold=plan.threshold, reason=plan.reason or "inserted",
+               n_insertions=plan.n_insertions, n_md_windows=plan.n_md_windows,
+               weak_endstate_gaps=len(plan.endstate_gaps),
+               insertions=json.dumps(plan.summary()["insertions"]),
+               **{f"n_{key}": len(value) for key, value in schedule.items()})
+    history = list(history) + [row]
+    pd.DataFrame(history).to_csv(os.path.join(out_dir, "als", "history.csv"), index=False)
+    job.fileStore.logToMaster(f"[ALS] round {round_index}: dG {dG:.3f}, plan {plan.summary()}")
 
+    stop = None
+    if plan.n_insertions == 0:
+        stop = plan.reason
+    elif round_index >= int(args.als_max_rounds):
+        stop = "max-rounds"
+    if stop is not None:
+        final = dict(reason=stop, rounds=round_index, deltaG=dG, schedule=schedule,
+                     unresolved=plan.records[plan.records.status.isin(
+                         ["weak_pool_exhausted", "weak_budget_deferred", "weak_band_disabled"])
+                     ].to_dict("records"),
+                     endstate_gaps=plan.endstate_gaps.to_dict("records"))
+        with open(os.path.join(out_dir, "als", "final.json"), "w") as fh:
+            json.dump(final, fh, indent=2, default=str)
+        job.fileStore.logToMaster(f"[ALS] stopped after round {round_index}: {stop}")
+        return {"reason": stop, "rounds": round_index, "deltaG": dG, "schedule": schedule}
 
-def _log_pilot_schedule(job, converged_config: Config):
-    """Terminal pilot follow-on: log the converged schedules across all bands (loop-close deliverable)."""
-    con = sorted(converged_config.intermediate_args.exponent_conformational_forces_list)
-    orient = sorted(converged_config.intermediate_args.exponent_orientational_forces_list)
-    charges = sorted(converged_config.intermediate_args.charges_lambda_window)
-    eps = sorted(converged_config.intermediate_args.gb_extdiel_windows)
-    job.fileStore.logToMaster(
-        f"[ALS][pilot] CONVERGED schedules feeding production:\n"
-        f"[ALS][pilot]   restraint conformational exponents ({len(con)}): {con}\n"
-        f"[ALS][pilot]   restraint orientational  exponents ({len(orient)}): {orient}\n"
-        f"[ALS][pilot]   charge windows ({len(charges)}): {charges}\n"
-        f"[ALS][pilot]   GB dielectric windows ({len(eps)}): {eps}"
-    )
-    return converged_config
+    extended = als_refine.extend_schedule(config, plan.insertions)
+    next_round = job.addChildJobFn(als_round, round_index + 1, extended, endstate)
+    return next_round.addFollowOnJobFn(
+        refine_schedule, round_index + 1, next_round.rv(), endstate, history
+    ).rv()
 
 
 def update_config(job, config: Config, complex_binding_mode, receptor_binding_mode, ligand_binding_mode, restraints):

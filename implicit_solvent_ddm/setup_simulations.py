@@ -522,9 +522,8 @@ class SimulationSetup:
     def _restraint_window_mdin(self, exponent_conformational: float) -> FileID:
         """``default_mdin``, or the stretched mdin for this leg's lowest restraint window.
 
-        The ``als_pilot`` guard mirrors the GB-dielectric band's: ``adaptive_restraint_pilot`` swaps
-        ``default_mdin`` for the 50 ps ``pilot_mdin``, and a pilot must stay uniformly short. Missing
-        key falls back to ``default_mdin``, so a config predating this feature resumes unchanged.
+        A missing ``long_window_mdin`` key falls back to ``default_mdin``, so a config predating this
+        feature resumes unchanged.
 
         Parameters
         ----------
@@ -540,7 +539,6 @@ class SimulationSetup:
         if (
             long_mdin is not None
             and self.long_window_exponent is not None
-            and not self.config.inputs.get("als_pilot")
             and round(float(exponent_conformational), 3) == self.long_window_exponent
         ):
             return long_mdin

@@ -370,21 +370,14 @@ class Calculation(Job):
             )
 
         # Per-job timing record -> parsed by research/timing_report.py into a phase breakdown.
-        # Phase is inferred from the output dir / runtype: the ALS pilot writes under a *_pilot tree
-        # (-> "adaptive"), post-analysis jobs carry post_analysis=True (-> "post_analysis"), endstate
-        # setup MD has an endstate/minimization runtype, everything else is the production intermediate MD.
+        # Phase is inferred from the runtype: post-analysis jobs carry post_analysis=True
+        # (-> "post_analysis"), endstate setup MD has an endstate/minimization runtype, everything
+        # else is the production intermediate MD.
         # cores is ~0.1 for GPU windows, so the parser uses the gpu flag (GPU-hours = wall; else CPU-hours
         # = wall*cores). end= is an absolute epoch so the parser can recover parallel-adjusted wall-clock.
         _wall = time.perf_counter() - start
         _rt = self.directory_args.get("runtype", "")
-        # Detect the ALS pilot tree by a PATH SEGMENT ending in "_pilot" (the pilot sets
-        # output_directory_name = <name> + "_pilot", e.g. "mdgb_pilot"), NOT a substring of the whole
-        # path. A substring check mislabels every production job as "adaptive" when the working/scratch
-        # dir merely contains "_pilot" (e.g. SCRATCH=cb7_pilot_run), which hid intermediate_md /
-        # post_analysis from timing_report.py.
-        if any(seg.endswith("_pilot") for seg in str(self.output_dir).split(os.sep)):
-            _phase = "adaptive"
-        elif self.post_analysis:
+        if self.post_analysis:
             _phase = "post_analysis"
         elif any(k in _rt for k in ("endstate", "minimization", "remd", "equil")):
             _phase = "endstate"

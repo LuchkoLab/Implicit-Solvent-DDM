@@ -11,7 +11,7 @@ import string
 import tempfile
 import warnings
 from dataclasses import dataclass, field
-from typing import List, Optional, Type, Union, Dict
+from typing import Any, Dict, List, Optional, Type, Union
 from pathlib import Path
 
 import numpy as np
@@ -55,7 +55,7 @@ class Workflow:
     plot_overlap_matrix: bool = False 
     post_analysis_only: bool = False
     md_only: bool = False  # Run intermediate MD only -- no imin=5 scoring, no MBAR. Resume with it off against the same output_directory_name to score without re-running MD. Needs ignore_unique_naming: True.
-    adaptive_lambda: bool = False  # ALS: run the adaptive restraint-window pilot before production (default off = static schedule)
+    adaptive_lambda: bool = False  # ALS: after production, add windows where adjacent two-state overlap < min_degree_overlap, re-score and repeat (als_* knobs). Default off = static schedule
     vina_dock: bool = False
     restart: bool = False
     debug: bool = False
@@ -751,7 +751,23 @@ class EndStateMethod:
             )
 
 
-@dataclass    
+# Knobs of the removed pre-production ALS pilot -> what replaces them (dropped with a warning on load).
+_REMOVED_PILOT_KEYS = {
+    "pilot_ps": "ALS now adds full-length windows after production",
+    "pilot_frames": "ALS now adds full-length windows after production",
+    "pilot_nstlim": "ALS now adds full-length windows after production",
+    "max_adaptive_iterations": "use als_max_rounds",
+    "batch_insertion": "ALS fills every weak gap each round",
+    "prune_after_convergence": "ALS only adds windows",
+    "prune_margin": "ALS only adds windows",
+    "redistribution_mode": "ALS only adds windows",
+    "candidate_pool_step": "weak gaps split at their midpoint; set candidate_conformational_pool for explicit values",
+    "charge_pool_step": "weak gaps split at their midpoint; set candidate_charge_pool for explicit values",
+    "dielectric_pool_step": "weak gaps split at their midpoint; set candidate_dielectric_pool for explicit values",
+}
+
+
+@dataclass
 class IntermediateStateArgs:
     """
     Parameter arguments used for intermediate simulation steps within the thermodynamic cycle.
@@ -808,7 +824,7 @@ class IntermediateStateArgs:
     gb_dielectric_cpu_cores: Optional[int] = None  # run GB-dielectric MD on CPU pmemd.MPI with this many ranks; pmemd.cuda ignores extdiel. None -> default engine
     decouple_in_solvent: bool = False  # decouple the ligand in GB water: no gas phase, no GB-dielectric band
     screening_windows: List[float] = field(default_factory=list)  # ligand GB SCREEN scales between interactions and uncharged electrostatics; needs decouple_in_solvent
-    min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
+    min_degree_overlap: float = 0.04  # ALS: insert a window where the TWO-STATE overlap min(O_ab, O_ba) of adjacent states is below this (0..0.5; not the full-N MBAR superdiagonal, which dense bands dilute to ~1/N)
     post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
 
     long_restraint_window_ns: Optional[float] = 10.0  # MD length for the LOWEST restraint window only. Frame count is preserved (ntwx/ntpr rescaled) so the per-leg frames x states matrix stays rectangular; never shortens. It does NOT fix the endstate seam on its own -- under the full whole-receptor network a 10 ns floor window still had zero shared support with the endstate. It pays off once unrestrained_receptor_mask frees the floppy regions: on mcl1_remd_2ns_rep2 with ':22-32' freed, endstate overlap was 0.0404 at 2 ns (exactly the 0.04 threshold) vs 0.0819 at 10 ns, and the window was still relaxing toward the endstate at 10 ns. On by default because that is ~7 GPU-min on one window against a CPU-bound post-analysis, on the one MBAR link carrying no redundancy. None -> off.
@@ -853,24 +869,26 @@ class IntermediateStateArgs:
             return None
         return self.restraint_reference
 
-    # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
-    pilot_ps: float = 50.0                     # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
-    pilot_frames: int = 100                      # target trajectory frames written over the pilot window; pilot ntwx = round(nstlim / pilot_frames), so MBAR sampling is independent of dt and of the user's production ntwx (which is tuned for a much longer run)
-    pilot_nstlim: Optional[int] = None          # explicit step-count override of pilot_ps (None -> derive from pilot_ps + dt); set only for tiny test systems where 50 ps is absurd
-    max_adaptive_iterations: int = 12           # hard cap on R-ADD iterations per system (termination guard); with batch_insertion this caps ROUNDS, not windows
-    batch_insertion: bool = False               # ALS restraints: insert a window in EVERY weak gap per round and run them in parallel (converges a many-window leg in ~log rounds), vs. default one-at-a-time R-ADD
-    prune_after_convergence: bool = False       # ALS restraints: once the dense ladder converges, prune it to the MINIMAL connected subset using the full pairwise pilot overlap matrix (prune_schedule) so production runs the fewest windows
-    prune_margin: float = 2.0                   # prune threshold = min_degree_overlap * prune_margin; >1 because the 50 ps pilot over-estimates overlap vs 10 ns production
-    candidate_conformational_pool: List[float] = field(default_factory=list)  # fixed candidate exponent pool; empty -> derive from seed + candidate_pool_step
-    candidate_pool_step: Optional[float] = None  # pool granularity in exponent space; None -> default fill between endstate and pinned max
-    redistribution_mode: str = "add"            # "add" = R-ADD (insert +1, never move); "move" reserved for uniform pools
+    # --- Post-production adaptive lambda scheduling (only used when workflow.adaptive_lambda) ---
+    # Production runs on the windows above; then every adjacent pair whose two-state overlap is below
+    # min_degree_overlap gets a full-length window in its gap, and the run re-scores with warm resume.
+    als_max_rounds: int = 3                     # insertion rounds after production; 0 = report the overlaps, insert nothing
+    als_bands: List[str] = field(default_factory=lambda: ["restraint", "charge", "lj", "screening"])  # bands ALS may fill; add "dielectric" for the gas cycle's GB band
+    als_max_new_windows_per_round: Optional[int] = None  # cap on MD windows added per round (a restraint insertion adds 3, charge 2, lj/screening 1); weakest gaps first
+    als_min_step: Dict[str, float] = field(default_factory=dict)  # smallest half-gap a split may create, per band; defaults in als_refine.DEFAULT_MIN_STEP (restraint 0.05 log2, charge/screening 0.02, lj 0.005)
+    refine_expected_deltaG: Optional[float] = None  # refine mode: round 0 must reproduce this binding dG (kcal/mol) within 1e-6 before anything is inserted
+    # Explicit candidate values per band; empty -> split each weak gap at its midpoint (3 dp).
+    candidate_conformational_pool: List[float] = field(default_factory=list)  # restraint, log2 exponents
+    candidate_charge_pool: List[float] = field(default_factory=list)          # charge fraction, (0, 1)
+    candidate_lj_pool: List[float] = field(default_factory=list)              # ligand-receptor LJ scale, (0, 1)
+    candidate_screening_pool: List[float] = field(default_factory=list)       # ligand GB SCREEN scale, (0, 1)
+    candidate_dielectric_pool: List[float] = field(default_factory=list)      # GB band, lambda = 1 - 1/eps
+    # Block-chained post-analysis (post_analysis_block_size): the shared endpoint states of each leg's
+    # blocks, fixed at the first insertion so an inserted window joins its own block instead of
+    # shifting every later one. Set by als_refine.extend_schedule; None -> blocks cut by position.
+    block_anchor_states: Optional[Dict[str, List[Any]]] = None
     # --- GB-dielectric band knobs (lambda = 1 - 1/eps axis) ---
     gb_extdiel_floor: float = 1.0               # lowest allowed external dielectric (eps=1 -> vacuum, lambda=0); seeds are clamped to [floor, 78.5]
-    candidate_dielectric_pool: List[float] = field(default_factory=list)  # fixed candidate lambda pool for the dielectric band; empty -> derive from seed + dielectric_pool_step
-    dielectric_pool_step: Optional[float] = None  # dielectric pool granularity in LAMBDA space; None -> default fill between the band anchors
-    # --- Charge band knobs (q in [0, 1] axis) ---
-    candidate_charge_pool: List[float] = field(default_factory=list)  # fixed candidate charge pool; empty -> derive from seed + charge_pool_step
-    charge_pool_step: Optional[float] = None    # charge pool granularity; None -> default fill between q=0 and q=1
     # --- RMSD conformational restraint (AMBER NFE &pmd / MULTI_RMSD). EMPTY LIST -> OFF (default). ---
     # Replaces the pairwise distance network with one best-fit RMSD collective variable under a
     # flat-bottom umbrella. The ladder walks the flat-bottom UPPER EDGE r3 in Angstrom at fixed k, so
@@ -1181,7 +1199,21 @@ class IntermediateStateArgs:
         -------
         IntermediateStateArgs
             An initialized instance based on the configuration.
+
+        Notes
+        -----
+        Knobs of the removed pre-production ALS pilot are dropped with a warning, so old configs
+        still load.
         """
+        obj = dict(obj)
+        for key, replacement in _REMOVED_PILOT_KEYS.items():
+            if key in obj:
+                obj.pop(key)
+                warnings.warn(
+                    f"intermediate_states_arguments.{key} belonged to the removed ALS pilot and is "
+                    f"ignored; {replacement}",
+                    UserWarning,
+                )
         return cls(**obj)
 
     def _sanity_check_mdin(self):
@@ -1394,6 +1426,61 @@ class Config:
         # If receptor coordinates are provided, mark receptor as already prepared
         if self.endstate_files.receptor_coordinate_filename is not None:
             self.ignore_receptor = True
+
+        if self.workflow.adaptive_lambda:
+            self._check_adaptive_lambda()
+
+    def _check_adaptive_lambda(self):
+        """
+        Validate the post-production ALS settings, dropping bands this cycle cannot fill.
+
+        Raises
+        ------
+        ValueError
+            If intermediate files are not exported (each round warm-resumes from the window
+            directories and the scored parquets), if the run stops before scoring or consolidation,
+            if a band or pool value is invalid, or if restraints come from user files or templates
+            (indexed by position, so an inserted exponent has no file).
+        """
+        args = self.intermediate_args
+        if not self.system_settings.export_intermediate_files:
+            raise ValueError(
+                "adaptive_lambda needs export_intermediate_files: True -- every ALS round resumes "
+                "from the window mdouts and scored parquets on disk"
+            )
+        if self.workflow.md_only or not self.workflow.run_post_analysis or not self.workflow.consolidate_output:
+            raise ValueError("adaptive_lambda needs run_post_analysis and consolidate_output on, and md_only off")
+        if int(args.als_max_rounds) < 0:
+            raise ValueError(f"als_max_rounds must be >= 0, got {args.als_max_rounds}")
+        known = ("restraint", "charge", "lj", "screening", "dielectric")
+        unknown = [band for band in args.als_bands if band not in known]
+        if unknown:
+            raise ValueError(f"als_bands has unknown band(s) {unknown}; choose from {list(known)}")
+        for name in ("candidate_charge_pool", "candidate_lj_pool", "candidate_screening_pool"):
+            bad = [v for v in getattr(args, name) if not 0.0 < float(v) < 1.0]
+            if bad:
+                raise ValueError(f"{name} values must lie strictly between 0 and 1, got {bad}")
+        if any([args.guest_restraint_template, args.receptor_restraint_template,
+                args.complex_conformational_template, args.complex_orientational_template,
+                args.guest_restraint_files, args.receptor_restraint_files, args.complex_restraint_files]):
+            raise ValueError(
+                "adaptive_lambda needs workflow-generated restraints; user restraint files and "
+                "templates are indexed by position, so an inserted window would have none"
+            )
+
+        def drop(band, why):
+            if band in args.als_bands:
+                args.als_bands = [b for b in args.als_bands if b != band]
+                warnings.warn(f"ALS band '{band}' dropped: {why}", UserWarning)
+
+        if not (self.workflow.complex_ligand_exclusions and self.workflow.complex_turn_off_exclusions):
+            drop("lj", "LJ windows need complex_ligand_exclusions and complex_turn_off_exclusions")
+        if not args.decouple_in_solvent:
+            drop("screening", "screening windows need decouple_in_solvent")
+        else:
+            drop("dielectric", "the in-solvent cycle has no GB-dielectric band")
+        if args.rmsd_mode:
+            drop("restraint", "restraint insertion is not supported with rmsd_tolerance_windows")
 
     def _config_sanity_check(self):
         """

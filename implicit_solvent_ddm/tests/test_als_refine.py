@@ -293,3 +293,143 @@ def test_schedule_from_config_round_trip(config):
     pairs = {leg: _table(getattr(cs, f"{leg}_order")) for leg in ("complex", "ligand")}
     plan = ar.plan_refinement(pairs, sched, 0.03, bands=ar.BANDS)
     assert plan.reason == "converged"
+
+
+# --------------------------------------------------------------------------------------------------
+# Config validation and deprecations
+# --------------------------------------------------------------------------------------------------
+def _raw():
+    path = os.path.join("implicit_solvent_ddm", "tests", "input_files", "config.yaml")
+    with open(path) as fh:
+        return yaml.safe_load(fh)
+
+
+def test_removed_pilot_keys_warn_and_load():
+    from implicit_solvent_ddm.config import Config
+    raw = _raw()
+    raw["workflow"]["intermediate_states_arguments"].update(pilot_ps=50.0, batch_insertion=True,
+                                                             max_adaptive_iterations=10)
+    with pytest.warns(UserWarning, match="removed ALS pilot"):
+        cfg = Config.from_config(raw)
+    assert not hasattr(cfg.intermediate_args, "pilot_ps")
+
+
+def test_adaptive_lambda_needs_exported_files():
+    from implicit_solvent_ddm.config import Config
+    raw = _raw()
+    raw["workflow_jobs"]["adaptive_lambda"] = True
+    raw["hardware_parameters"]["export_intermediate_files"] = False
+    with pytest.raises(ValueError, match="export_intermediate_files"):
+        Config.from_config(raw)
+
+
+def test_adaptive_lambda_drops_bands_the_cycle_cannot_fill():
+    from implicit_solvent_ddm.config import Config
+    raw = _raw()
+    raw["workflow_jobs"]["adaptive_lambda"] = True
+    with pytest.warns(UserWarning, match="screening"):
+        cfg = Config.from_config(raw)  # the test config is the gas cycle
+    assert cfg.intermediate_args.als_bands == ["restraint", "charge", "lj"]
+    raw["workflow"]["intermediate_states_arguments"]["als_bands"] = ["restraint", "bogus"]
+    with pytest.raises(ValueError, match="unknown band"):
+        Config.from_config(raw)
+
+
+def test_extend_schedule_fixes_block_anchors(config):
+    from implicit_solvent_ddm import block_mbar
+    config.intermediate_args.post_analysis_block_size = 2
+    old = cycle_steps_from_config(config)
+    new = ar.extend_schedule(config, {"restraint": [(1.0, 5.0)]})
+    anchors = new.intermediate_args.block_anchor_states
+    assert set(anchors) == {"complex", "ligand", "receptor"}
+    for leg in anchors:
+        old_order = getattr(old, f"{leg}_order")
+        new_order = getattr(cycle_steps_from_config(new), f"{leg}_order")
+        old_pairs = block_mbar.required_pairs(old_order, 2, block_mbar.band_boundaries(old_order))
+        new_pairs = block_mbar.required_pairs(new_order, 2, block_mbar.band_boundaries(new_order), anchors[leg])
+        assert old_pairs <= new_pairs
+    again = ar.extend_schedule(new, {"charge": [0.25]})
+    assert again.intermediate_args.block_anchor_states == anchors  # fixed once, then kept
+
+
+# --------------------------------------------------------------------------------------------------
+# Window audit helpers and DAG wiring
+# --------------------------------------------------------------------------------------------------
+def test_restraint_blocks_ignore_order_and_spacing(tmp_path):
+    from implicit_solvent_ddm.workflow_phases import _restraint_blocks, _topology_body
+    a = "&rst iat = 1, 2,\n r1=0, r2 = 3.0,\n/\n&rst iat = 3, 4,\n r1=0, r2=1.5,\n/\n"
+    b = "&rst iat = 3, 4,\n r1=0,  r2=1.5,\n/\n\n&rst iat = 1, 2,\n r1=0, r2 = 3.0,\n/\n"
+    assert _restraint_blocks(a) == _restraint_blocks(b)
+    assert _restraint_blocks(a) != _restraint_blocks(a.replace("3.0", "3.1"))
+    p1, p2 = tmp_path / "a.parm7", tmp_path / "b.parm7"
+    p1.write_text("%VERSION  VERSION_STAMP = V0001.000  DATE = 11/03/26  10:00:00\n%FLAG TITLE\nx\n")
+    p2.write_text("%VERSION  VERSION_STAMP = V0001.000  DATE = 11/04/26  09:00:00\n%FLAG TITLE\nx\n")
+    assert _topology_body(str(p1)) == _topology_body(str(p2))
+
+
+class _FakeJob:
+    """Records the job graph ddm_workflow wires, without running anything."""
+
+    def __init__(self, name="root", log=None):
+        self.name, self.log = name, log if log is not None else []
+
+    def _add(self, kind, fn):
+        child = _FakeJob(getattr(fn, "__name__", type(fn).__name__), self.log)
+        self.log.append((kind, self.name, child.name))
+        return child
+
+    def addChildJobFn(self, fn, *a, **k):
+        return self._add("child", fn)
+
+    def addFollowOnJobFn(self, fn, *a, **k):
+        return self._add("followon", fn)
+
+    def addChild(self, job):
+        return self._add("child", job)
+
+    def addFollowOn(self, job):
+        return self._add("followon", job)
+
+    def rv(self, *a):
+        return (self.name, a)
+
+
+@pytest.mark.parametrize("als", [False, True])
+def test_ddm_workflow_wiring(config, als):
+    from implicit_solvent_ddm.implicit_ddm_workflow import ddm_workflow
+    config.workflow.adaptive_lambda = als
+    root = _FakeJob()
+    ddm_workflow(root, config)
+    edges = [(kind, a, b) for kind, a, b in root.log if b != "initilized_jobs"]
+    names = [b for _, _, b in edges]
+    if als:
+        assert ("followon", "run_endstate_simulations", "als_round") in edges
+        assert ("followon", "als_round", "refine_schedule") in edges
+        assert "setup_intermediate_simulations" not in names  # phases 3-7 run inside als_round
+    else:
+        assert names == ["setup_workflow_components", "run_endstate_simulations",
+                         "decompose_system_and_generate_restraints", "setup_intermediate_simulations",
+                         "run_intermediate_and_post", "_aggregate_post_output",
+                         "compute_free_energy_and_consolidate"]
+
+
+def test_als_round_wires_audit_before_md(config):
+    from implicit_solvent_ddm.workflow_phases import als_round
+
+    class _Store:
+        def logToMaster(self, msg):
+            pass
+
+    root = _FakeJob("als_round")
+    root.fileStore = _Store()
+    out = als_round(root, 0, config, endstate=None)
+    edges = [(a, b) for kind, a, b in root.log if b != "initilized_jobs"]
+    assert edges == [
+        ("als_round", "decompose_system_and_generate_restraints"),
+        ("decompose_system_and_generate_restraints", "setup_intermediate_simulations"),
+        ("setup_intermediate_simulations", "audit_existing_windows"),
+        ("audit_existing_windows", "run_intermediate_and_post"),
+        ("run_intermediate_and_post", "_aggregate_post_output"),
+        ("_aggregate_post_output", "compute_free_energy_and_consolidate"),
+    ]
+    assert set(out) == {"config", "phase7"}
