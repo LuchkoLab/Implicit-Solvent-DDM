@@ -1097,6 +1097,15 @@ def _write_round_snapshot(out_dir: str, round_index: int, plan, schedule_lists: 
         json.dump({**plan.summary(), "schedule": schedule_lists}, fh, indent=2)
 
 
+def _stop_reason(plan, round_index: int, max_rounds) -> "str | None":
+    """Why ALS stops after this round (the plan's reason, or ``max-rounds``), or None to go on."""
+    if plan.n_insertions == 0:
+        return plan.reason
+    if round_index >= int(max_rounds):
+        return "max-rounds"
+    return None
+
+
 def _unresolved_gaps(records: pd.DataFrame, stop: str) -> list:
     """Gap rows still below the threshold when ALS stops.
 
@@ -1181,7 +1190,8 @@ def refine_schedule(job, round_index: int, round_result: dict, endstate, history
             f"[ALS] round {round_index}: weak endstate pair ({gap.leg}) {gap.a} -> {gap.b}: "
             f"{gap.o_pair:.4f} (reported only)"
         )
-    row = dict(round=round_index, deltaG=dG, threshold=plan.threshold, reason=plan.reason or "inserted",
+    stop = _stop_reason(plan, round_index, args.als_max_rounds)
+    row = dict(round=round_index, deltaG=dG, threshold=plan.threshold, reason=stop or "inserted",
                n_insertions=plan.n_insertions, n_md_windows=plan.n_md_windows,
                weak_endstate_gaps=len(plan.endstate_gaps),
                insertions=json.dumps(plan.summary()["insertions"]),
@@ -1190,11 +1200,6 @@ def refine_schedule(job, round_index: int, round_result: dict, endstate, history
     pd.DataFrame(history).to_csv(os.path.join(out_dir, "als", "history.csv"), index=False)
     job.fileStore.logToMaster(f"[ALS] round {round_index}: dG {dG:.3f}, plan {plan.summary()}")
 
-    stop = None
-    if plan.n_insertions == 0:
-        stop = plan.reason
-    elif round_index >= int(args.als_max_rounds):
-        stop = "max-rounds"
     if stop is not None:
         final = dict(reason=stop, rounds=round_index, deltaG=dG, schedule=schedule,
                      unresolved=_unresolved_gaps(plan.records, stop),

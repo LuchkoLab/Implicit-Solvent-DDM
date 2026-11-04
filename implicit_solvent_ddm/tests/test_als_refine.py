@@ -258,6 +258,16 @@ def test_max_rounds_reports_gaps_left_to_fill():
     assert _unresolved_gaps(plan.records, "converged") == []
 
 
+def test_stop_reason():
+    from implicit_solvent_ddm.workflow_phases import _stop_reason
+    cs = _in_solvent()
+    weak = ar.plan_refinement(_tables(cs, ligand=_weak_between("restraint", -2.0, 4.0)), _schedule(cs), 0.03)
+    done = ar.plan_refinement(_tables(cs), _schedule(cs), 0.03)
+    assert _stop_reason(weak, 0, 1) is None
+    assert _stop_reason(weak, 1, 1) == "max-rounds"
+    assert _stop_reason(done, 0, 3) == "converged"
+
+
 # --------------------------------------------------------------------------------------------------
 # Extending a real config
 # --------------------------------------------------------------------------------------------------
