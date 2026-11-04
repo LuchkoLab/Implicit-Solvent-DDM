@@ -79,13 +79,12 @@ The Boresch and flat-bottom terms are unchanged.
 
 ## ALS
 
-- The pilot skips the dielectric pass and runs charge → restraint on the complex.
-- `CycleSteps.start_gb_extdiel_matrix` and `start_receptor_gb_matrix` raise in this mode.
-- The complex charge band is still `[start_complex_charge_matrix : halo_restraint_matrix + 1]`,
-  i.e. uncharged → charged electrostatics. The screening windows are not an ALS band yet.
-- `start_ligand_charge_matrix` points at the full-charge anchor, so the ligand charge band
-  keeps its q = 1 end.
-- ALS-inserted ligand charge windows stay in water.
+Post-production ALS (`docs/post_production_als.md`) fills four bands in this cycle: restraint,
+charge, LJ (`no_interactions → lj_* → interactions`) and screening
+(`interactions → screening_* → electrostatics q=0`). The GB-dielectric band does not exist here.
+Bands are found from state labels (`als_refine.classify_pair`), so new LJ, screening and charge
+windows land in the order through `cycle_steps_from_config` like the seed ones. The ligand charge
+band runs from the q = 1 restraint anchor down to q = 0, all in water.
 
 ## Code map
 
@@ -95,8 +94,8 @@ The Boresch and flat-bottom terms are unchanged.
 | `alchemical.py` | `alter_topology(screen_scale=...)` scales ligand `SCREEN` |
 | `matrix_order.py` | `CycleSteps(in_solvent, screening_windows)`, `screening` states, in-solvent orders and indices, `cycle_steps_from_config` |
 | `setup_simulations.py` | `_decoupled_mdin` moves decoupled windows into water; `setup_screening_simulation`; ligand charge windows in water |
-| `workflow_phases.py` | in-solvent topologies (LJ 0 + SCREEN 0), screening loop, no ligand q = 1 window, pilot without the dielectric pass |
-| `runner.py`, `adaptive_restraints.py` | build `CycleSteps` through `cycle_steps_from_config`; ALS ligand charge windows in water |
+| `workflow_phases.py` | in-solvent topologies (LJ 0 + SCREEN 0), screening loop, no ligand q = 1 window |
+| `runner.py`, `adaptive_restraints.py` | build `CycleSteps` through `cycle_steps_from_config` |
 | `postTreatment.py` | leg endpoints for the in-solvent cycle |
 
 ## Validation
