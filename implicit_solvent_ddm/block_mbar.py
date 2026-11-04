@@ -258,8 +258,98 @@ def partition_blocks(
     return blocks
 
 
+
+def anchor_states(order: Sequence[tuple], block_size: int, boundaries: Iterable[int] = ()) -> list:
+    """The states the position-based partition puts at block ends.
+
+    Recording these before any window is inserted, and cutting later partitions at them
+    (:func:`leg_blocks`), keeps every existing block intact when post-production ALS adds a state:
+    the new state joins the one block that spans its neighbours instead of shifting every block
+    after it, so the cells already scored are all reused.
+
+    Parameters
+    ----------
+    order : sequence of tuple
+        Cycle-ordered state tuples.
+    block_size : int
+        Maximum states per block.
+    boundaries : iterable of int, optional
+        Transition indices isolated into their own block.
+
+    Returns
+    -------
+    list of tuple
+        Anchor states in cycle order, the first and last state included.
+    """
+    blocks = partition_blocks(len(order), block_size, boundaries)
+    ends = sorted({block[0] for block in blocks} | {block[-1] for block in blocks})
+    return [tuple(map(str, order[i])) for i in ends]
+
+
+def leg_blocks(
+    order: Sequence[tuple],
+    block_size: int,
+    boundaries: Iterable[int] = (),
+    anchors: Optional[Sequence[tuple]] = None,
+    max_states: Optional[int] = None,
+) -> list[list[int]]:
+    """Blocks of one leg: by position, or as spans between fixed anchor states.
+
+    Scoring (:func:`required_pairs`) and solving (:func:`chained_mbar_result`) both take their
+    blocks from here, so they cannot disagree about which cells exist.
+
+    Parameters
+    ----------
+    order : sequence of tuple
+        Cycle-ordered state tuples.
+    block_size : int
+        Maximum states per block when cutting by position.
+    boundaries : iterable of int, optional
+        Transition indices isolated into their own block (position mode only).
+    anchors : sequence of tuple, optional
+        States every block starts and ends at (from :func:`anchor_states`). None cuts by position.
+    max_states : int, optional
+        Anchored mode: a span with more states than this is split at the state nearest its middle.
+        Defaults to ``2 * block_size - 1``.
+
+    Returns
+    -------
+    list of list of int
+        Blocks of state indices; consecutive blocks share one state.
+
+    Raises
+    ------
+    ValueError
+        If fewer than two anchors are found in ``order``.
+    """
+    if anchors is None:
+        return partition_blocks(len(order), block_size, boundaries)
+    position = {tuple(map(str, state)): i for i, state in enumerate(order)}
+    ends = sorted({position[tuple(map(str, a))] for a in anchors if tuple(map(str, a)) in position}
+                  | {0, len(order) - 1})
+    if len(ends) < 2:
+        raise ValueError("block_mbar: need at least two anchor states in the order")
+    cap = max_states if max_states is not None else 2 * block_size - 1
+    blocks: list[list[int]] = []
+
+    def add(lo: int, hi: int) -> None:
+        if hi - lo + 1 > max(cap, 2):
+            mid = (lo + hi) // 2
+            add(lo, mid)
+            add(mid, hi)
+        else:
+            blocks.append(list(range(lo, hi + 1)))
+
+    for lo, hi in zip(ends, ends[1:]):
+        add(lo, hi)
+    return blocks
+
+
 def required_pairs(
-    order: Sequence[tuple], block_size: int, boundaries: Iterable[int] = ()
+    order: Sequence[tuple],
+    block_size: int,
+    boundaries: Iterable[int] = (),
+    anchors: Optional[Sequence[tuple]] = None,
 ) -> set[tuple]:
     """List the (trajectory, Hamiltonian) pairs a block chain needs evaluated.
 
@@ -271,6 +361,8 @@ def required_pairs(
         Maximum states per block.
     boundaries : iterable of int, optional
         Transition indices to isolate.
+    anchors : sequence of tuple, optional
+        Fixed block-end states (see :func:`leg_blocks`).
 
     Returns
     -------
@@ -279,7 +371,7 @@ def required_pairs(
         ``sander imin=5`` jobs the leg requires.
     """
     pairs: set[tuple] = set()
-    for block in partition_blocks(len(order), block_size, boundaries):
+    for block in leg_blocks(order, block_size, boundaries, anchors):
         for i in block:
             for j in block:
                 pairs.add((order[i], order[j]))
@@ -397,6 +489,7 @@ def chained_mbar(
     boundaries: Iterable[int] = (),
     protocol=BLOCK_SOLVER_PROTOCOL,
     log=print,
+    anchors: Optional[Sequence[tuple]] = None,
 ):
     """Solve a cycle as a chain of per-block MBARs and sum the result.
 
@@ -432,7 +525,7 @@ def chained_mbar(
         If a block contains unevaluated cells, meaning the data does not match
         ``block_size``.
     """
-    blocks = partition_blocks(len(order), block_size, boundaries)
+    blocks = leg_blocks(order, block_size, boundaries, anchors)
     rows = []
     for b, block in enumerate(blocks):
         states = [order[i] for i in block]
@@ -517,6 +610,7 @@ def chained_mbar_result(
     boundaries: Iterable[int] = (),
     protocol=BLOCK_SOLVER_PROTOCOL,
     log=print,
+    anchors: Optional[Sequence[tuple]] = None,
 ):
     """Solve a block chain and return it in ``pandasmbar.mbar`` shape.
 
@@ -544,7 +638,7 @@ def chained_mbar_result(
     mbar : ChainedMBAR
         Result object exposing ``compute_overlap``.
     """
-    blocks = partition_blocks(len(order), block_size, boundaries)
+    blocks = leg_blocks(order, block_size, boundaries, anchors)
     n = len(order)
     f_k = np.zeros(n)
     var_k = np.zeros(n)
