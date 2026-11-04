@@ -287,8 +287,9 @@ def submit_script(p, config_path, code, sha, tag):
     pin = (
         f"\n# refinement runs a frozen checkout, never the conda env's editable install\n"
         f"export PYTHONPATH={code}${{PYTHONPATH:+:$PYTHONPATH}}\n"
-        f"python -c \"import implicit_solvent_ddm.config as c; assert c.__file__.startswith('{code}/'), c.__file__; "
-        f"assert 'complex_endstate_trajectory' in c.ParameterFiles.__dataclass_fields__\" "
+        # from /, so the submit directory (python -c puts it first on sys.path) cannot shadow the pin
+        f"(cd / && python -c \"import implicit_solvent_ddm.config as c; assert c.__file__.startswith('{code}/'), c.__file__; "
+        f"assert 'complex_endstate_trajectory' in c.ParameterFiles.__dataclass_fields__\") "
         f"|| {{ echo 'ERROR: not running the frozen refine checkout'; exit 1; }}\n"
         f"test \"$(git -C {code} rev-parse HEAD)\" = \"{sha}\" || {{ echo 'ERROR: refine checkout moved'; exit 1; }}\n"
     )
