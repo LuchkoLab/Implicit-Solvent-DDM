@@ -148,7 +148,9 @@ def cmd_scan(args):
     tasks = [(run, leg, args.out, args.force) for run in runs for leg in LEGS]
     print(f"{len(runs)} runs, {len(tasks)} legs, {args.workers} workers", flush=True)
     rows = []
-    with Pool(args.workers) as pool:
+    # one leg per worker process: pymbar/JAX memory grows across legs in a long-lived worker, and an
+    # OOM-killed worker hangs imap forever
+    with Pool(args.workers, maxtasksperchild=1) as pool:
         for k, row in enumerate(pool.imap_unordered(scan_leg, tasks), 1):
             rows.append(row)
             if row["status"] not in ("ok", "cached") or k % 50 == 0:
