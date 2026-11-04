@@ -433,3 +433,13 @@ def test_als_round_wires_audit_before_md(config):
         ("_aggregate_post_output", "compute_free_energy_and_consolidate"),
     ]
     assert set(out) == {"config", "phase7"}
+
+
+def test_cached_cell_is_read_once_and_empty_means_rescore(tmp_path):
+    from implicit_solvent_ddm.runner import IntermidateRunner
+    assert IntermidateRunner._read_cached_cell(str(tmp_path)) is None
+    path = tmp_path / "simulation_mdout.parquet.gzip"
+    pd.DataFrame({"ENERGY": []}).to_parquet(path)
+    assert IntermidateRunner._read_cached_cell(str(tmp_path)) is None
+    pd.DataFrame({"ENERGY": [1.0, 2.0]}).to_parquet(path)
+    assert list(IntermidateRunner._read_cached_cell(str(tmp_path)).ENERGY) == [1.0, 2.0]

@@ -561,7 +561,8 @@ class IntermidateRunner(Job):
             if post_process_job.output_dir in self._loaded_dataframe:
                 continue
 
-            if not self.has_post_analysis_data(post_process_job.output_dir):
+            cached = self._read_cached_cell(post_process_job.output_dir)
+            if cached is None:
                 fileStore.logToMaster(
                     f"simulations_mdout.parquet is not found in  {post_process_job.output_dir} or is empty\n"
                 )
@@ -610,13 +611,7 @@ class IntermidateRunner(Job):
                         f"Loading the Energy post-analysis results in the directory {post_process_job.output_dir}\n"
                     )
                 _pa_t0 = time.perf_counter()
-                self.post_output.append(
-                    pd.read_parquet(
-                        os.path.join(
-                            post_process_job.output_dir, "simulation_mdout.parquet.gzip"
-                        ),
-                    )
-                )
+                self.post_output.append(cached)
                 # Cache-load timing record (parsed by timing_report.py). The imin=5 re-scoring for this
                 # window was computed in a PRIOR run; here we only re-read its cached parquet, so this
                 # counts as ~0 compute for the post_analysis phase (vs. the full sander re-score that
@@ -630,18 +625,25 @@ class IntermidateRunner(Job):
                 )
             self._loaded_dataframe.append(post_process_job.output_dir)
     
-    def has_post_analysis_data(self, output_dir):
-        """Return True if the parquet file exists and is not empty; otherwise False."""
+    @staticmethod
+    def _read_cached_cell(output_dir) -> Optional[pd.DataFrame]:
+        """The cell's scored energies from a previous run, or None when they must be computed.
+
+        Read once and reused, rather than checking the parquet and then reading it again: a warm
+        round loads every existing cell of the leg.
+        """
         path = os.path.join(output_dir, "simulation_mdout.parquet.gzip")
-
         if not os.path.exists(path):
-            return False
-
+            return None
         try:
             df = pd.read_parquet(path)
-            return not df.empty
         except (ValueError, OSError):
-            return False
+            return None
+        return None if df.empty else df
+
+    def has_post_analysis_data(self, output_dir):
+        """Return True if the parquet file exists and is not empty; otherwise False."""
+        return self._read_cached_cell(output_dir) is not None
     
     @staticmethod
     def _get_md_traj(simulation: Simulation, fileStore):
