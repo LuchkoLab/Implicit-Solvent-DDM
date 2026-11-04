@@ -85,7 +85,8 @@ refine_schedule(k): plan -> snapshot -> stop, or extend_schedule -> als_round(k+
   - `round_XX/` holds deltaG, fe, error, O_MBAR, boresch, `pairs.csv` (every adjacent pair, its
     band, overlap and decision) and `plan.json`;
   - `history.csv` has one row per round;
-  - `final.json` holds the stop reason, the final lists, unresolved gaps and endstate gaps.
+  - `final.json` holds the stop reason, the final lists, unresolved gaps and endstate gaps. On
+    `max-rounds`, the gaps the next round would have filled are listed as `weak_rounds_exhausted`.
 
 ## Block-chained post-analysis
 

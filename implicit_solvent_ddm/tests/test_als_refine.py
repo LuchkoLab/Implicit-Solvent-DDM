@@ -248,6 +248,16 @@ def test_unscored_pairs_are_not_planned():
     assert "unscored" in set(plan.records.status)
 
 
+def test_max_rounds_reports_gaps_left_to_fill():
+    from implicit_solvent_ddm.workflow_phases import _unresolved_gaps
+    cs = _in_solvent()
+    plan = ar.plan_refinement(_tables(cs, ligand=_weak_between("restraint", -2.0, 4.0)), _schedule(cs), 0.03)
+    left = _unresolved_gaps(plan.records, "max-rounds")
+    assert {g["leg"] for g in left} == {"complex", "ligand", "receptor"}
+    assert {g["status"] for g in left} == {"weak_rounds_exhausted"}
+    assert _unresolved_gaps(plan.records, "converged") == []
+
+
 # --------------------------------------------------------------------------------------------------
 # Extending a real config
 # --------------------------------------------------------------------------------------------------

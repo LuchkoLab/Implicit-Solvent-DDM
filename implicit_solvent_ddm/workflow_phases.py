@@ -1097,6 +1097,20 @@ def _write_round_snapshot(out_dir: str, round_index: int, plan, schedule_lists: 
         json.dump({**plan.summary(), "schedule": schedule_lists}, fh, indent=2)
 
 
+def _unresolved_gaps(records: pd.DataFrame, stop: str) -> list:
+    """Gap rows still below the threshold when ALS stops.
+
+    On ``max-rounds`` the gaps the plan would have filled next are unresolved too; they are reported
+    as ``weak_rounds_exhausted`` so they cannot be read as filled.
+    """
+    statuses = ["weak_pool_exhausted", "weak_budget_deferred", "weak_band_disabled"]
+    if stop == "max-rounds":
+        statuses.append("weak_fill")
+    out = records[records.status.isin(statuses)].copy()
+    out["status"] = out.status.replace("weak_fill", "weak_rounds_exhausted")
+    return out.to_dict("records")
+
+
 def _schedule_lists(config: Config) -> dict:
     args = config.intermediate_args
     return dict(
@@ -1183,9 +1197,7 @@ def refine_schedule(job, round_index: int, round_result: dict, endstate, history
         stop = "max-rounds"
     if stop is not None:
         final = dict(reason=stop, rounds=round_index, deltaG=dG, schedule=schedule,
-                     unresolved=plan.records[plan.records.status.isin(
-                         ["weak_pool_exhausted", "weak_budget_deferred", "weak_band_disabled"])
-                     ].to_dict("records"),
+                     unresolved=_unresolved_gaps(plan.records, stop),
                      endstate_gaps=plan.endstate_gaps.to_dict("records"))
         with open(os.path.join(out_dir, "als", "final.json"), "w") as fh:
             json.dump(final, fh, indent=2, default=str)
