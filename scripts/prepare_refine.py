@@ -217,20 +217,33 @@ def endstate_cell(p, leg):
     return cells[0], os.path.join(window, "restraint.RST")
 
 
-def check_endstate(p, leg, traj, facts):
-    """Gate G1: the rebuilt trajectory is the one the run scored."""
+def check_endstate(p, leg, traj, facts, max_mismatched=0):
+    """Gate G1: the rebuilt trajectory is the one the run scored.
+
+    A frame matches when its restraint energy agrees with the scored one to 0.05 kcal/mol or 1e-4
+    relative (under the strongest window these energies reach 1e5 kcal/mol). Up to ``max_mismatched``
+    frames may differ; they are listed in the manifest.
+    """
     xyz, _ = read_traj(traj)
     cell, rst = endstate_cell(p, leg)
     scored = pd.read_parquet(cell).sort_values("FRAME")
     if len(xyz) != len(scored):
         raise GateError(f"{leg}: rebuilt trajectory has {len(xyz)} frames, the run scored {len(scored)}")
     energy = state_energies(xyz, band_restraints([rst]))[:, 0]
-    diff = np.abs(energy - scored.RESTRAINT.to_numpy())
-    facts[f"{leg}_restraint_max_abs_diff"] = float(diff.max())
-    facts[f"{leg}_restraint_mean_abs_diff"] = float(diff.mean())
-    if diff.max() > 0.05 or diff.mean() > 0.005:
-        raise GateError(f"{leg}: restraint energies of the rebuilt frames differ from the scored ones "
-                        f"(max {diff.max():.4f}, mean {diff.mean():.5f} kcal/mol)")
+    ref = scored.RESTRAINT.to_numpy()
+    diff = np.abs(energy - ref)
+    bad = diff > np.maximum(0.05, 1e-4 * np.abs(ref))
+    good = diff[~bad]
+    facts[f"{leg}_restraint_max_abs_diff"] = float(good.max())
+    facts[f"{leg}_restraint_mean_abs_diff"] = float(good.mean())
+    facts[f"{leg}_n_mismatched_frames"] = int(bad.sum())
+    facts[f"{leg}_mismatched_frames"] = [dict(frame=int(i), scored=float(ref[i]), rebuilt=float(energy[i]))
+                                         for i in np.flatnonzero(bad)]
+    if bad.sum() > max_mismatched or good.mean() > 0.005:
+        worst = int(np.argmax(diff))
+        raise GateError(f"{leg}: {bad.sum()} rebuilt frames differ from the scored ones (allowed {max_mismatched}; "
+                        f"worst frame {worst}: scored {ref[worst]:.4f}, rebuilt {energy[worst]:.4f} kcal/mol; "
+                        f"mean over matching frames {good.mean():.5f})")
     if leg == "complex":
         reference, _ = read_traj(facts["binding_mode"])
         if reference.ndim == 2:  # a restart holds one frame: (atoms, 3)
@@ -317,7 +330,7 @@ def prepare(config_path, args):
         trajs[leg] = os.path.join(out, f"{p['names'][leg]}_{temperature}K.nc")
         if args.force or not os.path.exists(trajs[leg]):
             rebuild_endstate(os.path.join(p["top"], "remd", p["names"][leg]), p["parms"][leg], temperature, trajs[leg])
-        check_endstate(p, leg, trajs[leg], facts) if leg != "receptor" else None
+        check_endstate(p, leg, trajs[leg], facts, args.max_mismatched_frames) if leg != "receptor" else None
         facts[f"{leg}_endstate_sha256"] = sha256(trajs[leg])
     manifest = dict(original_config=p["config"], original_config_sha256=sha256(p["config"]),
                     stage1=p["stage1"], endstates=trajs, checks=facts, check_seconds=round(time.time() - t0, 1))
@@ -357,6 +370,8 @@ def main():
     ap.add_argument("--threshold", type=float, default=0.03, help="min_degree_overlap (two-state)")
     ap.add_argument("--rounds", type=int, default=3, help="als_max_rounds")
     ap.add_argument("--max-new-windows", type=int, default=None, help="als_max_new_windows_per_round")
+    ap.add_argument("--max-mismatched-frames", type=int, default=0,
+                    help="endstate frames whose restraint energy may differ from the scored one (G1)")
     ap.add_argument("--check-only", action="store_true", help="gates G0 and G1 only")
     ap.add_argument("--force", action="store_true", help="rebuild trajectories and replace refine configs")
     ap.add_argument("--report", help="CSV with one row per run")

@@ -105,7 +105,8 @@ A finished run is refined from disk without rerunning REMD:
 - **Rebuild the endstates.** The 298 K complex and guest trajectories are rebuilt from the REMD
   replicas with the workflow's own cpptraj input. They are checked against what the run scored:
   frame count, the binding-mode frame, and every frame's restraint energy under the strongest
-  restraint window.
+  restraint window (to 0.05 kcal/mol or 1e-4 relative). `--max-mismatched-frames N` lets up to N
+  frames differ; they are listed in the manifest.
 - **Write the refine config.** It reuses them through `run_endstate_method: False` plus
   `complex_endstate_trajectory` / `ligand_endstate_trajectory`. The endstate keeps its
   `remd_endstate` label, so every scored cell is reused.
