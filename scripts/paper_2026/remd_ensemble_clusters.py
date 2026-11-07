@@ -49,7 +49,7 @@ USAGE
 -----
   module load amber                      # or: export CPPTRAJ=$AMBERHOME/bin/cpptraj
 
-  python scripts/remd_ensemble_clusters.py \\
+  python scripts/paper_2026/remd_ensemble_clusters.py \\
       --complex-parm  <run>/remd/MCL-1_ligand-1/MCL-1_ligand-1.parm7 \\
       --complex-traj  <run>/remd/MCL-1_ligand-1/MCL-1_ligand-1_298.0K.nc \\
       --receptor-parm <run>/remd/MCL-1_receptor-...IRN/MCL-1_receptor-...IRN.parm7 \\

@@ -23,10 +23,10 @@ Usage
 -----
   export SANDER=/opt/miniconda3/envs/isddm_env/bin/sander
   export CPPTRAJ=/opt/miniconda3/envs/isddm_env/bin/cpptraj
-  python scripts/gb_endpoint_probe.py --stride 50 --workdir /tmp/gb_endpoint_probe
+  python scripts/paper_2026/gb_endpoint_probe.py --stride 50 --workdir /tmp/gb_endpoint_probe
 
   # smoke test first (2 jobs, ~20 frames)
-  python scripts/gb_endpoint_probe.py --stride 500 --smoke --workdir /tmp/gb_endpoint_probe
+  python scripts/paper_2026/gb_endpoint_probe.py --stride 500 --smoke --workdir /tmp/gb_endpoint_probe
 
 Write --workdir to LOCAL disk: the repo lives on an sshfs mount that can drop mid-run. Every sander
 job is cached on a (trajectory, igb, params) fingerprint, so a dropped mount resumes.
@@ -39,9 +39,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# scripts/paper_2026/<this file>: the repo root is three levels up; gb_ddG_bar stays in scripts/
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "scripts"))
 
 import gb_ddG_bar as gbb  # noqa: E402  -- reuse rescore/first_frame_coord/env overrides
 
