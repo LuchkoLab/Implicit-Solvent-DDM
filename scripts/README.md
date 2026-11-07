@@ -17,12 +17,9 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `gb_ddG_bar.py` | ΔΔG between two GB models (OBC / OBC2 / GBn2) by re-scoring end-state trajectories under both | yes |
 | `gb_junction_overlap.py` | **GB-band ↔ gas junction overlap, with and without the scoring-`saltcon` fix** — re-scores the two trajectories straddling the junction and reports BAR ΔG + MBAR overlap both ways | yes |
 | `endstate_seam_overlap.py` | **endstate ↔ `lambda_window` seam overlap, each side under its OWN `restraint.RST`** — the restraint-carrying sibling of the above: 4 `sander imin=5` jobs (both ensembles × both Hamiltonians, `nmropt=1` both sides), then a 2-state MBAR giving ΔG and the min-direction overlap. Use this and **not** `gb_junction_overlap.py` at this seam, which writes `nmropt=0` and would return overlap ≈ 1. Validates both DISANG files before running | yes |
-| `gb_endpoint_probe.py` | Re-scores a whole GB ladder under both scoring salt concentrations plus the gas endpoint (the full N×N version of the above) | yes |
-| `gb_endpoint_analyze.py` | Builds two MBAR problems from `gb_endpoint_probe.py` output that differ only in scoring `saltcon`, and compares their overlap matrices | no |
 | `window_blowup.py` | **Where did a window trajectory blow up?** — finds the first frame whose bonds leave frame 0's by more than `--tol`, lists the atoms that moved most into it (with distance to the ligand), the most stretched bonds, the non-bonded contacts under `--contact` in the last good frame, and each Boresch angle and dihedral from the window's `restraint.RST` up to the break. For windows whose mdout turns to `****` but still finish | no (pytraj) |
 | `endstate_window_rmsd.py` | **Is the endstate in the same basin as the weakest restraint window?** — cross-RMSD between the endstate and a `lambda_window` trajectory, to tell a structural mismatch (which ALS cannot fix) from a stiffness gap (which it can) | yes |
 | `stride_extended_window.py` | **Glue an extended `lambda_window` run back into 10,000 frames** — strides the finished trajectory and concatenates the extension, so a 2 ns window re-run to 5 ns or 10 ns still hands post-analysis the frame count the rest of the cycle carries | yes |
-| `remd_ensemble_clusters.py` | **Do the complex and apo receptor REMD ensembles share basins?** — strips the ligand, clusters both ensembles together, and cross-tabulates cluster membership by origin. Answers whether a REMD floor window could cross the holo↔apo barrier, and emits apo seed frames for a multi-seeded window. On MCL-1: 14 clusters, **0 mixed** | yes |
 | `filter_restraints.py` | **Drop restraints touching a selection from a DISANG file** — writes the kept `&rst` blocks through verbatim, terminator included. Used to free a floppy region whose restraint energy dominates the endstate seam without bearing on binding | no |
 | `two_state_overlap.py` | **MBAR overlap between the endstate and one restraint window, with and without a freed selection** — no sander: the two states differ only by the conformational restraint, so the reduced potential difference *is* the restraint energy, computed straight from coordinates and the DISANG file | no |
 | `extract_remd_temperature.py` | **Pull the target-temperature trajectory out of a finished REMD leg** — cpptraj `remdtraj` over the `remd.nc.00*` replica set, one output per solute under a `remd/` tree, plus first/last-frame restarts, in NetCDF or DCD (`--format`). Also handles the `-rem 0` equilibration leg, where each replica is already a fixed rung and only the endpoints are written (standalone form of `simulations.ExtractTrajectories`) | yes |
@@ -30,17 +27,24 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 | `dg_vs_experiment.py` | **Computed ΔG vs experiment, and vs the replicates** — reads every `deltaG_*.h5` under one or more run directories, labels each run by the flat-bottom protocol its own `restraint.RST` carries (so mixed-protocol ligands are dropped rather than averaged), and plots replicate-vs-replicate, each run vs experiment, and the published ABFE reference on shared axes | no |
 | `plot_replicate_correlation.py` | **Replicate-mean ΔG vs experiment** — sums the legs of every `deltaG_*.h5` (flat-bottom term excluded), plots mean ± SEM with ±1/±2 kcal/mol bands and bootstrap-CI metrics; `--bounds` draws detection-limit ligands hollow and drops them from the metrics, `DIR=N` files a rerun tree as replicate N | no |
 | `lj_step_estimators.py` | **Is the complex LJ step's ΔG trustworthy despite near-zero overlap?** From the cached energies only: BAR, forward (insertion) and reverse (deletion) exponential averaging with bootstrap errors, the cached MBAR value, BAR on each half of the run, and the effective number of frames carrying each one-sided average. Agreement within ~1 kcal/mol means the thin link is not biasing the step; disagreement means it needs intermediate LJ windows | no |
-| `pocket_compression_check.py` | **Why does the complex LJ-off → LJ-on step have no overlap even when the ligand stays put?** Compares the `no_interactions` and `interactions` windows (same restraints, only ligand–protein LJ differs): where the conformational-network pairs around the pocket sit in their ±0.5 Å flat-bottom well, how far pocket atoms close on the decoupled ligand, and the restraint energy a narrower well would add. Prints a provisional verdict: A (pocket closes inside the free play → narrow the well), B (walls engaged but soft → force constant), C (network doesn't see it) | no (pytraj) |
 | `cycle_audit.py` | **Why do replicates disagree? Where the complex and receptor legs fail to cancel** — four subcommands: `cancel` (per-band complex+receptor sums and per-GB-step mismatch, cache only), `saltbridge` (salt-bridge state of a freed selection's charged residues per GB window and leg), `pose` (the ligand pose each replicate held vs the input), `seam` (receptor endstate → weakest-window gap by region, plus an endstate × reference cross check that tells a bad endstate from a bad reference). MBAR overlap cannot see any of these — each leg is its own MBAR problem | yes (pytraj, not AMBER) |
 | `extend_weak_windows.py` | **Does more sampling in the weak restraint windows lower the replicate spread?** `setup` writes one restart job per window at or below `--max-exponent` (default −8.5) continuing it to `--target-ns` (default 20), plus a SLURM array script; each task fails on NaN/Infinity/overflow in its mdout. `analyze` re-solves the band from the `--anchor` window (default −8.0) down to the weakest with MBAR on restraint energies computed from coordinates (states differ only by force constants), for the original frames, original + extension, and extension only, then substitutes each into the replicate's ΔG_bind and reports the SD across replicates. Aborts if its energies disagree with the cached post-analysis matrix | setup: no; runs: pmemd |
-| `gb_half_check.py` | **Does CPU pmemd fix the GB band?** `pmemd.cuda` ignores `extdiel`, so a GPU GB-dielectric window samples water. `setup` rebuilds one GB window (default ε=2, "GB half on") as a CPU `pmemd.MPI` job with the same mdin, restraint file and a `cv.in` reconstructed from the mdout NFE echo; `analyze` scores gas, CPU half, GPU half and water under the gas/half/water Hamiltonians with sander and prints BAR for gas→half→water with the CPU and the GPU half window; `setup-band` writes one CPU batch job (`submit.sh`) per GB-dielectric window of each leg plus a `submit_all.sh` | yes |
+| `als_census.py` | **Which finished runs would post-production ALS refine, and at what cost?** `scan` solves the two-state overlap of every adjacent pair of every leg from the stored `*_formatted.h5` (the Phase 7 subsampling) and caches one table per leg; `plan` runs `als_refine.plan_refinement` on the cached tables at several thresholds and writes the would-be insertions, a core-hour estimate and one target list per threshold. Read-only on the runs | no |
+| `prepare_refine.py` | **Refine a finished in-solvent run without rerunning REMD** — checks the run is complete on disk (G0), rebuilds the complex and guest endstate trajectories from the REMD replicas and checks them against what the run scored (G1), then writes a refine config under `<W>/refine/` and a submit script pinned to a frozen code checkout. Takes the target lists `als_census.py plan` writes | cpptraj only |
 | `ingb_decouple_check.py` | **Can the ligand be decoupled inside GB water instead of in vacuum?** Builds complex variants (ligand charges 0; + GB screening 0; + ligand-receptor LJ 0) from one structure, runs a single step with pmemd.cuda, pmemd and sander, and checks that the fully decoupled complex reproduces the apo receptor's EGB and EELEC and the receptor + ligand-intramolecular VDW, plus GPU/CPU agreement | yes |
 | `in_solvent_states_check.py` | **Are the in-solvent cycle topologies right before any MD?** Builds every `decouple_in_solvent` state (no_interactions, LJ windows, interactions, screening windows, uncharged/charged electrostatics, ligand q=0) through the workflow's own `alter_topology`, runs a single step per engine, and checks the decoupled complex against the apo receptor + ligand, the uncharged ligand's zero GB/EELEC, and that interactions and screening-off leave receptor EGB unchanged | yes |
+| `plot_in_solvent_cycle.py` | Draws the in-solvent decoupling cycle as a three-leg state diagram (default output `docs/in_solvent_cycle.png`, used by `docs/in_solvent_cycle.md`) | no |
 | `relax_binding_pose.py` | **Pre-step: relax the one input binding pose ONCE, before any replicate** — restrained minimise → heat → equilibrate → minimise under the production GB settings (`igb`/`saltcon`/`extdiel`, not `min.mdin`'s `saltcon=0`), with the ligand heavy atoms + pocket C-alphas held to the input pose in every stage. Writes the complex/receptor/ligand restarts every replicate shares, a pose-RMSD plateau check, and fails on NaN/Infinity mdouts | yes |
-| `nfe_rmsd_probe.py` | **Can AMBER give us a GPU RMSD restraint, and is it best-fit?** — stands up `infe=1` + `&pmd` + `MULTI_RMSD` from scratch and checks that it runs, that the CV is rotation/translation invariant and equals cpptraj `rms … mass`, that it applies force rather than only monitoring, and that `cv_ni` does not silently truncate | yes |
-| `_run_cb7_overlap.py` | Scratch driver: run the cb7 workflow on local scratch and emit MBAR overlap matrices | yes |
+| `_run_cb7_als.py` | Driver: the cb7 workflow with post-production ALS — production on the config's windows (round 0), then a window in every adjacent gap below `THRESHOLD`, re-scored with warm resume | yes |
+| `_run_cb7_gpu.py` | Driver: cb7 on GPU+CPU, showing post-analysis re-scoring overlapping the GPU MD | yes (GPU) |
+| `timing_report.py` | Parses `[TIMING]` records from a run log into a per-phase wall-clock + CPU-h/GPU-h breakdown (`endstate` / `intermediate_md` / `post_analysis` / `mbar`); `--per-job <phase>` lists every job in one phase, slowest first | no |
 | `gpu_packing_benchmark.py` | **How many windows can share one GPU?** — runs N concurrent `pmemd.cuda` copies of one finished window on a single device (sweep of N, MPS off and on) and reports total and per-copy ns/day, GPU utilisation and memory, CPU time per copy, and whether every copy's EPtot series matches the first run (same seed) | yes (GPU) |
 | `run_apo_receptor_md.py` | **Unbiased apo receptor endstate, shared across ligands** — the workflow's minimization (`templates/min.mdin`) then the complex's basic-MD endstate mdin with an empty DISANG and a fixed seed, so one 100 ns 298 K receptor trajectory per replicate can be passed as `receptor_coordinate_filename` (with `--ignore_receptor`) instead of a REMD ladder that unfolds the protein | yes (GPU) |
+
+One-time probes and lab-path scripts from the 2026 paper work (the GB endpoint probe, the CPU GB-half
+check, the NFE RMSD probe, the pocket-compression check, the bound-vs-apo receptor comparisons and the
+igb=2 → igb=8 manifest) are in `paper_2026/`. They are provenance only and not maintained; see
+`paper_2026/README.md`.
 
 ---
 
@@ -48,9 +52,9 @@ pytables); the AMBER-dependent ones additionally need `sander`/`cpptraj` on `PAT
 
 **Question.** `only_post_analysis` (`runner.py`) re-scores every trajectory under every window in a
 leg — a full N² of `sander imin=5` evaluations — because MBAR needs every frame's energy at every
-state. That CPU tail, not the GPU MD, dominates the DDM budget (see `PERFORMANCE_TIMING.md`). If a
-chain of 2-state BAR calculations between *adjacent* windows is accurate enough, post-analysis only
-needs the **tridiagonal**: `3N−2` blocks instead of `N²`. For the cb7 complex leg (N=39) that is
+state. That CPU tail, not the GPU MD, dominates the DDM budget (`timing_report.py` gives the
+per-phase split). If a chain of 2-state BAR calculations between *adjacent* windows is accurate
+enough, post-analysis only needs the **tridiagonal**: `3N−2` blocks instead of `N²`. For the cb7 complex leg (N=39) that is
 115 vs 1521 (~13×); for a 74-window protein–ligand leg, 220 vs 5476 (~25×).
 
 **Method.** Uses only the already-computed `.cache/<system>/*_formatted.h5` matrices — no MD, no
@@ -85,7 +89,7 @@ python scripts/bar_vs_mbar.py --root <run_dir> --nproc 8          # everything
 ```
 
 `<run_dir>` holds `rep1..repN`, each with `.cache/<system>/*_formatted.h5`, e.g.
-`.../different_gbs/igb_2/cb7_re_parameterization`. `--systems` matches substrings, so `cb7_adn`
+`/path/to/runs/igb_2/cb7_re_parameterization`. `--systems` matches substrings, so `cb7_adn`
 selects `cb7_adn_ligand_1_Hmass`. Temperature must match the production
 `intermediate_args.temperature` (298 K for the igb_2 cb7 runs, and for the alibay MCL-1 runs); it
 is not a free scale factor, since MBAR is solved on `u = E/kT`.
@@ -118,8 +122,8 @@ Per-task results are cached under `--scratch`, so a dropped mount or a killed ru
 
 **Runtime.** The slow step is `pdmbar.detect_equilibration`, which production calls with `nskip=1` —
 pymbar then scans every frame as a candidate equilibration start, per state, for 35–39 states per leg.
-Kept at the production default for fidelity. Run the full sweep on titan where the data is local, not
-across the sshfs mount.
+Kept at the production default for fidelity. Run the full sweep on the machine that holds the data,
+not across a network mount.
 
 **Caveats.** cb7 is a useful stress case (its complex leg contains the gas→water desolvation cliff,
 adjacent overlap ~0.008) but a protein–ligand leg has more adjacent steps for error to accumulate
@@ -174,7 +178,7 @@ reference). Per-task results are cached under `--scratch`, so a dropped mount re
 **Question.** Orthogonal to the N² question above. Each `sander imin=5` job re-scores **every frame**
 of its source trajectory — production writes `ntwx=250` over 2.5 M steps, so 10,000 frames per job —
 and the full N² matrix pays that 10,000 times over. Measured on MCL-1/ligand-1: 4,344 s per job,
-4,208 CPU-h per replicate, 23.4 h on 180 cores (`research/STATUS.md`). But `subsample_correlated_data`
+4,208 CPU-h per replicate, 23.4 h on 180 cores. But `subsample_correlated_data`
 runs *after* the expensive pass and discards everything inside the correlation time. If striding to
 500 frames leaves ΔG unchanged, post-analysis gets ~20× cheaper — **multiplicatively** with the
 tridiagonal cut that `bar_vs_mbar.py` measures.
@@ -197,11 +201,11 @@ Two things to know before editing:
 - Striding **must** group by `df.index`. The rows are stacked per sampled state, so a global
   `[::stride]` would thin states unevenly and break pymbar's `sum(N_k) == n_samples` invariant.
 - It uses `bar_vs_mbar.MBAR_PROTOCOL`, not pymbar's default — pymbar's `(hybr, adaptive)` default
-  stalls on this data and returns non-converged free energies (`research/STATUS.md`). Every row
-  carries `mbar_grad_norm`; check it before believing any ΔG. `--warm-start` initializes from the
-  arm's own adjacent-pair BAR chain (identical treatment across arms; safe only because the gradient
-  norm is reported — MBAR's objective is strictly convex, so a *converged* solve is the unique
-  optimum regardless of where it started).
+  stalls on this data and returns non-converged free energies. Every row carries `mbar_grad_norm`;
+  check it before believing any ΔG. `--warm-start` initializes from the arm's own adjacent-pair BAR
+  chain (identical treatment across arms; safe only because the gradient norm is reported — MBAR's
+  objective is strictly convex, so a *converged* solve is the unique optimum regardless of where it
+  started).
 
 **Side benefit:** `detect_equilibration` also returns the statistical inefficiency, so the output
 answers "what stride is actually justified?" directly — `mean_g` is the correlation length in frames
@@ -260,12 +264,12 @@ ABFE-derived difference `dG_bind(B) − dG_bind(A)`.
 ```bash
 module load amber                                       # sander + cpptraj on PATH
 python scripts/gb_ddG_bar.py --selftest                 # verify the BAR math, no sander needed
-python scripts/gb_ddG_bar.py --manifest scripts/gb_ddG_ign2igb8.yaml --out ddG_gb2togb8.csv
+python scripts/gb_ddG_bar.py --manifest my_manifest.yaml --out ddG_gb.csv   # copy gb_ddG_manifest.example.yaml
 ```
 
-**Manifests in this directory:**
-- `gb_ddG_manifest.example.yaml` — igb=2 → igb=5 (OBC → OBC2), annotated template
-- `gb_ddG_ign2igb8.yaml` — igb=2 → igb=8 (OBC → GBn2), with per-model `parm_A`/`parm_B`
+**Manifest template:** `gb_ddG_manifest.example.yaml` — igb=2 → igb=5 (OBC → OBC2), annotated, with
+placeholder paths. The igb=2 → igb=8 (OBC → GBn2) manifest used for the paper, with per-model
+`parm_A`/`parm_B`, is `paper_2026/gb_ddG_ign2igb8.yaml`.
 
 **Replica handling (read before quoting results).** By default it runs BAR **separately per
 replica** — pairing replica *r* of ensemble A with replica *r* of ensemble B, one BAR per leg,
@@ -452,34 +456,35 @@ velocities) and the new `nstlim`/`ntwx`/`ntpr`; `igb`, `saltcon`, `extdiel`, `dt
 
 ---
 
-## `_run_cb7_overlap.py` — scratch workflow driver with overlap output
+## Run drivers and `timing_report.py`
 
-Mirrors `conftest.run_workflow` but (1) turns on `plot_overlap_matrix`, (2) lets `NSTLIM` override
-the intermediate MD length, and (3) routes **all** outputs and the Toil jobstore to a local scratch
-dir (default `/tmp/cb7_als_run`) instead of the sshfs mount.
+Run these from the repo root as `python scripts/<name>.py`. The two drivers put the repo root first
+on `sys.path`, so they import this checkout's package rather than an installed copy. Their settings
+are environment variables, listed in each docstring.
 
-The local filesystem supports xattrs natively, so macOS does not create the `._` AppleDouble sidecars
-that the workflow's `os.listdir`-based file discovery would otherwise pick up (the
-`FileNotFoundError: ._charge_*.parm7` failure). Inputs are still read from the mount.
+- `_run_cb7_als.py` — the cb7 workflow with post-production ALS. `CONFIG` (default
+  `implicit_solvent_ddm/tests/input_files/config.yaml`, 100-step windows), `THRESHOLD` (default 0.5,
+  so a smoke test inserts in every band), `ROUNDS`, `IN_SOLVENT` (1 decouples in GB water, 0 keeps
+  the gas cycle), `SCRATCH`. Afterwards, `grep '\[ALS\]' $SCRATCH/cb7_als.log` shows the rounds,
+  plans and stop reason, and `$SCRATCH/.cache/<complex>/als/` holds `history.csv`, `final.json` and
+  `round_XX/pairs.csv`. Runs on CPU only.
+- `_run_cb7_gpu.py` — cb7 with complex/receptor MD on `pmemd.cuda` and ligand MD plus all
+  post-analysis on CPU, to show post-analysis re-scoring starting while GPU MD is still running.
+  `MAXCORES`, `EXECUTABLE`, `ADAPTIVE` (1 adds post-production ALS rounds), `NSTLIM`/`FRAMES`
+  (lengthen the GPU windows at a fixed frame count), `SCRATCH`, `TOIL_LOG` (default `INFO`; the
+  `[TIMING]` lines need it).
+- `timing_report.py` — reads the `[TIMING]` lines the package writes for every MD and post-analysis
+  subprocess and every MBAR solve. Per phase: job count, elapsed hours (first start to last end),
+  CPU-hours and GPU-hours. Handles partial and hung logs.
 
----
+```bash
+SCRATCH=./cb7_als_run python scripts/_run_cb7_als.py
+MAXCORES=40 SCRATCH=./cb7_gpu_run python scripts/_run_cb7_gpu.py
+python scripts/timing_report.py ./cb7_gpu_run/cb7_gpu.log
+python scripts/timing_report.py --per-job intermediate_md ./cb7_gpu_run/cb7_gpu.log   # slowest first
+```
 
-## Related scripts still at the repo root
-
-These are **tracked in git** and were left in place to avoid churn on a branch with other pending
-work. They belong here too — move them with `git mv` when convenient.
-
-- `timing_report.py` — parses `[TIMING]` records from a run log into a per-phase wall-clock +
-  CPU-h/GPU-h breakdown (`endstate` / `adaptive` / `intermediate_md` / `post_analysis` / `mbar`).
-  Handles partial and hung logs.
-- `_run_cb7_gpu.py` — driver: cb7 DDM on GPU+CPU, demonstrating the merged MD→post pipeline overlap.
-- `_run_cb7_pilot.py` — driver: cb7 with the ALS pilot (Phase 4.5) enabled; Step 5a smoke test.
-- `_run_cb7_pilot_real_production.py` — driver: real production run (4 fs / 10 ns windows) with the
-  ALS pilot enabled.
-
-`new_scheduler.py` (untracked, repo root) is a **rejected dead end** — its per-runner round-robin GPU
-assignment double-books GPU 0. See "Ruled Out / Dead Ends" in `research/STATUS.md`. Build on
-`runner.py` instead.
+In the `_run_cb7_gpu.py` report, `post_analysis` should start before `intermediate_md` ends.
 
 ---
 
@@ -513,10 +518,9 @@ ladder has lost it for good (`dBeta * dE` of 7-8 is an acceptance of ~1e-4).
 
 **Why.** The benchmark structures are raw tleap output that has never been through dynamics, and
 `restraint_reference: pose_medoid` failed because each replicate derived its reference from its own
-stochastic sampling (`research/STATUS.md`, Ruled Out). The invariant that matters is that runs with
-different seeds see the *same* reference file. This script makes that file once, from the fixed input
-pose. **Run it once per system and point every replicate at the output. Re-running it per replicate
-brings the problem back.**
+stochastic sampling. The invariant that matters is that runs with different seeds see the *same*
+reference file. This script makes that file once, from the fixed input pose. **Run it once per system
+and point every replicate at the output. Re-running it per replicate brings the problem back.**
 
 **What it does.** Four `ntr=1` stages, each referenced to the **input** pose (`-ref` never advances,
 so the pose cannot drift stage by stage): `01_min` → `02_heat` (10 K → T, 2 fs, TEMP0 ramp) →
@@ -603,106 +607,31 @@ weakest window's `restraint.RST` — exact, since that is the only term differin
 
 ---
 
-## `pocket_compression_check.py` — is the pocket closing inside the restraints' free play?
+## `als_census.py` and `prepare_refine.py` — post-production ALS on finished runs
 
-**Why.** With the Boresch restraints holding (MCL-1 ligands 17 and 4), the complex `no_interactions → interactions`
-step still has overlap 0.002–0.03: with LJ off, ligand–protein contacts close by ~0.35 Å, and the r⁻¹² wall turns that
-into a +27 kcal/mol median penalty (0.1% of LJ-off frames resemble LJ-on ones). The conformational network is a
-flat-bottom well — zero force within d₀ ± 0.5 Å — so a stronger force constant cannot stop motion inside it. This
-script tells whether that free play is where the pocket closes, before any restraint change.
+Both are described in `docs/post_production_als.md`. `als_census.py` picks the threshold and the
+runs worth refining; `prepare_refine.py` turns each chosen run into a refine job.
 
-    python scripts/pocket_compression_check.py fragment-opt-abfe-benchmark/isdmm_runs/mcl1_rampbb_10ns_rep1 \
-        --system MCL-1_ligand-17
+```bash
+python scripts/als_census.py scan --root <runs> --out census --workers 32
+python scripts/als_census.py plan --out census --thresholds 0.01 0.02 0.03 0.04 0.05
+python scripts/prepare_refine.py --targets census/targets_t0.03.txt --code <checkout> --threshold 0.03
+```
 
-The two windows share one `restraint.RST` and differ only in ligand–protein LJ, so the comparison is controlled (the
-script warns if their restraints differ). Pocket-contact atoms are receptor atoms within `--contact` (4.5 Å) of the
-ligand in the reference; far control pairs lie beyond `--far` (15 Å) and should not move between windows.
+`<runs>` holds `igb_<gb>/<system>/in_solvent/rep<rep>/config_files/*.yaml`; `--gbs`, `--systems`
+and `--reps` pick the subtree. `scan` writes `runs.csv`, one cached table per leg under `legs/`
+(reused on a re-run unless `--force` is given or the leg's matrix is newer) and `scan_status.csv`.
+`plan` reads only the census directory and writes `census_plan.csv`, `census_pairs.csv`,
+`census_endstate_seams.csv`, `census_summary.csv` and `targets_t<threshold>.txt`, the list of
+configs whose plan inserts at least one window. The core-hour estimate uses per-leg MD and per-cell
+scoring times measured on one sampl9 run (constants at the top of the script).
 
-**Read it in this order:** section 1's median shift for `pocket heavy-heavy` (negative = compressed with LJ off) against
-its `past_wall` fraction; section 2 confirms the atoms really close on the ligand; section 3 says where the pairs of the
-clashing atoms sit (inside the free zone vs past the wall); section 4 compares the restraint energy a `--narrow` (±0.1 Å)
-well would put on the LJ-off frames with the LJ penalty they carry now. The verdict line is a heuristic — the tables
-are the result. Default `--stride 10` (200 frames per 10 ns window).
+`prepare_refine.py --check-only` runs gates G0 and G1 only, with no config or submit script.
+Otherwise it writes `<W>/refine/config_files/<config>.yaml` and `<W>/refine/ddm_submit/<guest>.sh`;
+`--code` is the frozen checkout the submit script pins on `PYTHONPATH`. It imports `als_census.py`
+and `extend_weak_windows.py` from this directory, and needs `cpptraj` on `PATH`.
 
-**Result on MCL-1 ligands 17 and 4 (verdict C):** the pocket does not deform — pocket pair distances are identical
-with LJ on and off (shift ≤ 0.003 Å, 0% past the wall) and clashing atoms sit at d₀ — yet 18–25% of pocket atoms end up
-> 0.3 Å closer to the LJ-off ligand. A ±0.1 Å well would add ~1,400 kcal/mol of restraint energy, so narrowing it is out.
-Sections 5–7 test the follow-up explanation, the decoupled ligand wobbling as a rigid body inside the harmonic Boresch
-restraints: 5 the ligand's pose spread relative to the pocket per window (RMSD, centroid shift, rotation); 6 each Boresch
-coordinate's SD per window next to the thermal prediction √(kT/2k); 7 which ligand atoms come within `--lig-contact`
-(2.2 Å) of the protein with LJ off, with their lever arm from the anchor L1 (far atoms loaded = rotation about the
-anchor). A broader LJ-off pose with near-thermal Boresch SDs points to stiffer Boresch force constants as the fix.
-
-## `nfe_rmsd_probe.py` — can AMBER give us a GPU RMSD restraint, and is it best-fit?
-
-**Question.** We want to replace the pairwise conformational restraint network (82,077 `&rst` terms
-on MCL-1) with one best-fit RMSD collective variable under a flat-bottom umbrella, so the restraint
-ladder walks a bounded coordinate in Angstrom that terminates exactly at the unrestrained endstate.
-Targeted MD (`itgtmd=1`) is the obvious mechanism and is unusable: the AMBER 25 manual lists it under
-functionality "missing entirely" from PMEMD (Sec. 23.3), and there is no `sander.cuda`. The surviving
-route is AMBER's NFE module, `infe=1` + `&pmd` + `cv_type='MULTI_RMSD'`, which Sec. 26.4.4 says "can
-be fully applied in GPU accelerated PMEMD". The manual leaves the load-bearing details unstated.
-
-**What it decides.**
-
-| probe | question | blocking? |
-|---|---|---|
-| 1 `runs` | does `infe=1` + `&pmd` + MULTI_RMSD start on `pmemd.cuda` with `igb != 0`, alongside a live `nmropt=1` DISANG? | yes |
-| 2 `bestfit` | is the CV rotation/translation invariant, and does it equal cpptraj `rms … mass`? | **yes — this is the gate** |
-| 3 `bias` | does the restraint apply force, or only monitor? | no |
-| 4 `rescore` | does `imin=5` evaluate NFE, and does the bias reach the `ENERGY` column MBAR reads? | no |
-| 5 `scale` | does `cv_r` survive at protein size without silent truncation? | yes |
-
-`--probe gate` (default) runs 1, 2 and 5.
-
-**Why probe 2 is the gate.** `MULTI_RMSD` cites Coutsias/Seok/Dill (quaternion RMSD), which *is* an
-optimal-superposition method, but the manual never says the NFE driver superimposes before calling
-it. A lab-frame CV would fight the Boresch orientational restraints and invalidate the standard-state
-correction — the design would be wrong, not merely slow. The probe settles it by evaluating the CV at
-step 0 from the same coordinates twice, once against the reference as given and once against a
-rigidly rotated and translated copy of it, and cross-checking both against cpptraj. **It does not
-need a GPU**, so it can be answered with `--executable sander` before any GPU allocation.
-
-**Why probe 5 exists.** This workflow has already been bitten by an undocumented Fortran array cap:
-`igr1`/`igr2` top out at 200 atoms, which is what forced the `@CA` workaround in the flat-bottom COM
-restraint (release v1.1.3). There is no documented limit on `cv_ni`/`cv_nr`. HSP90 has 207 CA atoms,
-so the probe compares the reported CV against cpptraj rather than merely checking for an error.
-
-**Method.** Each probe writes its own self-contained mdin + `cv.in` + `restraint.RST` into a case
-subdirectory and runs AMBER directly — nothing in `implicit_solvent_ddm/` is touched, except that
-probe 4 imports the package's own `mdout.min_to_dataframe` so it measures exactly what MBAR would
-see. The DISANG is a real but zero-force `&rst`, so `nmropt=1` and NFE are exercised together without
-perturbing the energy. `&pmd` is emitted after `&cntrl` and *before* `&wt`/`DISANG`, which is the
-placement the workflow's planned mdin injector will use, so the probe validates that choice.
-
-The restrained set degrades the way `restraints.FlatBottom` already does — `@CA` when present, all
-heavy atoms otherwise — so cb7 exercises the host–guest fallback path.
-
-**Reading it.** Every probe prints GO or NO-GO with the number it decided on, and the exit status is
-non-zero if any blocking probe fails. The `pmd.txt` layout is undocumented, so the CV column is a
-defensible guess (`--pmd-column`, default 1); pass `--show-pmd` on the first run to eyeball the raw
-head before trusting the parse.
-
-**Existing trajectories.** Pass `--traj` and the script stops generating its own: probe 1 shrinks to
-a single step (the only question it still answers is whether the run starts), and probes 2/5 draw
-`--frames` check points spread through the real trajectory instead of a 1 ps relaxation. That is the
-better test — a CV that is right near zero and wrong at 3 Å would pass a single-point check, so
-covering the RMSD range the ladder will actually traverse matters. Probe 4 re-scores the same
-trajectory.
-
-    # the design-critical question, CPU, no GPU allocation needed
-    python scripts/nfe_rmsd_probe.py --probe 1,2 --executable sander --show-pmd \
-        --prmtop implicit_solvent_ddm/tests/structs/cb7-mol01.parm7 \
-        --inpcrd implicit_solvent_ddm/tests/structs/cb7-mol01.ncrst \
-        --traj  implicit_solvent_ddm/tests/structs/cb7-mol01_300K.nc \
-        --workdir nfe_probe_cb7
-
-    # then the GPU question, and the force check
-    python scripts/nfe_rmsd_probe.py --probe gate --executable pmemd.cuda \
-        --prmtop ... --inpcrd ... --traj ... --workdir nfe_probe_cb7_gpu
-    python scripts/nfe_rmsd_probe.py --probe 3 --nstlim 25000 --k 50 --prmtop ... --inpcrd ...
-
-Probe 3 always runs new MD — you cannot show that a force is applied without integrating it.
+---
 
 ## `gpu_packing_benchmark.py` — how many windows can share one GPU?
 
@@ -725,7 +654,7 @@ GPU total is 1,735 / 2,726 / 3,327 / 3,480 / 3,489 ns/day at 1 / 2 / 4 / 8 / 16 
 ## `run_apo_receptor_md.py` — unbiased apo receptor endstate
 
     python scripts/run_apo_receptor_md.py --prmtop <receptor.parm7> --inpcrd <receptor_relaxed.rst7> \
-        --md-mdin input_files/four_fento_basic_md.mdin --out <dir> --ig 1001
+        --md-mdin <complex_basic_md.mdin> --out <dir> --ig 1001
 
 Writes `<name>_298.0K.nc` (and a last-frame restart) under `--out`; `--dry-run` writes the inputs and prints
 the two pmemd commands. Both steps are checked for completion and NaN energies.
