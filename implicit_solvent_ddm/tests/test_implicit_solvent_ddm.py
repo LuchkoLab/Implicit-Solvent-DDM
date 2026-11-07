@@ -14,6 +14,9 @@ from matplotlib.pyplot import get
 from toil.common import Toil
 from toil.job import Job
 
+# needs the session-wide Toil + sander CB7 run; some tests read its output files directly
+pytestmark = [pytest.mark.workflow, pytest.mark.usefixtures("run_workflow")]
+
 working_directory = os.getcwd()
 
 
