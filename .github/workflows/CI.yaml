@@ -1,76 +1,52 @@
 name: CI
-
 on:
-  # GitHub has started calling new repo's first branch "main" https://github.com/github/renaming
-  # Existing codes likely still have "master" as the primary branch
-  # Both are tracked here to keep legacy and new codes working
   push:
-    branches:
-      - "master"
-      - "main"
-    paths-ignore:
-      - 'docs/**'
-      - 'README.md'
-      - '.github/workflows/docs.yml'
+    branches: [main]
+    paths-ignore: ['docs/**', 'scripts/**', '**/*.md', '.github/workflows/docs.yml']
   pull_request:
-    branches:
-      - "master"
-      - "main"
-    paths-ignore:
-      - 'docs/**'
-      - 'README.md'
-      - '.github/workflows/docs.yml'
+    branches: [main]
+    paths-ignore: ['docs/**', 'scripts/**', '**/*.md', '.github/workflows/docs.yml']
+  schedule:
+    - cron: '30 7 * * 1'          # weekly run on main: catches conda-forge drift
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash -el {0}            # login shell activates the micromamba env
+# CPU only: GitHub runners have no GPU; GPU/MPI tests carry the hpc marker and are deselected.
+# Both jobs run in parallel on every PR.
 jobs:
-  test:
-    name: Test on ${{ matrix.os }}, Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.10"]
-        # solver: ["libmamba"]
-    steps:  
-    - uses: actions/checkout@v4
-
-    - name: Additional info about the build
-      shell: bash
-      run: |
-        uname -a
-        df -h
-        ulimit -a
-      
-     # More info on options: https://github.com/marketplace/actions/setup-micromamba
-    - uses: conda-incubator/setup-miniconda@v3
-      with: 
-        python-version: ${{ matrix.python-version }}
-        environment-file: devtools/conda-envs/test_env.yaml
-        condarc: |
-          channels:
-            - conda-forge
-            - defaults
-            - omnia
-
-
-    - name: Install package
-
-      # conda setup requires this special shell
-      shell: bash -l {0}
-      run: |
-        python setup.py sdist 
-        pip install dist/*
-
-
-    - name: Run tests
-
-      # conda setup requires this special shell
-      shell: bash -l {0}
-
-      run: |
-        pytest -v --cov=implicit_solvent_ddm --cov-report=xml --color=yes  implicit_solvent_ddm/tests/test_implicit_solvent_ddm.py  
-
-    - name: CodeCov
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./coverage.xml
-        flags: unittests
-        name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: devtools/conda-envs/test_env.yaml
+          cache-environment: true
+          cache-downloads: true
+      - run: python -m pip install -e .          # brings toil==8.2.0
+      - run: >-
+          pytest implicit_solvent_ddm/tests -m "not workflow and not hpc"
+          --durations=15 --cov=implicit_solvent_ddm --cov-report=xml
+      - uses: codecov/codecov-action@v5
+        continue-on-error: true
+        with: { files: ./coverage.xml, flags: unittests, token: '${{ secrets.CODECOV_TOKEN }}' }
+  workflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mamba-org/setup-micromamba@v3
+        with:
+          environment-file: devtools/conda-envs/test_env.yaml
+          cache-environment: true
+          cache-downloads: true
+      - run: python -m pip install -e .
+      - run: pytest implicit_solvent_ddm/tests -m "workflow and not hpc" --durations=10
+      - if: failure()
+        uses: actions/upload-artifact@v6
+        with: { name: workflow-logs, path: mdgb/, if-no-files-found: ignore }
