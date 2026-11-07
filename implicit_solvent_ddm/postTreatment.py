@@ -88,6 +88,7 @@ class ConsolidateData(Job):
         complex_filename,
         ligand_filename,
         receptor_filename,
+        endstate_label: str = "endstate",
         plot_overlap_matrix: bool = False,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
@@ -116,6 +117,8 @@ class ConsolidateData(Job):
         self.flat_botton_run = flat_botton_run
         self.max_con_force = str(max_conformation_force)
         self.max_orien_force = str(max_orientational_force)
+        # Matches the endstate row's state_label, which names the endstate method.
+        self.endstate_label = endstate_label
         self.boresch = boresch_df
         self.complex_name = re.sub(r"\..*", "", os.path.basename(complex_filename))
         self.ligand_name = re.sub(r"\..*", "", os.path.basename(ligand_filename))
@@ -187,7 +190,7 @@ class ConsolidateData(Job):
     def _get_ligand_deltaG(self):
         """Get the ligand free energy contribution for DeltaG"""
         return self.ligand_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
+            (self.endstate_label, "78.5", "1.0", "0.0"),
             [("electrostatics", "0.0", "0.0", self.max_con_force)],
         ].values[0]
 
@@ -195,7 +198,7 @@ class ConsolidateData(Job):
     def _get_receptor_deltaG(self):
         """Get the receptor free energy contribution for DeltaG"""
         return self.receptor_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
+            (self.endstate_label, "78.5", "1.0", "0.0"),
             [("no_gb", "0.0", "1.0", self.max_con_force)],
         ].values[0]
 
@@ -209,7 +212,7 @@ class ConsolidateData(Job):
                 "0.0",
                 f"{self.max_con_force}_{self.max_orien_force}",
             ),
-            [("endstate", "78.5", "1.0", "0.0_0.0")],
+            [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
         ].values[0]
 
     @property
@@ -218,7 +221,7 @@ class ConsolidateData(Job):
         return self.flat_bottom_fe.loc[
             (
                 ("no_flat_bottom", "78.5", "1.0", "0.0_0.0"),
-                [("endstate", "78.5", "1.0", "0.0_0.0")],
+                [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
             )
         ].values[0]
 
@@ -373,13 +376,26 @@ def create_mdout_dataframe(
     dirstruct: str,
     output_dir: str,
     compress: bool = True,
+    mdout_id=None,
 ) -> pd.DataFrame:
     sim = Dirstruct("mdgb", directory_args, dirstruct=dirstruct)
 
-    mdout = f"{output_dir}/mdout"
-
-    job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
-    run_args = sim.dirStruct.fromPath2Dict(mdout)
+    # run_args are parsed from the LOGICAL output_dir path (state labels etc.), which is
+    # just string parsing and needs no file on disk. The mdout CONTENT comes either from
+    # the network output_dir (default) or, when export is off, from the jobStore via the
+    # promised FileID (mdout_id) -- so post-analysis never reads the network.
+    # Parse labels from the DIRECTORY path directly. Do NOT append "/mdout": fromPath2Dict
+    # only strips a trailing component when os.path.isfile() is true, so with export off (the
+    # mdout lives only in the jobStore, never written to output_dir) the "mdout" segment would
+    # NOT be stripped -> every field shifts by one -> state_label lands in traj_igb (dropped
+    # from the MBAR index) -> distinct windows collapse into duplicate rows. output_dir is the
+    # directory, so this is correct whether or not the mdout file exists on disk.
+    run_args = sim.dirStruct.fromPath2Dict(output_dir)
+    if mdout_id is not None:
+        mdout = job.fileStore.readGlobalFile(mdout_id)
+    else:
+        mdout = f"{output_dir}/mdout"
+        job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
     data = min_to_dataframe(mdout)
 
     # data["traj_state_label"] = run_args["traj_state_label"]

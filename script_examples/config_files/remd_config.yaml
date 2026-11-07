@@ -41,8 +41,11 @@ workflow:
     restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
     
     
-    # #optional flags if user wishes to create windows to ligand charges or gb external dielectric. 
-    #charges_lambda_window:  [0.5, 1.0]  # 50% 
-    #gb_extdiel_windows: [0.1, 0.2, 0.5] # 10%, 20%, 50% ect 
+    # #optional flags if user wishes to create windows to ligand charges or gb external dielectric.
+    #charges_lambda_window:  [0.5, 1.0]  # 50%
+    # gb_extdiel_windows: explicit external-dielectric (epsilon) seed values for the GB-dielectric band
+    # (NOT fractions of 78.5). Clamped to [gb_extdiel_floor (default 1.0 = vacuum), 78.5 = full water].
+    # The band schedules in lambda = 1 - 1/eps; for ~uniform overlap pick lambda-even epsilons, e.g.:
+    #gb_extdiel_windows: [1.2, 1.6, 2.5, 5, 12, 40]
     
   

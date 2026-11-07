@@ -19,6 +19,27 @@ from implicit_solvent_ddm.simulations import (
 working_directory = os.getcwd()
 
 
+def _pose_medoid_args(user_config: Config, directory_args: dict) -> dict:
+    """ExtractTrajectories kwargs for the complex leg's restraint reference.
+
+    Empty unless restraint_reference is "pose_medoid", so every other leg and the
+    default path construct the job exactly as before.
+    """
+    args = user_config.intermediate_args
+    if args.restraint_reference != "pose_medoid":
+        return {}
+    return dict(
+        pose_medoid=True,
+        ligand_mask=user_config.amber_masks.ligand_mask,
+        receptor_mask=user_config.amber_masks.receptor_mask,
+        cluster_cutoff=args.pose_cluster_cutoff,
+        pocket_radius=args.pose_pocket_radius,
+        cluster_stride=args.pose_cluster_stride,
+        working_directory=user_config.system_settings.working_directory,
+        directory_args=directory_args,
+    )
+
+
 def run_remd(job, user_config: Config):
     """Setup and run REMD.
 
@@ -26,6 +47,20 @@ def run_remd(job, user_config: Config):
         job (_type_): _description_
         user_config (Config): _description_
     """
+    # REMD needs an MPI build; the windows may be running a serial pmemd.cuda.
+    remd_executable = (
+        user_config.system_settings.remd_executable
+        or user_config.system_settings.executable
+    )
+    remd_accelerators = user_config.system_settings.remd_accelerators
+    ngroups = user_config.endstate_method.remd_args.ngroups
+    if user_config.system_settings.CUDA and 0 < remd_accelerators < ngroups:
+        job.log(
+            f"[REMD] {ngroups} replicas share {remd_accelerators} GPU(s). AMBER binds one "
+            "device per MPI rank, so the extra ranks serialize unless the CUDA MPS daemon "
+            "(nvidia-cuda-mps-control -d) is running on the node."
+        )
+
     equil_mdins = job.addChildJobFn(
         generate_replica_mdin,
         user_config.endstate_method.remd_args.equil_template_mdin,
@@ -62,7 +97,8 @@ def run_remd(job, user_config: Config):
     # config.endstate_method.remd_args.nthreads
     equilibrate_complex = minimization_complex.addFollowOn(
         REMDSimulation(
-            executable=user_config.system_settings.executable,
+            executable=remd_executable,
+            accelerators=remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -87,7 +123,8 @@ def run_remd(job, user_config: Config):
 
     remd_complex = equilibrate_complex.addFollowOn(
         REMDSimulation(
-            executable=user_config.system_settings.executable,
+            executable=remd_executable,
+            accelerators=remd_accelerators,
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=user_config.endstate_method.remd_args.nthreads_complex,
             CUDA=user_config.system_settings.CUDA,
@@ -115,6 +152,14 @@ def run_remd(job, user_config: Config):
             user_config.endstate_files.complex_parameter_filename,
             remd_complex.rv(1),
             user_config.intermediate_args.temperature,
+            **_pose_medoid_args(
+                user_config,
+                {
+                    "runtype": "remd",
+                    "topology": user_config.endstate_files.complex_parameter_filename,
+                    "topdir": user_config.system_settings.top_directory_path,
+                },
+            ),
         )
     )
 
@@ -145,18 +190,27 @@ def run_remd(job, user_config: Config):
             disk=user_config.system_settings.disk,
         )
     )
-    # check to see if PMEMD is specified
+    # The ligand endstate runs on CPU. A 17-atom fragment never justifies a GPU, and
+    # pmemd.cuda.MPI binds one device per MPI rank -- with one rank per replica that would tie up
+    # the whole node's GPUs on the cheapest leg. Decide on the CUDA flag, not on a ".MPI"
+    # substring: `executable: pmemd.cuda` (the serial name the windows use) contains neither
+    # "pmemd.MPI" nor ".MPI", so a substring test lets CUDA builds slip through onto the GPU.
     num_ligand_cores = int(user_config.endstate_method.remd_args.nthreads_ligand)
-    ligand_endstate_exe = user_config.system_settings.executable
-    if "pmemd.MPI" in user_config.system_settings.executable:
-        num_ligand_cores = int(
-            user_config.endstate_method.remd_args.nthreads_ligand / 2
-        )
+    ligand_endstate_exe = remd_executable
+    if user_config.system_settings.CUDA or ".MPI" in ligand_endstate_exe:
         ligand_endstate_exe = "sander.MPI"
+        if not user_config.system_settings.CUDA:
+            # Legacy pmemd.MPI behaviour, preserved.
+            num_ligand_cores = int(num_ligand_cores / 2)
+    # AMBER multisander requires -n to be an exact multiple of -ng; otherwise it refuses to start.
+    # The halving above produces -n 5 against -ng 10 for a 10-rung ladder, which is invalid.
+    if num_ligand_cores % user_config.endstate_method.remd_args.ngroups != 0:
+        num_ligand_cores = user_config.endstate_method.remd_args.ngroups
 
     equilibrate_ligand = minimization_ligand.addFollowOn(
         REMDSimulation(
             executable=ligand_endstate_exe,
+            accelerators=0,  # CPU leg: sander.MPI, no device
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=num_ligand_cores,
             CUDA=user_config.system_settings.CUDA,
@@ -182,6 +236,7 @@ def run_remd(job, user_config: Config):
     remd_ligand = equilibrate_ligand.addFollowOn(
         REMDSimulation(
             executable=ligand_endstate_exe,
+            accelerators=0,  # CPU leg: sander.MPI, no device
             mpi_command=user_config.system_settings.mpi_command,
             num_cores=num_ligand_cores,
             CUDA=user_config.system_settings.CUDA,
@@ -240,7 +295,8 @@ def run_remd(job, user_config: Config):
 
         equilibrate_receptor = minimization_receptor.addFollowOn(
             REMDSimulation(
-                executable=user_config.system_settings.executable,
+                executable=remd_executable,
+                accelerators=remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,
@@ -265,7 +321,8 @@ def run_remd(job, user_config: Config):
 
         remd_receptor = equilibrate_receptor.addFollowOn(
             REMDSimulation(
-                executable=user_config.system_settings.executable,
+                executable=remd_executable,
+                accelerators=remd_accelerators,
                 mpi_command=user_config.system_settings.mpi_command,
                 num_cores=user_config.endstate_method.remd_args.nthreads_receptor,
                 CUDA=user_config.system_settings.CUDA,
@@ -379,6 +436,15 @@ def run_basic_md(job, user_config: Config):
         ExtractTrajectories(
             user_config.endstate_files.complex_parameter_filename,
             endstate_complex.rv(1),
+            **_pose_medoid_args(
+                user_config,
+                {
+                    "runtype": "basicMD_endstate",
+                    "filename": "basicMD",
+                    "topology": user_config.endstate_files.complex_parameter_filename,
+                    "topdir": user_config.system_settings.top_directory_path,
+                },
+            ),
         )
     )
 
@@ -535,6 +601,14 @@ def user_defined_endstate(job, user_config: Config):
         ExtractTrajectories(
             user_config.endstate_files.complex_parameter_filename,
             user_config.endstate_files.complex_coordinate_filename,
+            **_pose_medoid_args(
+                user_config,
+                {
+                    "runtype": "user_endstate",
+                    "topology": user_config.endstate_files.complex_parameter_filename,
+                    "topdir": user_config.system_settings.top_directory_path,
+                },
+            ),
         )
     )
     # user_config.inputs["endstate_complex_traj"] = extract_complex.rv(0)

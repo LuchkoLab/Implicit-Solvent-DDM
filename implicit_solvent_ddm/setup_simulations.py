@@ -11,6 +11,11 @@ from implicit_solvent_ddm.simulations import Simulation
 from toil.common import FileID
 from toil.job import Promise
 
+# Legs whose lowest restraint window runs intermediate_args.long_restraint_window_ns. Receptor only:
+# its endstate<->floor link is the one measured to collapse at short run length; the complex leg's
+# equivalent junction has never been measured.
+LONG_WINDOW_LEGS = ("receptor",)
+
 
 @dataclass
 class SimulationSetup:
@@ -25,6 +30,7 @@ class SimulationSetup:
     num_cores: float = field(init=False)
     max_conformational_exponent: float = field(init=False)
     max_orientational_exponent: float = field(init=False)
+    long_window_exponent: Optional[float] = field(init=False, default=None)
 
     def __post_init__(self):
         """
@@ -41,6 +47,11 @@ class SimulationSetup:
         self.max_orientational_exponent = round(
             max(self.config.intermediate_args.exponent_orientational_forces), 3
         )
+
+        if self.system_type in LONG_WINDOW_LEGS:
+            self.long_window_exponent = (
+                self.config.intermediate_args.long_restraint_window_exponent
+            )
 
         # Default values
         dirstruct_map = {
@@ -64,9 +75,17 @@ class SimulationSetup:
             self.topology = endstate_files.ligand_parameter_filename
             self.num_cores = ncores_map.ligand_ncores
 
-        # Reduce CPU usage for GPU-bound receptor/complex jobs
+        # GPU-bound receptor/complex MD requests ZERO core fractions (not 0.1) so it never draws from
+        # Toil single_machine's core pool. [review H1] Once MD and post-analysis share one queue
+        # (merged run_intermediate_and_post), ~1-CPU-hr `sander imin=5` post jobs (cores=1) can drain
+        # the whole core pool; with cores=0.1 a freed GPU would then idle up to ~1 hr waiting for its
+        # sliver of a core. Accelerators are a SEPARATE ResourceSet, so a 0-core GPU job is always
+        # startable the instant a GPU frees -- pmemd.cuda saturates the GPU regardless of `cores`.
+        # NOTE: verify Toil 8.2.0 accepts a 0-core request on the cluster (int(0/minCores)=0,
+        # acquireNow(0)->True suggests yes). If it rejects/coerces 0, revert to 0.1 and instead bound
+        # post concurrency to (maxCores - nGPU) of headroom.
         if self.config.system_settings.CUDA and self.system_type in {"complex", "receptor"}:
-            self.num_cores = 0.1
+            self.num_cores = 0
  
 
     def setup_post_endstate_simulation(self, flat_bottom: bool = False):
@@ -305,12 +324,17 @@ class SimulationSetup:
         """
         temp_args = copy(self.no_gb_args)
 
+        # Receptor (apo-host) GB band carries the FULL host charge (q=1; no ligand to decharge) under the
+        # apo directory structure; the complex band decharges the ligand (q=0) under dirstruct_halo.
+        is_receptor = self.system_type == "receptor"
+        dirstruct_args = "dirstruct_apo" if is_receptor else "dirstruct_halo"
+
         temp_args["state_label"] = "gb_dielectric"
         temp_args["filename"] = "state_8_prod"
         temp_args["extdiel"] = extdiel
         temp_args["igb"] = f"igb_{self.config.intermediate_args.igb_solvent}"
         temp_args["igb_value"] = f"igb_{self.config.intermediate_args.igb_solvent}"
-        temp_args["charge"] = 0.0
+        temp_args["charge"] = 1.0 if is_receptor else 0.0
         temp_args["runtype"] = (
             f"Running production Simulation in state 8. Changing extdiel to: {extdiel}."
         )
@@ -327,7 +351,7 @@ class SimulationSetup:
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
-                dirstruct="dirstruct_halo",
+                dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
                 memory=self.config.system_settings.memory,
@@ -336,6 +360,33 @@ class SimulationSetup:
                 accelerators=self.config.system_settings.num_accelerators,
             )
         )
+
+    def _restraint_window_mdin(self, exponent_conformational: float) -> FileID:
+        """``default_mdin``, or the stretched mdin for this leg's lowest restraint window.
+
+        The ``als_pilot`` guard mirrors the GB-dielectric band's: ``adaptive_restraint_pilot`` swaps
+        ``default_mdin`` for the 50 ps ``pilot_mdin``, and a pilot must stay uniformly short. Missing
+        key falls back to ``default_mdin``, so a config predating this feature resumes unchanged.
+
+        Parameters
+        ----------
+        exponent_conformational: float
+            The window's conformational restraint exponent (log2 of the force constant).
+
+        Returns
+        -------
+        FileID
+            The mdin this window's MD should run.
+        """
+        long_mdin = self.config.inputs.get("long_window_mdin")
+        if (
+            long_mdin is not None
+            and self.long_window_exponent is not None
+            and not self.config.inputs.get("als_pilot")
+            and round(float(exponent_conformational), 3) == self.long_window_exponent
+        ):
+            return long_mdin
+        return self.config.inputs["default_mdin"]
 
     def setup_apply_restraint_windows(
         self,
@@ -383,7 +434,7 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=self.topology,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["default_mdin"],
+                input_file=self._restraint_window_mdin(exponent_conformational),
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
@@ -441,9 +492,12 @@ class SimulationSetup:
         Returns:
             _type_: _description_
         """
+        # Names the method that produced this trajectory, so a vanilla-MD and a REMD
+        # endstate cannot share a post-analysis directory (and therefore a warm cache).
+        endstate_label = self.config.endstate_method.endstate_state_label
         return {
             "topology": self.topology,
-            "state_label": "endstate",
+            "state_label": endstate_label,
             "charge": 1.0,
             "extdiel": 78.5,
             "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
@@ -451,7 +505,7 @@ class SimulationSetup:
             "conformational_restraint": 0.0,
             "orientational_restraints": 0.0,
             "runtype": "remd",
-            "traj_state_label": "endstate",
+            "traj_state_label": endstate_label,
             "traj_charge": 1.0,
             "traj_extdiel": 78.5,
             "topdir": self.config.system_settings.top_directory_path,

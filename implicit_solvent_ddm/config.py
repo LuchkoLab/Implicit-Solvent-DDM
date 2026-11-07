@@ -9,6 +9,7 @@ import re
 import shutil
 import string
 import tempfile
+import warnings
 from dataclasses import dataclass, field
 from typing import List, Optional, Type, Union, Dict
 from pathlib import Path
@@ -53,6 +54,7 @@ class Workflow:
     run_post_analysis: bool = True
     plot_overlap_matrix: bool = False 
     post_analysis_only: bool = False
+    md_only: bool = False  # Run intermediate MD only -- no imin=5 scoring, no MBAR. Resume with it off against the same output_directory_name to score without re-running MD. Needs ignore_unique_naming: True.
     adaptive_lambda: bool = False  # ALS: run the adaptive restraint-window pilot before production (default off = static schedule)
     vina_dock: bool = False
     restart: bool = False
@@ -143,6 +145,20 @@ class SystemSettings:
         GPU-free so it can run in a CPU-only allocation (allowing the GPUs to be
         released back to the scheduler during the analysis tail). Set to 1 only
         once MBAR is JAX/GPU-accelerated. Values > 1 are clamped to 1.
+    remd_executable : Optional[str]
+        AMBER executable for the REMD endstate legs only, when it must differ from
+        ``executable``. REMD needs an MPI build (``-ng``) and many AMBER installs ship
+        ``pmemd.cuda`` without ``pmemd.cuda.MPI``; set this to ``pmemd.MPI`` (with
+        ``remd_accelerators: 0``) to run the replica ladder on CPU while the alchemical
+        windows stay on GPU. Defaults to None, i.e. derive it from ``executable``.
+    remd_accelerators : int
+        Number of GPUs to request *per REMD job*. Unlike ``num_accelerators`` this is NOT
+        clamped: one REMD job runs all ``ngroups`` replicas at once, so it legitimately needs
+        many devices. AMBER binds one GPU per MPI rank, so the natural value is
+        ``len(temperatures)``; a smaller value means replicas share devices, which requires
+        CUDA MPS (``nvidia-cuda-mps-control -d``) to run concurrently rather than serialize.
+        Defaults to 0, which requests no GPU and preserves the behaviour of configs written
+        before this option existed.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -153,14 +169,23 @@ class SystemSettings:
     working_directory: str = WORKDIR
     cache_directory_output: str = WORKDIR
     executable: str = "sander"
+    remd_executable: Optional[str] = field(default=None)
     output_directory_name: str = "mdgb"
     CUDA: bool = field(default=False)
     num_accelerators: int = field(default=0)
     mbar_accelerators: int = field(default=0)
+    remd_accelerators: int = field(default=0)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
-    
-    
+    export_intermediate_files: bool = field(default=True)
+    # When False, intermediate MD / post-analysis outputs are kept ONLY in the Toil
+    # jobStore and never exported to the (network) output_dir. Data flows between
+    # phases via Toil promises instead of the filesystem: MD jobs return their
+    # trajectory FileID, post-analysis consumes it as inptraj, and create_mdout_dataframe
+    # reads the mdout from the jobStore. Only final results are written. Used to measure
+    # workflow timing with the network read/write cost removed.
+
+
     def __post_init__(self):
         self.working_directory = os.path.abspath(self.working_directory)
         self.cache_directory_output = os.path.abspath(self.cache_directory_output)
@@ -257,6 +282,36 @@ class ParameterFiles:
         """
         return cls(**obj)
 
+    def set_receptor_initial_coordinate(self) -> Optional[str]:
+        """
+        Extract frame 0 of the receptor endstate trajectory into a single-frame restart.
+
+        A reused receptor ensemble is multi-frame, which sander cannot parse as a ``-c``
+        inpcrd, so give the post-processing leg its own starting coordinate and leave
+        ``receptor_coordinate_filename`` free to stay the ``-y`` ensemble.
+
+        Returns
+        -------
+        str or None
+            Path to the restart, the existing value when one was set in the config file, or
+            None when there is no receptor pair to extract from.
+        """
+        if self.receptor_initial_coordinate is not None:
+            return self.receptor_initial_coordinate
+
+        if not (self.receptor_coordinate_filename and self.receptor_parameter_filename):
+            return None
+
+        traj = pt.iterload(
+            str(self.receptor_coordinate_filename),
+            str(self.receptor_parameter_filename),
+        )
+        basename = re.sub(r"\..*", "", Path(str(self.receptor_coordinate_filename)).name)
+        output_path = Path(self.tempdir.name) / f"{basename}_.ncrst"
+        pt.write_traj(str(output_path), traj, frame_indices=[0])
+        self.receptor_initial_coordinate = str(output_path.with_suffix(".ncrst.1"))
+        return self.receptor_initial_coordinate
+
     def get_inital_coordinate(self):
         """
         Extract and write the first frame from complex, receptor, and ligand trajectories
@@ -278,12 +333,10 @@ class ParameterFiles:
         self.complex_initial_coordinate = _write_initial_frame(complex_traj, base_complex)
 
 
-        # Receptor (optional)
-        if self.receptor_coordinate_filename and self.receptor_parameter_filename:
-            receptor_traj = pt.iterload(str(self.receptor_coordinate_filename), str(self.receptor_parameter_filename))
-            base_receptor = _get_basename(self.receptor_coordinate_filename)
-            self.receptor_initial_coordinate = _write_initial_frame(receptor_traj, base_receptor, "_")
-        
+        # Receptor (optional). Guarded so a path set in the config file survives.
+        self.set_receptor_initial_coordinate()
+
+
         # Ligand (optional)
         if self.ligand_coordinate_filename and self.ligand_parameter_filename:
             ligand_traj = pt.iterload(str(self.ligand_coordinate_filename), str(self.ligand_parameter_filename))
@@ -620,6 +673,21 @@ class EndStateMethod:
                 f"'{self.endstate_method_type}' is not a valid endstate method. "
                 f"Valid options are: {valid_options}"
             )
+
+    # Method -> state label. The endstate row's label is BOTH its post-analysis directory
+    # segment and its MBAR index key, so a bare "endstate" let a vanilla-MD parquet satisfy
+    # has_post_analysis_data() for a REMD run and the re-score was skipped.
+    _STATE_LABELS = {
+        "remd": "remd_endstate",
+        "basic_md": "vanillaMD_endstate",
+        0: "user_provided_endstate",
+    }
+
+    @property
+    def endstate_state_label(self) -> str:
+        """Label for the endstate row, naming the method that produced its trajectory."""
+        return self._STATE_LABELS[self.endstate_method_type]
+
     @classmethod
     def from_config(cls: Type["EndStateMethod"], obj: dict) -> "EndStateMethod":
         """
@@ -687,6 +755,15 @@ class IntermediateStateArgs:
         Scaling factors for the GB external dielectric (normalized 0–1).
     min_degree_overlap : float
         Minimum acceptable overlap value for replica exchange (default 0.03).
+    unrestrained_receptor_mask : str, optional
+        AMBER mask of receptor atoms excluded from the conformational restraint network (default
+        ``None``, restrain everything). Applied to the receptor network shared by both the receptor
+        and complex restraint files.
+    long_restraint_window_ns : float, optional
+        MD length (ns) for the lowest conformational-restraint window only (default 10.0; ``None``
+        disables). Never shortens, preserves the frame count, and leaves the Hamiltonian and the
+        user's timestep untouched. Only helps once ``unrestrained_receptor_mask`` frees the floppy
+        regions that carry the endstate seam.
     guest_restraint_template, receptor_restraint_template, complex_conformational_template, complex_orientational_template : str, optional
         Restraint template file paths.
     guest_restraint_files, receptor_restraint_files, complex_restraint_files : list of str/FileID
@@ -703,15 +780,37 @@ class IntermediateStateArgs:
     charges_lambda_window: List[float] = field(default_factory=list)
     gb_extdiel_windows: List[float] = field(default_factory=list)
     min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
+    post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
+
+    long_restraint_window_ns: Optional[float] = 10.0  # MD length for the LOWEST restraint window only. Frame count is preserved (ntwx/ntpr rescaled) so the per-leg frames x states matrix stays rectangular; never shortens. It does NOT fix the endstate seam on its own -- under the full whole-receptor network a 10 ns floor window still had zero shared support with the endstate. It pays off once unrestrained_receptor_mask frees the floppy regions: on mcl1_remd_2ns_rep2 with ':22-32' freed, endstate overlap was 0.0404 at 2 ns (exactly the 0.04 threshold) vs 0.0819 at 10 ns, and the window was still relaxing toward the endstate at 10 ns. On by default because that is ~7 GPU-min on one window against a CPU-bound post-analysis, on the one MBAR link carrying no redundancy. None -> off.
+
+    # --- Conformational-restraint selection ---
+    unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
+
+    # --- Restraint reference frame ---
+    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid". Complex leg only. Variance fix, not a bias one: dG is correct either way.
+    pose_cluster_cutoff: float = 2.0  # A, average-linkage cutoff on no-fit ligand RMSD
+    pose_pocket_radius: float = 8.0  # A around the ligand defining the pocket atoms to superpose on
+    pose_cluster_stride: int = 0  # 0 -> auto, caps the O(n^2) matrix at ~2000 frames
 
     # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
-    pilot_ps: float = 50.0                       # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
+    pilot_ps: float = 50.0                     # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
     pilot_frames: int = 100                      # target trajectory frames written over the pilot window; pilot ntwx = round(nstlim / pilot_frames), so MBAR sampling is independent of dt and of the user's production ntwx (which is tuned for a much longer run)
     pilot_nstlim: Optional[int] = None          # explicit step-count override of pilot_ps (None -> derive from pilot_ps + dt); set only for tiny test systems where 50 ps is absurd
-    max_adaptive_iterations: int = 12           # hard cap on R-ADD insertions per system (termination guard)
+    max_adaptive_iterations: int = 12           # hard cap on R-ADD iterations per system (termination guard); with batch_insertion this caps ROUNDS, not windows
+    batch_insertion: bool = False               # ALS restraints: insert a window in EVERY weak gap per round and run them in parallel (converges a many-window leg in ~log rounds), vs. default one-at-a-time R-ADD
+    prune_after_convergence: bool = False       # ALS restraints: once the dense ladder converges, prune it to the MINIMAL connected subset using the full pairwise pilot overlap matrix (prune_schedule) so production runs the fewest windows
+    prune_margin: float = 2.0                   # prune threshold = min_degree_overlap * prune_margin; >1 because the 50 ps pilot over-estimates overlap vs 10 ns production
     candidate_conformational_pool: List[float] = field(default_factory=list)  # fixed candidate exponent pool; empty -> derive from seed + candidate_pool_step
     candidate_pool_step: Optional[float] = None  # pool granularity in exponent space; None -> default fill between endstate and pinned max
     redistribution_mode: str = "add"            # "add" = R-ADD (insert +1, never move); "move" reserved for uniform pools
+    # --- GB-dielectric band knobs (lambda = 1 - 1/eps axis) ---
+    gb_extdiel_floor: float = 1.0               # lowest allowed external dielectric (eps=1 -> vacuum, lambda=0); seeds are clamped to [floor, 78.5]
+    candidate_dielectric_pool: List[float] = field(default_factory=list)  # fixed candidate lambda pool for the dielectric band; empty -> derive from seed + dielectric_pool_step
+    dielectric_pool_step: Optional[float] = None  # dielectric pool granularity in LAMBDA space; None -> default fill between the band anchors
+    # --- Charge band knobs (q in [0, 1] axis) ---
+    candidate_charge_pool: List[float] = field(default_factory=list)  # fixed candidate charge pool; empty -> derive from seed + charge_pool_step
+    charge_pool_step: Optional[float] = None    # charge pool granularity; None -> default fill between q=0 and q=1
 
     guest_restraint_template: Optional[str] = None
     receptor_restraint_template: Optional[str] = None
@@ -729,6 +828,9 @@ class IntermediateStateArgs:
     # Canonical exponent schedule — single source of truth for CycleSteps + ALS insertion (R1 fix).
     exponent_conformational_forces_list: List[float] = field(init=False, default_factory=list)
     exponent_orientational_forces_list: List[float] = field(init=False, default_factory=list)
+    # The one exponent whose MD runs long, rounded like the workflow_phases window loop so the
+    # float compare in SimulationSetup is exact. None -> feature off.
+    long_restraint_window_exponent: Optional[float] = field(init=False, default=None)
 
     def __post_init__(self):
         # Ensure lambda windows include 0 and 1
@@ -736,11 +838,22 @@ class IntermediateStateArgs:
         self.charges_lambda_window = [float(charge) for charge in self.charges_lambda_window]
         self.exponent_conformational_forces = [float(force) for force in self.exponent_conformational_forces]
         self.exponent_orientational_forces = [float(force) for force in self.exponent_orientational_forces]
-        # Convert GB external dielectric scaling to dielectric values (if present)
+        # gb_extdiel_windows are EXPLICIT external-dielectric (epsilon) seed values for the GB-dielectric
+        # band (NOT fractions of 78.5). Clamp each to [gb_extdiel_floor, 78.5] (eps=1 is vacuum/lambda=0,
+        # the lowest physically meaningful value; 78.5 is full water, the upper anchor) and warn on any
+        # value that had to be clamped, then de-duplicate and sort ascending.
         if self.gb_extdiel_windows:
-            self.gb_extdiel_windows = [
-                float(78.5 * val) for val in self.gb_extdiel_windows if val not in {0, 1}
-            ]   
+            clamped = []
+            for val in self.gb_extdiel_windows:
+                eps = float(val)
+                lo, hi = float(self.gb_extdiel_floor), 78.5
+                fixed = min(max(eps, lo), hi)
+                if fixed != eps:
+                    warnings.warn(
+                        f"gb_extdiel_windows: epsilon {eps} outside [{lo}, {hi}] — clamped to {fixed}"
+                    )
+                clamped.append(fixed)
+            self.gb_extdiel_windows = sorted(set(clamped))
 
         # Apply 2^x to get force magnitudes
         self.conformational_restraints_forces = np.exp2(self.exponent_conformational_forces)
@@ -757,6 +870,22 @@ class IntermediateStateArgs:
         self.exponent_orientational_forces_list = [
             round(float(np.log2(force)), 3) for force in self.orientational_restraint_forces
         ]
+
+        # Resolved here, not at dispatch: workflow_phases clears and rebuilds
+        # exponent_conformational_forces_list inside the window loop, so min() there would be
+        # order-dependent. min() rather than a sort, which would break the positional zip against
+        # the orientational ladder.
+        self.long_restraint_window_exponent = None
+        if self.long_restraint_window_ns is not None:
+            if float(self.long_restraint_window_ns) <= 0:
+                raise ValueError("long_restraint_window_ns must be > 0 ns (or None to disable)")
+            self.long_restraint_window_exponent = min(self.exponent_conformational_forces_list)
+
+        if self.restraint_reference not in ("lastframe", "pose_medoid"):
+            raise ValueError(
+                f"restraint_reference must be 'lastframe' or 'pose_medoid', "
+                f"got {self.restraint_reference!r}"
+            )
 
         # Ensure mdin path is absolute
         self.mdin_intermediate_file = str(Path(self.mdin_intermediate_file).resolve())
@@ -974,12 +1103,20 @@ class Config:
     def __post_init__(self):
         self._config_sanity_check()
 
+        # A supplied receptor is reused as-is and may be a multi-frame ensemble; a generated
+        # one is already a single frame. Read before get_receptor_ligand_topologies() fills in
+        # the missing receptor and makes the two indistinguishable.
+        user_supplied_receptor = self.endstate_files.receptor_parameter_filename is not None
+
         # Decide on endstate procedure based on method type
         if self.endstate_method.endstate_method_type != 0:
             self.get_receptor_ligand_topologies()
         else:
             self.endstate_files.get_inital_coordinate()
             self.workflow.run_endstate_method = False
+
+        if user_supplied_receptor:
+            self.endstate_files.set_receptor_initial_coordinate()
 
         # Disable GB dielectric scaling if no windows were specified
         if not self.intermediate_args.gb_extdiel_windows:
@@ -1149,7 +1286,8 @@ class Config:
             self.endstate_files.ligand_coordinate_filename = str(ligand_prefix.with_suffix(".ncrst.1").resolve())
 
         # Ensure filenames are unique if needed
-        self.endstate_files._create_unique_fileID()
+        if not self.endstate_files.ignore_unique_naming:
+            self.endstate_files._create_unique_fileID()
 
 
 def workflow(job, config: Config):

@@ -46,6 +46,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `restraint_reference: pose_medoid` anchors the complex restraints to the medoid of the
+  dominant ligand pose cluster instead of the endstate last frame. The last frame is a
+  single random draw from the pose ensemble -- on MCL-1 ligand-3 it landed in a 2.9%
+  cluster while 69.7% of frames sat in one basin -- which inflates restraint work and
+  broadens dU at the endstate seam. Variance fix only: the endstate is the full
+  unrestrained ensemble either way, so the total dG is unchanged. Default off.
+- `pose_cluster_cutoff`, `pose_pocket_radius` and `pose_cluster_stride` tune the
+  clustering. Stride 0 auto-sizes to cap the O(n^2) distance matrix at ~2000 frames.
+- `implicit_solvent_ddm/pose_clusters.py`, a pytraj + scipy port of
+  `scripts/analyze_clusters.py`. The script is now a CLI over it, so there is one
+  implementation. Reproduces the MDAnalysis result exactly on MCL-1 ligand-3 (26 clusters,
+  dominant 69.7%, medoid frame 415, second 17.4%) without needing MDAnalysis or
+  scikit-learn.
+- The clustering runs on host-guest systems, which the MDAnalysis version refused: the
+  pocket falls back to receptor heavy atoms when there is no backbone to align on.
+- Cluster artifacts (`summary.txt`, `assignments.csv`, `pose_analysis.png`,
+  `dendrogram.png`) are written to the endstate output directory when the flag is on.
+
+### Fixed
+- `rem.log` is no longer dropped from REMD output outside debug mode. Exchange acceptance
+  and replica round-trip counts are the only record of whether a ladder mixed, and losing
+  them is how a non-mixing ladder went unnoticed across a whole benchmark.
+- `scripts/analyze_clusters.py` no longer segfaults writing medoid PDBs; it strips the
+  topology once rather than handing `pt.write_traj` a mask and a trajectory slice.
+
 ### Planned
 - GPU acceleration support
 - Enhanced error handling and recovery
