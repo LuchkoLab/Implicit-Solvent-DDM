@@ -20,8 +20,8 @@ Per phase it reports:
   gpu_h      - sum of wall/3600 over GPU jobs (gpu=1; one GPU per window)
 
 Usage:
-    python timing_report.py <toil_log_file> [more_logs ...]
-    python timing_report.py --per-job <phase> <toil_log_file> [more_logs ...]
+    python scripts/timing_report.py <toil_log_file> [more_logs ...]
+    python scripts/timing_report.py --per-job <phase> <toil_log_file> [more_logs ...]
 
 --per-job <phase> dumps every job in that phase (wall_s, cores, cpu_h) sorted
 slowest-first, with min/median/max and the tail's share of the phase total --

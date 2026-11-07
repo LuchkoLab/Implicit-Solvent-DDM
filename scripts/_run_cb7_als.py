@@ -16,9 +16,14 @@ What to check afterwards:
     $SCRATCH/.cache/<complex>/als/{history.csv,final.json,round_XX/pairs.csv}
 
 Run on a cluster with AMBER + isddm_env (cb7 is CPU-only):
-    SCRATCH=./cb7_als_run python _run_cb7_als.py
+    SCRATCH=./cb7_als_run python scripts/_run_cb7_als.py      # from the repo root
 """
 import os
+import sys
+
+# run from the repo root; import this checkout's package, not an installed copy
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 import re
 
 import yaml

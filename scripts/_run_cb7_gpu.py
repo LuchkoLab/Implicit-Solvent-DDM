@@ -19,7 +19,7 @@ ligand leg + `sander` for post (a full AMBER GPU install has both).
 Env knobs:
     MAXCORES   cap the CPU pool (e.g. 40).            default: unset (all cores)
     EXECUTABLE GPU MD binary.                          default: pmemd.cuda
-    ADAPTIVE   "1" to also run the ALS pilot.          default: 0 (off -> clean Phase 5/6 signal)
+    ADAPTIVE   "1" to also run post-production ALS.    default: 0 (off -> clean Phase 5/6 signal)
     NSTLIM     lengthen intermediate MD (steps) so the GPU MD phase spans real wall-time and the
                MD/post overlap is unmistakable. Rewrites a scratch copy of the intermediate mdin;
                ntwx is auto-scaled to keep ~FRAMES frames so post-analysis cost stays fixed.
@@ -31,13 +31,18 @@ Env knobs:
     TOIL_LOG   Toil log level.                         default: INFO (needed to capture [TIMING])
 
 Run on a GPU node with AMBER (GPU build) + isddm_env:
-    MAXCORES=40 SCRATCH=./cb7_gpu_run python _run_cb7_gpu.py
+    MAXCORES=40 SCRATCH=./cb7_gpu_run python scripts/_run_cb7_gpu.py      # from the repo root
 
-Then read the overlap with timing_report.py (post_analysis should START before intermediate_md ENDS):
-    python timing_report.py ./cb7_gpu_run/cb7_gpu.log
-    python timing_report.py --per-job intermediate_md ./cb7_gpu_run/cb7_gpu.log   # confirm gpu=1 windows
+Then read the overlap with scripts/timing_report.py (post_analysis should START before intermediate_md ENDS):
+    python scripts/timing_report.py ./cb7_gpu_run/cb7_gpu.log
+    python scripts/timing_report.py --per-job intermediate_md ./cb7_gpu_run/cb7_gpu.log   # confirm gpu=1 windows
 """
 import os
+import sys
+
+# run from the repo root; import this checkout's package, not an installed copy
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPO)
 
 import yaml
 
@@ -79,8 +84,8 @@ config.system_settings.executable = os.environ.get("EXECUTABLE", "pmemd.cuda")
 # num_accelerators auto-sets to 1 under CUDA in Config.__post_init__; set explicitly for clarity.
 config.system_settings.num_accelerators = 1
 
-# Pilot OFF by default so intermediate_md / post_analysis are the ONLY production phases (a clean
-# overlap read). ADAPTIVE=1 adds the Phase 4.5 pilot back (its jobs show as phase=adaptive).
+# ALS OFF by default so intermediate_md / post_analysis are the ONLY production phases (a clean
+# overlap read). ADAPTIVE=1 adds post-production ALS rounds after production.
 config.workflow.adaptive_lambda = os.environ.get("ADAPTIVE", "0") == "1"
 
 # --- optional: lengthen intermediate MD so the GPU MD phase spans real wall-time and post/MD
@@ -134,6 +139,6 @@ with Toil(options) as toil:
 print("[driver] WORKFLOW DONE", flush=True)
 print(f"[driver] full Toil log written to: {LOGFILE}", flush=True)
 print("[driver] read the overlap with:", flush=True)
-print(f"[driver]   python timing_report.py {LOGFILE}", flush=True)
+print(f"[driver]   python scripts/timing_report.py {LOGFILE}", flush=True)
 print("[driver]   -> confirm post_analysis START precedes intermediate_md END (barrier dissolved),", flush=True)
 print("[driver]      and intermediate_md shows gpu_h > 0 (GPU MD ran).", flush=True)
