@@ -235,6 +235,7 @@ def test_failed_amber_run_raises_instead_of_returning_empty_results(tmp_path, mo
 
 # ---------------------------------------------------------------- needs a real AMBER + MPI
 
+@pytest.mark.hpc
 @pytest.mark.skipif(
     shutil.which("mpirun") is None or shutil.which("sander.MPI") is None,
     reason="needs mpirun and an AMBER MPI build; run locally with the AMBER module loaded",
