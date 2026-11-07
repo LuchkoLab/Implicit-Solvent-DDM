@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: mamba-org/setup-micromamba@v3
-        with: { environment-file: devtools/conda-envs/test_env.yaml, cache-environment: true }
+        with: { environment-file: devtools/conda-envs/test_env.conda-lock.yml, environment-name: isddm_env, cache-environment: true }
       - run: |
           python -m pip install -e .
           python -m pip install -r docs/requirements.txt

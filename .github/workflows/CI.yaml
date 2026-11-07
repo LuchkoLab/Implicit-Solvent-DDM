@@ -26,7 +26,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: devtools/conda-envs/test_env.yaml
+          environment-file: devtools/conda-envs/test_env.conda-lock.yml   # exact packages, no solve
+          environment-name: isddm_env
           cache-environment: true
           cache-downloads: true
       - run: python -m pip install -e .          # brings toil==8.2.0
@@ -42,7 +43,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: mamba-org/setup-micromamba@v3
         with:
-          environment-file: devtools/conda-envs/test_env.yaml
+          environment-file: devtools/conda-envs/test_env.conda-lock.yml   # exact packages, no solve
+          environment-name: isddm_env
           cache-environment: true
           cache-downloads: true
       - run: python -m pip install -e .
