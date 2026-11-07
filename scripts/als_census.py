@@ -6,8 +6,10 @@ from the stored ``*_formatted.h5`` (the same subsampling as Phase 7) and caches 
 ``plan`` applies ``als_refine.plan_refinement`` to the cached tables at several thresholds and
 writes the would-be insertions with a cost estimate.
 
-    python scripts/als_census.py scan --out <dir> [--workers 32]
+    python scripts/als_census.py scan --root <runs> --out <dir> [--workers 32]
     python scripts/als_census.py plan --out <dir> [--thresholds 0.01 0.02 0.03 0.04 0.05]
+
+``<runs>`` holds ``igb_<gb>/<system>/in_solvent/rep<rep>/config_files/*.yaml``.
 """
 import argparse
 import glob
@@ -26,7 +28,6 @@ import yaml
 from implicit_solvent_ddm import als_refine as ar
 from implicit_solvent_ddm.matrix_order import CycleSteps
 
-ROOT = "/storage/storage1/sayoub/different_gbs"
 SYSTEMS = ("acd", "bcd", "cb7", "oah", "sampl9")
 LEGS = ("complex", "ligand", "receptor")
 ENDSTATE_LABELS = {"remd": "remd_endstate", "basic_md": "vanillaMD_endstate", 0: "user_provided_endstate"}
@@ -253,7 +254,9 @@ def main():
     for name in ("scan", "plan"):
         p = sub.add_parser(name)
         p.add_argument("--out", required=True, help="census directory")
-        p.add_argument("--root", default=ROOT)
+        # plan reads runs.csv from --out and ignores --root; it still accepts it
+        p.add_argument("--root", required=(name == "scan"),
+                       help="tree holding igb_<gb>/<system>/in_solvent/rep<rep>/config_files/*.yaml")
         p.add_argument("--gbs", nargs="+", type=int, default=[1, 5])
         p.add_argument("--systems", nargs="+", default=list(SYSTEMS))
         p.add_argument("--reps", nargs="+", type=int, default=[1, 2, 3])
