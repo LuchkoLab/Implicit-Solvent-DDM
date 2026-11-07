@@ -48,7 +48,7 @@ USAGE
 -----
   module load amber                      # or: export CPPTRAJ=$AMBERHOME/bin/cpptraj
 
-  python scripts/bound_vs_apo_receptor_rmsd.py \\
+  python scripts/paper_2026/bound_vs_apo_receptor_rmsd.py \\
       --complex-parm  <...>/MCL-1_ligand-1.parm7 \\
       --complex-traj  <...>/basicMD_endstate/MCL-1_ligand-1/MCL-1_ligand-1_basicMD_traj.nc \\
       --receptor-parm <...>/MCL-1_receptor-ligand-1_with_mcl1_uxU_uxU.parm7 \\

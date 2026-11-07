@@ -1,5 +1,5 @@
 """
-0;276;0c0;276;0cImplicit_Solvent_DDM
+Implicit_Solvent_DDM
 Development of python command-line interface to simplify an absolute binding free energy cycle 
 """
 import sys
@@ -26,11 +26,11 @@ setup(
     name="implicit_solvent_ddm",
     author="LuckoLab",
     author_email="ayoubsj@uci.edu",
-    description=short_description[0],
+    description=short_description[2].strip(),  # [0] is the empty first docstring line
     long_description=long_description,
     long_description_content_type="text/markdown",
     # version=versioneer.get_version(),
-    version="1.1.3",
+    version="2.0.0",
     # cmdclass=versioneer.get_cmdclass(),
     license="MIT",
     # Which Python importable modules should be included when your package is installed
@@ -54,7 +54,7 @@ setup(
     #            'Mac OS-X',
     #            'Unix',
     #            'Windows'],            # Valid platforms your code works on, adjust to your flavor
-    # python_requires=">=3.5",          # Python version restrictions
+    python_requires=">=3.10",
     # Manual control if final package is compressible or not, set False to prevent the .egg from being made
     # zip_safe=False,
 )

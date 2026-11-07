@@ -1,32 +1,54 @@
-system_parameters:
-    executable: "pmemd.MPI" # executable machine for MD choice : [sander, sander.MPI, pmemd, pmemd.MPI, pmeded.CUDA]
-    mpi_command: srun # system dependent /
-    CUDA:  # run on GPU
-    top_directory_name: user_defined_endstate
+# User-supplied end states on the CB7/M01 host-guest example (endstate_method: 0).
+#
+# No end-state MD is run. The complex, host and guest trajectories below are the end-state
+# ensembles, and the workflow runs only the intermediate windows of the gas-phase cycle. With
+# endstate_method 0, give the ligand and receptor topology and trajectory as well as the complex.
+#
+# The three trajectories in script_examples/structs/ are 4 ps demo ensembles (100 frames, one every
+# 0.04 ps), not production-length sampling. The NetCDF files do not record a temperature. Their
+# length and frame spacing match endstate_templates_required/basic_md.template (temp0 = 300), so
+# treat them as 300 K samples. This example keeps temperature at 298 to match the intermediate mdin
+# template, which leaves a known 2 K offset at the end states.
+#
+# For your own system, sample the end states at the same temperature as the intermediate windows,
+# strip solvent from the topologies and trajectories, and use the GB radii recommended for
+# igb_solvent (see the AMBER manual).
+#
+# Paths are relative to the repository root, so start the run from there:
+#   run_implicit_ddm.py file:jobstore_example_03 --config_file script_examples/config_files/user_defined_endstate.yaml
+#
+# Key reference: docs/config.rst.
+
+hardware_parameters:
+  executable: "pmemd.MPI"          # sander, sander.MPI, pmemd, pmemd.MPI, pmemd.cuda or pmemd.cuda.MPI
+  mpi_command: srun                # system dependent: mpirun, mpiexec or srun
+  CUDA: False                      # run on CPUs
+  output_directory_name: user_defined_endstate
+  # working_directory and cache_directory_output default to the directory the run is started from
 
 endstate_parameter_files:
-    complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7 # path to topology file; ["path/to/complex.parm7"]
-    complex_coordinate_filename: script_examples/structs/cb7-mol01_user_provided_traj.nc # path to coordinate ["path/to/complex.ncrst"]list of coordinate file of a complex
-    ligand_parameter_filename:  script_examples/structs/M01.parm7
-    ligand_coordinate_filename: script_examples/structs/M01_user_provided_traj.nc
-    receptor_parameter_filename: script_examples/structs/CB7.parm7
-    receptor_coordinate_filename: script_examples/structs/CB7_user_provided_traj.nc
+  complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7
+  complex_coordinate_filename: script_examples/structs/cb7-mol01_user_provided_traj.nc   # complex end-state trajectory
+  ligand_parameter_filename: script_examples/structs/M01.parm7
+  ligand_coordinate_filename: script_examples/structs/M01_user_provided_traj.nc          # guest end-state trajectory
+  receptor_parameter_filename: script_examples/structs/CB7.parm7
+  receptor_coordinate_filename: script_examples/structs/CB7_user_provided_traj.nc        # host end-state trajectory
 
 number_of_cores_per_system:
-  complex_ncores: 2 #total number of cores per job
-  ligand_ncores: 1 #total number of cores per ligand simulation
-  receptor_ncores: 1 #total number of cores per ligand simulation
+  complex_ncores: 2                # cores per complex intermediate window
+  ligand_ncores: 1                 # cores per ligand intermediate window
+  receptor_ncores: 1               # cores per receptor intermediate window
 
 AMBER_masks:
-  receptor_mask: ":CB7" # list of Amber masks denoting receptor atoms in respected complex file
-  ligand_mask: ":M01" # list of Amber masks denoting ligand atoms in respected complex file
+  receptor_mask: ":CB7"            # residue names in cb7-mol01_Hmass.parm7: CB7 M01
+  ligand_mask: ":M01"
 
 workflow:
-  endstate_method: 0 #options REMD or 0 (meaning no endstate simulation will be performed just intermidates)endstate_method: REMD #options REMD, MD or 0 (meaning no endstate simulation will be performed just intermidates) 
-  intermidate_states_arguments:
-      mdin_intermidate_config: script_examples/user_intermidate_mdin_args.yaml #intermidate mdins required states 3-8
-      igb_solvent: 2 #igb [1,2,3,7,8]
-      temperature: 300
-      exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]  # list exponent values 2**p 
-      exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]  # list exponent values 2**p 
-      restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
+  endstate_method: 0               # remd, basic_md, or 0 (end-state trajectories supplied by the user)
+  intermediate_states_arguments:
+    mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin   # 4 fs, nstlim = 2500000 (10 ns per window), igb = 2, temp0 = 298
+    igb_solvent: 2                 # GB-OBC; keep equal to igb in the mdin template
+    temperature: 298               # keep equal to temp0 in the mdin template (not rewritten); the demo trajectories are at 300 K (see header)
+    restraint_type: 2              # 1: CoM-CoM, 2: CoM-heavy atom, 3: heavy atom-heavy atom
+    exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]   # 2**p kcal/mol/A^2: pairwise network and Boresch distance
+    exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]        # 2**p kcal/mol/rad^2: Boresch angles and dihedrals

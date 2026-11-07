@@ -43,7 +43,7 @@ All the example inputs scripts can be found in ``script_examples`` directrory. L
             temperatures: [300.00, 327.32, 356.62, 388.05, 421.77, 457.91, 496.70, 500.00]
 
         intermediate_states_arguments:
-            mdin_intermidate_config: script_examples/user_intermidate_mdin_args.yaml #intermidate mdins required states 3-8
+            mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin # AMBER mdin template for every intermediate window
             igb_solvent: 2 #igb [1,2,3,7,8]
             temperature: 300
             exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]  # list exponent values 2**p 

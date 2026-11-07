@@ -2,9 +2,9 @@
 
 #user input values
 workflow_jobs:
-  adaptive_lambda: false            # skips the ALS pilot (the crash path)
+  adaptive_lambda: false            # no post-production ALS rounds in the workflow tests
 hardware_parameters:
-  executable: "sander" # executable machine for MD choice : [sander, sander.MPI, pmemed, pemed.MPI, pmeded.CUDA]
+  executable: "sander" # MD engine: sander, sander.MPI, pmemd, pmemd.MPI or pmemd.cuda
   mpi_command:  # system dependent /
   CUDA:  # run on GPU
   memory: "2G"

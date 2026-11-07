@@ -52,7 +52,7 @@ Usage
   python bar_vs_mbar.py --root <run_dir> --nproc 8              # stage 2: everything
 
 where <run_dir> holds rep1..rep5, each with `.cache/<system>/*_formatted.h5`, e.g.
-/storage/.../different_gbs/igb_2/cb7_re_parameterization
+/path/to/runs/igb_2/cb7_re_parameterization
 
 Outputs (written next to --out-prefix, default ./bar_vs_mbar):
   *_pairs.csv    one row per ADJACENT PAIR -- the diagnostic showing WHERE the chain breaks

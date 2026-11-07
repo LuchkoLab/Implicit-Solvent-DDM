@@ -55,10 +55,10 @@ needs rethinking, not patching.
 
 EXAMPLE
 -------
-    python scripts/nfe_rmsd_probe.py --probe gate \\
+    python scripts/paper_2026/nfe_rmsd_probe.py --probe gate \\
         --prmtop .../DRY_complex.parm7 --inpcrd .../complex.rst7 --workdir nfe_probe_work
 
-    python scripts/nfe_rmsd_probe.py --probe 3 --nstlim 25000 \\
+    python scripts/paper_2026/nfe_rmsd_probe.py --probe 3 --nstlim 25000 \\
         --prmtop ... --inpcrd ... --k 50
 """
 

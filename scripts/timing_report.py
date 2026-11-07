@@ -8,7 +8,7 @@ Each MD / post-analysis subprocess (simulations.Calculation.run) and each MBAR s
 
 Phases:
   endstate        - endstate setup MD (minimization / basic-MD / REMD)
-  adaptive        - the ALS pilot (its MD + post-analysis + band MBAR; detected by the *_pilot output tree)
+  adaptive        - the removed pre-production ALS pilot (older logs only)
   intermediate_md - production intermediate-window MD
   post_analysis   - production post-analysis re-scoring (sander imin=5, the N^2 grid)
   mbar            - production free-energy MBAR
@@ -20,8 +20,8 @@ Per phase it reports:
   gpu_h      - sum of wall/3600 over GPU jobs (gpu=1; one GPU per window)
 
 Usage:
-    python timing_report.py <toil_log_file> [more_logs ...]
-    python timing_report.py --per-job <phase> <toil_log_file> [more_logs ...]
+    python scripts/timing_report.py <toil_log_file> [more_logs ...]
+    python scripts/timing_report.py --per-job <phase> <toil_log_file> [more_logs ...]
 
 --per-job <phase> dumps every job in that phase (wall_s, cores, cpu_h) sorted
 slowest-first, with min/median/max and the tail's share of the phase total --
@@ -95,7 +95,7 @@ def format_report(per):
     out.append(
         "notes: elapsed_h = parallel-adjusted span (max end - min start) per phase; phase spans may "
         "overlap slightly at DAG barriers. cpu_h = sum wall*cores (gpu=0); gpu_h = sum wall (gpu=1, "
-        "1 GPU/window). 'adaptive' bundles the pilot's MD + post-analysis + band MBAR."
+        "1 GPU/window). 'adaptive' appears only in logs from the removed ALS pilot."
     )
     return "\n".join(out)
 

@@ -21,12 +21,9 @@ from implicit_solvent_ddm.workflow_phases import (
     setup_workflow_components,
     run_endstate_simulations,
     decompose_system_and_generate_restraints,
-    setup_intermediate_simulations,
-    compute_free_energy_and_consolidate,
-    run_intermediate_and_post,
-    _aggregate_post_output,
-    adaptive_restraint_pilot,
-    merge_pilot_windows,
+    chain_phases_4_to_7,
+    als_round,
+    refine_schedule,
     initilized_jobs,
 )
 
@@ -86,6 +83,19 @@ def ddm_workflow(
         initilized_jobs,
         message="--> Moving to phase 3: System Decomposition and Restraint Generation"
     )
+    if config.workflow.adaptive_lambda:
+        # Post-production adaptive lambda scheduling: round 0 is ordinary production (Phases 3-7).
+        # refine_schedule then adds full-length windows wherever adjacent two-state overlap is below
+        # min_degree_overlap and re-runs Phases 3-7 with warm resume, so only the new windows and the
+        # new energy cells are computed. The Phase-2 endstate is shared by every round.
+        round0 = endstate_jobs.addFollowOnJobFn(als_round, 0, updated_config, endstate_jobs.rv())
+        refine = round0.addFollowOnJobFn(refine_schedule, 0, round0.rv(), endstate_jobs.rv(), [])
+        refine.addFollowOnJobFn(
+            initilized_jobs,
+            message="🎉 DDM Workflow Complete: production and ALS refinement finished",
+        )
+        return refine
+
     # Phase 3: System Decomposition and Restraint Generation (depends on endstate)
     decomposition_jobs = endstate_jobs.addFollowOnJobFn(
         decompose_system_and_generate_restraints,
@@ -94,130 +104,20 @@ def ddm_workflow(
     )
     decomposition_jobs.addFollowOnJobFn(
         initilized_jobs,
-        message="✓ Phase 3 Complete: System decomposition and restraint generation finished"
-    )
-    decomposition_jobs.addFollowOnJobFn(
-        initilized_jobs,
         message="--> Moving to phase 4: Intermediate State Simulations"
     )
-    # Phase 4: Intermediate State Simulations (depends on decomposition)
-    setup_intermediate_jobs = decomposition_jobs.addFollowOnJobFn(
-        setup_intermediate_simulations,
-        decomposition_jobs.rv(), 
-        endstate_jobs.rv(),
-        updated_config
+    # Phase 4 -> Phases 5/6 -> aggregation -> Phase 7
+    _, phases56, phase7 = chain_phases_4_to_7(
+        decomposition_jobs, endstate_jobs.rv(), updated_config, config
     )
+    if phase7 is None:  # md_only
+        return phases56
 
-    setup_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 4 Complete: Intermidate simulations setup finished"
-    )
-    setup_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 5: Intermediate State Simulations"
-    )
-
-    # Phase 4.5: Adaptive Lambda Scheduler pilot (flag-gated, CLOSED LOOP). Runs a short-MD pilot of the
-    # complex + receptor legs, drives the per-band R-ADD scheduler (dielectric -> charge -> restraints) to
-    # convergence, then REBUILDS the production setups from the converged dielectric + charge schedule so
-    # Phases 5/6/7 run full-length MD on the pilot-determined window count. Flag off -> no pilot job, Phase
-    # 5 reads the Phase-4 seed setups exactly as before (byte-identical DAG).
-    phase4_tail = setup_intermediate_jobs
-    setup_source = setup_intermediate_jobs  # which setup job feeds Phases 5/6/7
-    if config.workflow.adaptive_lambda:
-        pilot = setup_intermediate_jobs.addFollowOnJobFn(
-            adaptive_restraint_pilot,
-            decomposition_jobs.rv(),
-            endstate_jobs.rv(),
-            updated_config,
-        )
-        # Apply the converged dielectric + charge + restraint windows onto a fresh production config
-        # (full mdin, production dir).
-        merged = pilot.addFollowOnJobFn(merge_pilot_windows, updated_config, pilot.rv())
-        # Re-run Phase 3 on the merged schedule so RestraintMaker materializes a restraint file for every
-        # pilot-inserted exponent (the original seed RestraintMaker only carries seed-window files, so an
-        # inserted con/orient window's restraint_key would not resolve). Anchor protection keeps inserts
-        # inside the seed (min, max), so binding modes, max_*_restraint, and the Boresch ΔG are unchanged
-        # — this only adds the inserted interior restraint files. Then rebuild the production setups from
-        # the merged config + re-generated restraints.
-        redecomposition_jobs = merged.addFollowOnJobFn(
-            decompose_system_and_generate_restraints,
-            endstate_jobs.rv(),
-            merged.rv(),
-        )
-        setup_source = redecomposition_jobs.addFollowOnJobFn(
-            setup_intermediate_simulations,
-            redecomposition_jobs.rv(),
-            endstate_jobs.rv(),
-            merged.rv(),
-        )
-        phase4_tail = setup_source
-
-    # Phases 5 + 6 (merged): submit all intermediate MD windows first and couple each window's
-    # post-analysis row to its OWN MD job -- dissolving the global Phase5->Phase6 barrier so the
-    # dominant N^2 CPU post-analysis backfills cores as trajectories land. Returns
-    # (complex, receptor, ligand, flat_bottom) post-output bundles.
-    merged_jobs = phase4_tail.addFollowOnJobFn(
-        run_intermediate_and_post,
-        setup_source.rv(0), # config
-        setup_source.rv(1), # complex simulations
-        setup_source.rv(2), # receptor simulations
-        setup_source.rv(3), # ligand simulations
-        setup_source.rv(4), # flat bottom simulations
-    )
-    merged_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phases 5-6 Complete: Intermediate MD + energy post-processing finished"
-    )
-
-    if config.workflow.md_only:
-        # No post rows were created, so there is nothing to aggregate or solve.
-        merged_jobs.addFollowOnJobFn(
-            initilized_jobs,
-            message="✓ md_only: MD complete. Re-run with md_only off and the same "
-                    "output_directory_name to score the trajectories."
-        )
-        return merged_jobs
-
-    # Aggregate: flatten each system's per-window post rows into one .post_output bundle. Wired as a
-    # FOLLOW-ON of the merged dispatcher, so it waits for the dispatcher's entire MD+post subtree
-    # (every post_runner.rv() in merged_jobs.rv(0..3) is resolved before it runs).
-    aggregate_jobs = merged_jobs.addFollowOnJobFn(
-        _aggregate_post_output,
-        merged_jobs.rv(0), # complex per-window post rows
-        merged_jobs.rv(1), # receptor per-window post rows
-        merged_jobs.rv(2), # ligand per-window post rows
-        merged_jobs.rv(3), # flat bottom per-window post rows
-    )
-    aggregate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 7: Free energy computation and consolidation"
-    )
-
-    # Phase 7: Compute Free Energy and Consolidate Results. Follow-on of the AGGREGATOR (consumes its
-    # rv), so Phase 7 waits for aggregation -> the .post_output bundles are resolved.
-    free_energy_difference_jobs = aggregate_jobs.addFollowOnJobFn(
-        compute_free_energy_and_consolidate,
-        aggregate_jobs.rv(0), # complex post-output bundle
-        aggregate_jobs.rv(1), # receptor post-output bundle
-        aggregate_jobs.rv(2), # ligand post-output bundle
-        aggregate_jobs.rv(3), # flat bottom post-output bundle
-        setup_source.rv(0), # config
-    )
-
-    free_energy_difference_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 7 Complete: Free energy computation and consolidation finished"
-    )
-
-    # Final workflow completion message
-    
-    free_energy_difference_jobs.addFollowOnJobFn(
+    phase7.addFollowOnJobFn(
         initilized_jobs,
         message="🎉 DDM Workflow Complete: All phases finished successfully!"
     )
-    
-    return free_energy_difference_jobs
+    return phase7
 
 
 def _allocated_gpu_count() -> int:

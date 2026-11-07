@@ -7,7 +7,7 @@
 The two differ ONLY in the scoring salt concentration. Reports the linearity fit, both overlap
 matrices, both superdiagonals and both dG chains.
 
-Usage:  python scripts/gb_endpoint_analyze.py --workdir /tmp/gb_endpoint_probe
+Usage:  python scripts/paper_2026/gb_endpoint_analyze.py --workdir /tmp/gb_endpoint_probe
 """
 import argparse
 import os
@@ -16,7 +16,8 @@ import sys
 import numpy as np
 import pandas as pd
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# scripts/paper_2026/<this file>: the repo root is three levels up; gb_ddG_bar stays in scripts/
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, REPO)
 sys.path.insert(0, os.path.join(REPO, "scripts"))
 

@@ -1,0 +1,83 @@
+# Paper protocol on the CB7/M01 host-guest example that ships in script_examples/.
+#
+# The ligand is decoupled inside GB water (in-solvent cycle: no gas phase, no GB-dielectric
+# band). The complex leg holds the ligand with Boresch orientational restraints plus the pairwise
+# conformational restraint network; the receptor and ligand legs use the pairwise network alone.
+# The window schedule below is the one used for the paper's host-guest runs.
+#
+# Paths are relative to the repository root, so start the run from there:
+#   run_implicit_ddm.py file:jobstore_cb7 --config_file script_examples/config_files/in_solvent_paper.yaml
+#
+# Background: docs/in_solvent_cycle.md, docs/config.rst.
+
+workflow_jobs:
+  plot_overlap_matrix: True        # write the per-leg MBAR overlap matrix figures
+  # adaptive_lambda: True          # post-production ALS (docs/post_production_als.md); off in the paper runs
+
+hardware_parameters:
+  executable: "pmemd.MPI"          # CPU run, as in the paper. The cycle has no extdiel band, so pmemd.cuda with CUDA: True is also valid
+  mpi_command: mpiexec             # system dependent: mpirun, mpiexec or srun
+  CUDA: False
+  output_directory_name: cb7_in_solvent
+  # working_directory and cache_directory_output default to the directory the run is started from
+
+endstate_parameter_files:
+  complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7   # hydrogen-mass-repartitioned topology for the 4 fs timestep
+  complex_coordinate_filename: script_examples/structs/cb7-mol01.rst7
+  ignore_unique_naming: True       # keep topology names, and so the output directories, stable across resubmits
+
+number_of_cores_per_system:
+  complex_ncores: 1
+  ligand_ncores: 1
+  receptor_ncores: 1
+
+AMBER_masks:
+  receptor_mask: ":CB7"            # residue names in cb7-mol01_Hmass.parm7: CB7 M01
+  ligand_mask: ":M01"
+
+workflow:
+  endstate_method: remd            # REMD at the three end states (complex, host, guest)
+  endstate_arguments:
+    nthreads_complex: 16
+    nthreads_receptor: 16
+    nthreads_ligand: 16
+    remd_template_mdin: script_examples/endstate_templates_required/remd.template
+    equilibrate_mdin_template: script_examples/endstate_templates_required/equil.template
+    # The paper's REMD template ran numexchg = 2500000 (10 ns at 4 fs) with ntpr = ntwx = 250;
+    # the shipped remd.template is shorter (numexchg = 250000). Edit it to match.
+    temperatures: [298, 327.32, 356.62, 388.05, 421.77, 457.91, 496.70, 500.00]   # must contain intermediate_states_arguments.temperature
+
+  restraints:                      # flat-bottom restraint applied during endstate sampling
+    restrained_receptor_atoms: ":CB7 & !@H*"   # all host heavy atoms, as in the paper runs (default: host heavy atoms within pocket_radius of the guest)
+
+  intermediate_states_arguments:
+    mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin   # 4 fs, nstlim = 2500000 (10 ns per window), gbsa = 0
+    igb_solvent: 2                 # GB-OBC
+    temperature: 298
+    restraint_type: 2              # Boresch: CoM-heavy atom
+    restraint_reference: lastframe # restraints built from the last frame of the 298 K endstate
+    long_restraint_window_ns: null # every window already runs 10 ns from the template, so no longer floor window
+
+    # 33 restraint windows. The orientational exponent is the conformational one + 4 at every
+    # window, so the anchor is 2^4 = 16 kcal/mol/A^2 (conformational and Boresch distance) and
+    # 2^8 = 256 kcal/mol/rad^2 (Boresch angles and dihedrals).
+    exponent_conformational_forces: [-8.0, -7.571428571428571, -7.142857142857143, -6.714285714285714, -6.285714285714286, -5.857142857142858,
+                                     -5.428571428571429, -5.0, -4.571428571428571, -4.142857142857143, -3.7142857142857144, -3.2857142857142856,
+                                     -2.8571428571428577, -2.428571428571429, -2.0, -1.571428571428572, -1.1428571428571432, -0.7142857142857144,
+                                     -0.2857142857142865, 0.14285714285714246, 0.5714285714285712, 1.0, 1.4285714285714288, 1.8571428571428559,
+                                     2.2857142857142847, 2.5, 2.7142857142857135, 2.9285714277973693, 3.1428571428571423, 3.357142857408363,
+                                     3.571428571428571, 3.785714285719344, 4.0]
+    exponent_orientational_forces: [-4.0, -3.5714285714285716, -3.142857142857143, -2.7142857142857144, -2.2857142857142856, -1.8571428571428572,
+                                    -1.4285714285714288, -1.0, -0.5714285714285716, -0.14285714285714332, 0.28571428571428564, 0.7142857142857144,
+                                    1.1428571428571423, 1.5714285714285712, 2.0, 2.428571428571428, 2.8571428571428568, 3.2857142857142856,
+                                    3.7142857142857135, 4.142857142857142, 4.571428571428571, 5.0, 5.428571428571429, 5.857142857142856,
+                                    6.285714285714285, 6.5, 6.7142857142857135, 6.928571428626389, 7.142857142857142, 7.35714285714438,
+                                    7.571428571428571, 7.785714285653965, 8.0]
+
+    charges_lambda_window: [0.5, 1.0]  # ligand charge fractions; 0 and 1 are always added
+
+    # In-solvent decoupling cycle
+    decouple_in_solvent: True      # decouple the ligand in GB water instead of the gas phase
+    gb_extdiel_windows: []         # must be empty: the in-solvent cycle has no GB-dielectric band
+    lj_scale_windows: [0.2]        # complex ligand-receptor LJ scale between no_interactions (0) and interactions (1)
+    screening_windows: [0.5]       # ligand GB SCREEN scale between interactions and uncharged electrostatics

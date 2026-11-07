@@ -117,6 +117,7 @@ def test_host_without_backbone_keeps_the_legacy_screen(tmp_path, monkeypatch):
     assert any(m.startswith("Boresch anchors (legacy)") for m in store.log)
 
 
+@pytest.mark.hpc
 @pytest.mark.skipif(not (os.path.exists(MCL1_PARM) and os.path.exists(MCL1_REF)), reason="MCL-1 benchmark files not present")
 def test_protein_anchors_are_pocket_backbone_outside_the_freed_loop(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
