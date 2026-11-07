@@ -1,51 +1,61 @@
-#user input values
+# Gas-phase cycle on the CB7/M01 host-guest example, with REMD at the end states.
+#
+# The ligand is decoupled in the gas phase (decouple_in_solvent is left at its default, False).
+# The complex, host and guest end states are sampled with temperature REMD before the
+# intermediate windows run.
+#
+# Paths are relative to the repository root, so start the run from there:
+#   run_implicit_ddm.py file:jobstore_example_02 --config_file script_examples/config_files/remd_config.yaml
+#
+# Key reference: docs/config.rst.
 
-system_parameters:
-  executable: "pmemd.MPI" # executable machine for MD choice : [sander, sander.MPI, pmemd, pmemd.MPI, pmeded.CUDA]
-  mpi_command: srun # system dependent /
-  CUDA:  # run on GPU
-  top_directory_name: cb7_examples
-  #working_directory: '/nas0/ayoub/Impicit-Solvent-DDM' #place workding directory here 
+hardware_parameters:
+  executable: "pmemd.MPI"          # sander, sander.MPI, pmemd, pmemd.MPI, pmemd.cuda or pmemd.cuda.MPI; REMD needs an MPI build
+  mpi_command: srun                # system dependent: mpirun, mpiexec or srun
+  CUDA: False                      # run on CPUs
+  output_directory_name: cb7_examples
+  # working_directory and cache_directory_output default to the directory the run is started from
 
 endstate_parameter_files:
-  complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7 # path to topology file; ["path/to/complex.parm7"]
-  complex_coordinate_filename: script_examples/structs/cb7-mol01.rst7 # path to coordinate ["path/to/complex.ncrst"]list of coordinate file of a complex
+  complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7   # hydrogen-mass-repartitioned topology for the 4 fs timestep
+  complex_coordinate_filename: script_examples/structs/cb7-mol01.rst7
 
 number_of_cores_per_system:
- complex_ncores: 2 #total number of cores per job
- ligand_ncores: 1 #total number of cores per ligand simulation
- receptor_ncores: 1 #total number of cores per ligand simulation
+  complex_ncores: 2                # cores per complex intermediate window
+  ligand_ncores: 1                 # cores per ligand intermediate window
+  receptor_ncores: 1               # cores per receptor intermediate window
 
 AMBER_masks:
-  receptor_mask: ":CB7" # list of Amber masks denoting receptor atoms in respected complex file
-  ligand_mask: ":M01" # list of Amber masks denoting ligand atoms in respected complex file
+  receptor_mask: ":CB7"            # residue names in cb7-mol01_Hmass.parm7: CB7 M01
+  ligand_mask: ":M01"
 
 workflow:
-  endstate_method: remd #options REMD or 0 (meaning no endstate simulation will be performed just intermidates)endstate_method: REMD #options REMD, MD or 0 (meaning no endstate simulation will be performed just intermidates) 
+  endstate_method: remd            # remd, basic_md, or 0 (end-state trajectories supplied by the user)
   endstate_arguments:
-    nthreads_complex: 16
-    nthreads_receptor: 16
-    nthreads_ligand: 16
-    ngroups: 8 
-    target_temperature: 300 # list of temperatures or temp.dat file
+    nthreads_complex: 16           # MPI ranks per REMD job: a multiple of the replica count, at least 2 per replica for pmemd.MPI
+    nthreads_receptor: 16          # the batch allocation needs at least this many tasks (docs/examples/remd_example.rst)
+    nthreads_ligand: 16            # with executable pmemd.MPI the guest REMD runs sander.MPI on half this many ranks (8)
     remd_template_mdin: script_examples/endstate_templates_required/remd.template
     equilibrate_mdin_template: script_examples/endstate_templates_required/equil.template
-    temperatures: [300.00, 327.32, 356.62, 388.05, 421.77, 457.91, 496.70, 500.00]
+    # One replica per temperature; the number of replicas is the length of this list.
+    # It must contain intermediate_states_arguments.temperature: that replica becomes the end state.
+    temperatures: [298, 327.32, 356.62, 388.05, 421.77, 457.91, 496.70, 500.00]
 
-  intermidate_states_arguments:
-    mdin_intermidate_config: script_examples/user_intermidate_mdin_args.yaml #intermidate mdins required states 3-8
-    igb_solvent: 2 #igb [1,2,3,7,8]
-    temperature: 300
-    exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]  # list exponent values 2**p 
-    exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]  # list exponent values 2**p 
-    restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
-    
-    
-    # #optional flags if user wishes to create windows to ligand charges or gb external dielectric.
-    #charges_lambda_window:  [0.5, 1.0]  # 50%
-    # gb_extdiel_windows: explicit external-dielectric (epsilon) seed values for the GB-dielectric band
-    # (NOT fractions of 78.5). Clamped to [gb_extdiel_floor (default 1.0 = vacuum), 78.5 = full water].
-    # The band schedules in lambda = 1 - 1/eps; for ~uniform overlap pick lambda-even epsilons, e.g.:
-    #gb_extdiel_windows: [1.2, 1.6, 2.5, 5, 12, 40]
-    
-  
+  intermediate_states_arguments:
+    mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin   # 4 fs, nstlim = 2500000 (10 ns per window), igb = 2, temp0 = 298
+    igb_solvent: 2                 # GB-OBC; keep equal to igb in the mdin template
+    temperature: 298               # keep equal to temp0 in the mdin template, which the workflow does not rewrite
+    restraint_type: 2              # 1: CoM-CoM, 2: CoM-heavy atom, 3: heavy atom-heavy atom
+    exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]   # 2**p kcal/mol/A^2: pairwise network and Boresch distance
+    exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]        # 2**p kcal/mol/rad^2: Boresch angles and dihedrals
+
+    # Optional windows, off in this example.
+    # charges_lambda_window: [0.5, 1.0]          # ligand charge fractions; 0 and 1 are always added
+    #
+    # gb_extdiel_windows lists explicit external dielectric constants (epsilon >= 1.0, not fractions
+    # of 78.5) for the GB-dielectric band between the gas phase and GB water. Each value is clamped
+    # to [gb_extdiel_floor (default 1.0, vacuum), 78.5]. The band is scheduled on
+    # lambda = 1 - 1/epsilon, so evenly spaced windows sit at epsilon = 1/(1 - lambda);
+    # these four are lambda 0.2, 0.4, 0.6 and 0.8. pmemd.cuda ignores extdiel, so on a GPU run
+    # set gb_dielectric_cpu_cores to run these windows on CPU pmemd.MPI.
+    # gb_extdiel_windows: [1.25, 1.67, 2.5, 5.0]
