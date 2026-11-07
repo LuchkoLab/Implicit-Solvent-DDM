@@ -62,7 +62,7 @@ Usage
   python frame_stride_mbar.py --root <run_dir> --frames 10000 5000 1000 500 --nproc 8
 
 where <run_dir> holds rep1..rep5, each with `.cache/<system>/*_formatted.h5`, e.g.
-  ~/titan_ssh/different_gbs/igb_2/cb7_re_parameterization
+  /path/to/runs/igb_2/cb7_re_parameterization
 
 Outputs (written next to --out-prefix, default ./frame_stride):
   *_legs.csv      one row per (system, rep, leg, target_frames)
