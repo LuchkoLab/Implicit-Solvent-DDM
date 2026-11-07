@@ -159,6 +159,12 @@ class SystemSettings:
         CUDA MPS (``nvidia-cuda-mps-control -d``) to run concurrently rather than serialize.
         Defaults to 0, which requests no GPU and preserves the behaviour of configs written
         before this option existed.
+    windows_per_gpu : int
+        Number of GPU MD windows packed onto each allocated device under the
+        ``single_machine`` batch system. Values above 1 need the CUDA MPS daemon on the
+        node; without it the windows time-slice and gain nothing. Each packed window
+        holds about one CPU core, so that many cores are kept out of the CPU job pool.
+        Defaults to 1, one window per GPU.
     memory : Optional[Union[int, str]]
         Memory required for job (e.g., '5G').
     disk : Optional[Union[int, str]]
@@ -175,6 +181,7 @@ class SystemSettings:
     num_accelerators: int = field(default=0)
     mbar_accelerators: int = field(default=0)
     remd_accelerators: int = field(default=0)
+    windows_per_gpu: int = field(default=1)
     memory: Optional[Union[int, str]] = field(default="5G")
     disk: Optional[Union[int, str]] = field(default="5G")
     export_intermediate_files: bool = field(default=True)
@@ -216,6 +223,11 @@ class SystemSettings:
             )
             self.mbar_accelerators = 1
 
+        if not isinstance(self.windows_per_gpu, int) or self.windows_per_gpu < 1:
+            raise ValueError(
+                f"system_settings.windows_per_gpu must be an integer >= 1, got {self.windows_per_gpu!r}"
+            )
+
     @property
     def top_directory_path(self):
         return os.path.join(self.working_directory, self.output_directory_name)
@@ -247,6 +259,8 @@ class ParameterFiles:
     complex_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
     ligand_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
     receptor_initial_coordinate: Optional[Union[str, FileID]] = field(default=None)
+    # Set by Config when intermediate_states_arguments.restraint_reference is a file
+    restraint_reference_coordinate: Optional[Union[str, FileID]] = field(default=None)
 
     # Misc
     ignore_unique_naming: bool = False
@@ -392,6 +406,7 @@ class ParameterFiles:
             "complex_initial_coordinate",
             "ligand_initial_coordinate",
             "receptor_initial_coordinate",
+            "restraint_reference_coordinate",
         ]
 
         for attr in file_attributes:
@@ -602,10 +617,15 @@ class FlatBottomRestraints:
         Default is 10.0 Å.
     spring_constant : float
         Force constant K in kJ/mol·nm². Default is 1.0.
-    restrained_receptor_atoms : list of int, optional
-        Atom indices to restrain on the receptor side.
-    restrained_ligand_atoms : list of int, optional
-        Atom indices to restrain on the ligand side.
+    pocket_radius : float
+        Contact distance defining the binding site the receptor group is anchored on.
+        Default is 8.0 Å, matching `IntermediateStateArgs.pose_pocket_radius` so the
+        restraint and the pose clustering agree on what "the pocket" is.
+    restrained_receptor_atoms : list of int or str, optional
+        Receptor side of the restraint, as 0-based atom indices or an AMBER mask.
+        Resolved by `Config._check_missing_flatbottom_parameters` when left None.
+    restrained_ligand_atoms : list of int or str, optional
+        Ligand side, same forms.
     flat_bottom_restraints : dict, optional
         User-defined parameters {r1, r2, r3, r4, rk2, rk3}. If not provided,
         defaults are inferred using `_missing_parameters()`.
@@ -614,8 +634,9 @@ class FlatBottomRestraints:
     flat_bottom_width: float = 5.0
     harmonic_distance: float = 10.0
     spring_constant: float = 1.0
-    restrained_receptor_atoms: Optional[List[int]] = None
-    restrained_ligand_atoms: Optional[List[int]] = None
+    pocket_radius: float = 8.0
+    restrained_receptor_atoms: Optional[Union[List[int], str]] = None
+    restrained_ligand_atoms: Optional[Union[List[int], str]] = None
     flat_bottom_restraints: Optional[
         dict[str, float]
     ] = None  # {r1: 0, r2: 0, r3: 10, r4: 20, rk2: 0.1, rk3: 0.1}
@@ -753,6 +774,10 @@ class IntermediateStateArgs:
         Lambda windows for turning on/off partial charges.
     gb_extdiel_windows : list of float, optional
         Scaling factors for the GB external dielectric (normalized 0–1).
+    decouple_in_solvent : bool, optional
+        Decouple the ligand in GB water instead of the gas phase (default False).
+    screening_windows : list of float, optional
+        Ligand GB SCREEN scales for the in-solvent screening windows, strictly in (0, 1).
     min_degree_overlap : float
         Minimum acceptable overlap value for replica exchange (default 0.03).
     unrestrained_receptor_mask : str, optional
@@ -778,7 +803,11 @@ class IntermediateStateArgs:
     temperature: float
 
     charges_lambda_window: List[float] = field(default_factory=list)
+    lj_scale_windows: List[float] = field(default_factory=list)  # ligand-receptor LJ scales for complex windows between no_interactions (0) and interactions (1); empty -> no intermediate LJ windows
     gb_extdiel_windows: List[float] = field(default_factory=list)
+    gb_dielectric_cpu_cores: Optional[int] = None  # run GB-dielectric MD on CPU pmemd.MPI with this many ranks; pmemd.cuda ignores extdiel. None -> default engine
+    decouple_in_solvent: bool = False  # decouple the ligand in GB water: no gas phase, no GB-dielectric band
+    screening_windows: List[float] = field(default_factory=list)  # ligand GB SCREEN scales between interactions and uncharged electrostatics; needs decouple_in_solvent
     min_degree_overlap: float = 0.04  # ALS: insert a window where superdiagonal overlap is below this
     post_analysis_block_size: Optional[int] = None  # None -> full N^2 post-analysis (production default). K -> solve the cycle as a chain of K-state MBAR blocks and only run the sander imin=5 evaluations those blocks need (K=2 is the adjacent-window BAR chain, 3N-2). See block_mbar.py.
 
@@ -787,11 +816,42 @@ class IntermediateStateArgs:
     # --- Conformational-restraint selection ---
     unrestrained_receptor_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms to leave OUT of the conformational contact network. Applies to the receptor network, which is written into BOTH the receptor and complex restraint files, so the two legs stay consistent and the cycle still closes. Use it to free floppy regions whose restraint energy dominates the endstate seam without bearing on binding (MCL-1: ':22-32' carries 76% of the endstate->-14 dU gap at 22.6 A from the ligand). None -> restrain everything, the previous behaviour.
 
+    receptor_ramp_mask: Optional[str] = None  # AMBER mask of RECEPTOR atoms whose network restraints are ramped rather than dropped: free near the endstate (keeps the seam), frozen at the top of the ladder (keeps the complex and receptor legs identical in the GB/charge/LJ windows). Can be combined with unrestrained_receptor_mask on different atoms (e.g. ramp ':22-32', drop '@H*'); pairs are dropped first, then the rest of the selection is ramped. Do not ramp and drop the same region: freeing loop 22-32 in every window let it sample differently per leg.
+    receptor_ramp_slope: float = 2.0  # ramp exponent = E_max - slope*(E_max - E_con): equals the network at the top, 2^-32 at E_con=-14 for slope 2.
+
+    # --- Boresch anchor selection ---
+    boresch_anchors: str = "pocket_backbone"  # "pocket_backbone": R1-R3 from backbone CA/C/N of residues within boresch_pocket_radius of the ligand, minus any freed/ramped mask. "legacy": any receptor heavy atom, farthest lever arm wins -- on a protein that picks surface side-chain tips (MCL-1/ligand-17 anchored to ARG31 in the freed loop, which dragged the ligand into the protein). A receptor with no backbone (host-guest) always uses legacy.
+    boresch_pocket_radius: float = 10.0  # A around the ligand defining the residues whose backbone may anchor Boresch
+
     # --- Restraint reference frame ---
-    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid". Complex leg only. Variance fix, not a bias one: dG is correct either way.
+    restraint_reference: str = "lastframe"  # "lastframe" | "pose_medoid" | path to a single-frame complex restart (crystal pose, or scripts/relax_binding_pose.py output). A path is identical in every replicate; the two keywords are drawn from each run's own sampling and differ per replicate. Variance fix, not a bias one: dG is correct either way.
     pose_cluster_cutoff: float = 2.0  # A, average-linkage cutoff on no-fit ligand RMSD
     pose_pocket_radius: float = 8.0  # A around the ligand defining the pocket atoms to superpose on
     pose_cluster_stride: int = 0  # 0 -> auto, caps the O(n^2) matrix at ~2000 frames
+    pose_cluster_skip: int = 0  # frames dropped from the start of the endstate before clustering (burn-in)
+
+    @property
+    def freed_receptor_mask(self) -> Optional[str]:
+        """Receptor atoms not held by the network in every window; never usable as Boresch anchors."""
+        masks = [m for m in (self.receptor_ramp_mask, self.unrestrained_receptor_mask) if m]
+        return "|".join(f"({m})" for m in masks) if len(masks) > 1 else (masks[0] if masks else None)
+
+    @property
+    def ramp_kwargs(self) -> dict:
+        """``write_restraint_forces`` arguments for the receptor ramp; empty when there is no ramp."""
+        if not self.receptor_ramp_mask:
+            return {}
+        return dict(
+            ramp_slope=float(self.receptor_ramp_slope),
+            ramp_max_force=float(self.max_conformational_restraint),
+        )
+
+    @property
+    def restraint_reference_file(self) -> Optional[str]:
+        """Path of the fixed restraint reference, or None when it is drawn from the run's sampling."""
+        if self.restraint_reference in ("lastframe", "pose_medoid"):
+            return None
+        return self.restraint_reference
 
     # --- Adaptive Lambda Scheduler (ALS) pilot knobs (only used when workflow.adaptive_lambda) ---
     pilot_ps: float = 50.0                     # pilot MD length in PICOSECONDS (paper default: 50 ps); steps = round(pilot_ps / dt) using the user mdin's timestep, so the pilot is always 50 ps regardless of dt
@@ -811,6 +871,38 @@ class IntermediateStateArgs:
     # --- Charge band knobs (q in [0, 1] axis) ---
     candidate_charge_pool: List[float] = field(default_factory=list)  # fixed candidate charge pool; empty -> derive from seed + charge_pool_step
     charge_pool_step: Optional[float] = None    # charge pool granularity; None -> default fill between q=0 and q=1
+    # --- RMSD conformational restraint (AMBER NFE &pmd / MULTI_RMSD). EMPTY LIST -> OFF (default). ---
+    # Replaces the pairwise distance network with one best-fit RMSD collective variable under a
+    # flat-bottom umbrella. The ladder walks the flat-bottom UPPER EDGE r3 in Angstrom at fixed k, so
+    # it terminates exactly: once r3 exceeds the free ensemble's own fluctuation the restraint energy
+    # is identically zero and the loosest window IS the unrestrained endstate.
+    rmsd_tolerance_windows: List[float] = field(default_factory=list)  # r3 seed ladder, Angstrom; stored WEAKEST-FIRST (descending) to stay index-paired with the orientational ladder
+    rmsd_force_constant: float = 10.0           # k for anchor_strength = k,k (kcal/mol/A^2); held FIXED across the ladder
+    rmsd_reference_source: str = "restraint_reference"  # restraint_reference (the binding-mode frame the network and windows use) | ensemble_average | endstate_lastframe | minimized | <path to a coordinate file>
+    rmsd_mask: Optional[str] = None             # restrained atoms; None -> @CA, falling back to !@H* (host-guest)
+    rmsd_restrain_ligand: bool = True           # emit a second colvar over the ligand's own conformation
+    rmsd_ligand_tolerance_scale: float = 1.0    # ligand r3 = scale * receptor r3
+    rmsd_site_cutoff: Optional[float] = None    # Angstrom around the ligand for the binding-site colvar; None -> no site CV
+    rmsd_site_tolerance_scale: float = 1.0      # site r3 = scale * global r3
+    rmsd_site_atoms: str = "heavy"               # heavy: every heavy atom of the site residues; global: the global group's atom class (CA)
+    rmsd_r1: float = -10.0                      # unreachable lower anchors: with r2=0 and RMSD>=0 only the upper wall is live
+    rmsd_r2: float = 0.0
+    rmsd_r4: float = 1000.0                     # mirrors the r4=1000 convention of the &rst templates
+    rmsd_output_freq: int = 250                 # &pmd output_freq (pmd.txt), MD only
+    boresch_distance_force_constant: Optional[float] = None  # decoupled Kr; None -> max of the Boresch distance ladder
+    # Explicit name for the ladder that releases the Boresch DISTANCE term ($drest in
+    # orientational.template). Historically this shared exponent_conformational_forces, because the
+    # distance spring is kcal/mol/A^2 and cannot share the angular ladder's kcal/mol/rad^2
+    # magnitudes. In RMSD mode that sharing is misleading -- there is no conformational force ladder
+    # left -- so set this instead and exponent_conformational_forces becomes inert.
+    exponent_boresch_distance_forces: Optional[List[float]] = None
+    # Used only when neither exponent_boresch_distance_forces nor exponent_conformational_forces
+    # is supplied (rmsd mode): the distance ladder is then orientational + this offset. -4.0 is
+    # the value every production config uses, giving 2^4 = 16 kcal/mol/A^2 against 2^8 = 256
+    # kcal/mol/rad^2 at the anchor.
+    boresch_distance_offset: float = -4.0
+    candidate_rmsd_pool: List[float] = field(default_factory=list)  # fixed ALS candidate pool in Angstrom
+    rmsd_pool_step: Optional[float] = None      # ALS pool granularity in Angstrom; None -> 0.25 (about one measured sigma)
 
     guest_restraint_template: Optional[str] = None
     receptor_restraint_template: Optional[str] = None
@@ -825,6 +917,19 @@ class IntermediateStateArgs:
     orientational_restraint_forces: np.ndarray = field(init=False)
     max_conformational_restraint: float = field(init=False)
     max_orientational_restraint: float = field(init=False)
+    # The pinned anchor. Identical to max_conformational_restraint in force mode; in rmsd mode it is
+    # the MINIMUM, since the tightest flat bottom is the smallest tolerance. Every anchor-key call
+    # site reads this, never max_*, so the two modes share one code path.
+    strongest_conformational_restraint: float = field(init=False)
+    # Same anchor expressed in EXPONENT space. In force mode these differ (2^4 = 16 vs the
+    # exponent 4.0) and are used for different things: forces key the restraint dict, exponents
+    # label the state. In rmsd mode both collapse onto the same r3.
+    strongest_conformational_exponent: float = field(init=False)
+    # Boresch DISTANCE ladder. In force mode this IS conformational_restraints_forces, so behaviour is
+    # byte-identical; in rmsd mode the conformational slot carries tolerances instead, so the Boresch
+    # distance keeps its own 2^p ladder here rather than being handed an Angstrom value as a spring.
+    boresch_distance_forces: np.ndarray = field(init=False)
+    boresch_Kr: float = field(init=False)  # constant written into the Boresch distance &rst at the anchor
     # Canonical exponent schedule — single source of truth for CycleSteps + ALS insertion (R1 fix).
     exponent_conformational_forces_list: List[float] = field(init=False, default_factory=list)
     exponent_orientational_forces_list: List[float] = field(init=False, default_factory=list)
@@ -832,12 +937,96 @@ class IntermediateStateArgs:
     # float compare in SimulationSetup is exact. None -> feature off.
     long_restraint_window_exponent: Optional[float] = field(init=False, default=None)
 
+    def gb_dielectric_engine(self) -> dict:
+        """Simulation keyword overrides for GB-dielectric windows.
+
+        Returns
+        -------
+        dict
+            CPU ``pmemd.MPI`` settings when ``gb_dielectric_cpu_cores`` is set, else empty.
+        """
+        if not self.gb_dielectric_cpu_cores:
+            return {}
+        return dict(executable="pmemd.MPI", num_cores=int(self.gb_dielectric_cpu_cores), CUDA=False,
+                    accelerators=None)
+
+    @property
+    def rmsd_mode(self) -> bool:
+        """Whether the RMSD collective variable replaces the pairwise conformational network.
+
+        Returns
+        -------
+        bool
+            True when ``rmsd_tolerance_windows`` is non-empty, mirroring the list-implies-flag
+            pattern already used for ``gb_extdiel_windows``.
+        """
+        return bool(self.rmsd_tolerance_windows)
+
+    def _init_rmsd_schedule(self):
+        """Collapse the RMSD tolerance ladder into the conformational schedule slots.
+
+        The ``r3`` value plays both roles that the force constant and the log2 exponent play in force
+        mode: it keys ``RestraintMaker.restraints`` / ``cv_files``, and it labels the state in
+        ``CycleSteps``, in the directory structure and in the MBAR index. Reusing the existing slots
+        is what lets the dirstruct, the ``block_mbar`` keys and ``fromPath2Dict`` stay structurally
+        unchanged -- only the ordering and the anchor selector differ, which
+        ``CycleSteps.restraint_coordinate`` handles.
+
+        The ladder is stored **weakest-first**, i.e. descending in ``r3``, because the conformational
+        and orientational ladders are paired by index and index 0 is the weakest everywhere else. The
+        last element is therefore the pinned anchor in both modes.
+
+        Raises
+        ------
+        ValueError
+            If fewer than two distinct tolerances are given, if the two ladders differ in length, if
+            any tolerance is negative, or if the orientational exponents are not weakest-first --
+            which would silently pair the tightest tolerance with the weakest Boresch restraint.
+        """
+        tolerances = sorted({round(float(t), 3) for t in self.rmsd_tolerance_windows}, reverse=True)
+        if len(tolerances) < 2:
+            raise ValueError(
+                f"rmsd_tolerance_windows needs at least two distinct tolerances, got {tolerances}"
+            )
+        if min(tolerances) < 0.0:
+            raise ValueError(f"rmsd tolerances are distances and cannot be negative: {tolerances}")
+        if len(tolerances) != len(self.exponent_orientational_forces):
+            raise ValueError(
+                f"rmsd_tolerance_windows has {len(tolerances)} distinct values but "
+                f"exponent_orientational_forces has {len(self.exponent_orientational_forces)}; the "
+                "two ladders are paired by index and must be the same length"
+            )
+        orientational = self.exponent_orientational_forces
+        if any(b < a for a, b in zip(orientational, orientational[1:])):
+            raise ValueError(
+                "exponent_orientational_forces must be weakest-first (non-decreasing) so it pairs "
+                f"with the descending RMSD ladder; got {orientational}"
+            )
+
+        self.rmsd_tolerance_windows = tolerances
+        self.conformational_restraints_forces = np.asarray(tolerances, dtype=float)
+        self.exponent_conformational_forces = list(tolerances)
+        self.exponent_conformational_forces_list = list(tolerances)
+        self.strongest_conformational_restraint = min(tolerances)
+        self.strongest_conformational_exponent = min(tolerances)
+        if self.rmsd_pool_step is None:
+            self.rmsd_pool_step = 0.25
+
     def __post_init__(self):
         # Ensure lambda windows include 0 and 1
         self.charges_lambda_window = list({0.0, 1.0, *self.charges_lambda_window})
         self.charges_lambda_window = [float(charge) for charge in self.charges_lambda_window]
         self.exponent_conformational_forces = [float(force) for force in self.exponent_conformational_forces]
         self.exponent_orientational_forces = [float(force) for force in self.exponent_orientational_forces]
+        conformational_supplied = bool(self.exponent_conformational_forces)
+        if not conformational_supplied:
+            if not self.rmsd_mode:
+                raise ValueError(
+                    "exponent_conformational_forces is required unless rmsd_tolerance_windows is set"
+                )
+            # RMSD mode with only two ladders given. Every value below is overwritten by
+            # _init_rmsd_schedule; this just keeps the force-mode arithmetic well-defined.
+            self.exponent_conformational_forces = list(self.rmsd_tolerance_windows)
         # gb_extdiel_windows are EXPLICIT external-dielectric (epsilon) seed values for the GB-dielectric
         # band (NOT fractions of 78.5). Clamp each to [gb_extdiel_floor, 78.5] (eps=1 is vacuum/lambda=0,
         # the lowest physically meaningful value; 78.5 is full water, the upper anchor) and warn on any
@@ -857,7 +1046,7 @@ class IntermediateStateArgs:
 
         # Apply 2^x to get force magnitudes
         self.conformational_restraints_forces = np.exp2(self.exponent_conformational_forces)
-        self.orientational_restraint_forces = np.exp2(self.exponent_orientational_forces)     
+        self.orientational_restraint_forces = np.exp2(self.exponent_orientational_forces)
 
         self.max_conformational_restraint = max(self.conformational_restraints_forces)
         self.max_orientational_restraint = max(self.orientational_restraint_forces)
@@ -871,6 +1060,41 @@ class IntermediateStateArgs:
             round(float(np.log2(force)), 3) for force in self.orientational_restraint_forces
         ]
 
+        # Captured before rmsd mode repurposes the conformational slot, so the Boresch distance term
+        # keeps a real spring ladder in both modes. The explicit field wins when given; otherwise this
+        # falls back to the conformational exponents, which is what the two shared historically.
+        # Explicit list wins; otherwise inherit the conformational ladder, which is what the two
+        # shared historically; otherwise (rmsd mode, two ladders given) derive it from the
+        # orientational one so nobody has to hand-write a third list.
+        if self.exponent_boresch_distance_forces is not None:
+            distance_exponents = list(self.exponent_boresch_distance_forces)
+        elif conformational_supplied:
+            distance_exponents = list(self.exponent_conformational_forces)
+        else:
+            distance_exponents = [
+                round(o + self.boresch_distance_offset, 6)
+                for o in self.exponent_orientational_forces
+            ]
+        if len(distance_exponents) != len(self.exponent_orientational_forces):
+            raise ValueError(
+                f"the Boresch distance ladder has {len(distance_exponents)} entries but the "
+                f"orientational ladder has {len(self.exponent_orientational_forces)}; the six Boresch "
+                "terms are released together and are paired by index"
+            )
+        self.boresch_distance_forces = np.exp2([float(e) for e in distance_exponents])
+
+        # RMSD mode overwrites the conformational half of the schedule in place (see the method's
+        # docstring). Runs AFTER the exp2 block so the flag-off path above is untouched.
+        self.strongest_conformational_restraint = self.max_conformational_restraint
+        self.strongest_conformational_exponent = max(self.exponent_conformational_forces)
+        if self.rmsd_mode:
+            self._init_rmsd_schedule()
+        self.boresch_Kr = (
+            self.boresch_distance_force_constant
+            if self.boresch_distance_force_constant is not None
+            else float(max(self.boresch_distance_forces))
+        )
+
         # Resolved here, not at dispatch: workflow_phases clears and rebuilds
         # exponent_conformational_forces_list inside the window loop, so min() there would be
         # order-dependent. min() rather than a sort, which would break the positional zip against
@@ -879,13 +1103,47 @@ class IntermediateStateArgs:
         if self.long_restraint_window_ns is not None:
             if float(self.long_restraint_window_ns) <= 0:
                 raise ValueError("long_restraint_window_ns must be > 0 ns (or None to disable)")
-            self.long_restraint_window_exponent = min(self.exponent_conformational_forces_list)
+            # weakest window: lowest exponent in force mode, widest tolerance in rmsd mode
+            pick = max if self.rmsd_mode else min
+            self.long_restraint_window_exponent = pick(self.exponent_conformational_forces_list)
+
+        self.lj_scale_windows = sorted({float(lam) for lam in self.lj_scale_windows})
+        if any(not 0.0 < lam < 1.0 for lam in self.lj_scale_windows):
+            raise ValueError(f"lj_scale_windows must lie strictly between 0 and 1, got {self.lj_scale_windows}")
+
+        if self.rmsd_mode and (self.receptor_ramp_mask or self.unrestrained_receptor_mask):
+            raise ValueError(
+                "receptor_ramp_mask and unrestrained_receptor_mask act on the pairwise network, "
+                "which rmsd_tolerance_windows replaces"
+            )
+        self.screening_windows = sorted({float(s) for s in self.screening_windows})
+        if any(not 0.0 < s < 1.0 for s in self.screening_windows):
+            raise ValueError(f"screening_windows must lie strictly between 0 and 1, got {self.screening_windows}")
+        if self.screening_windows and not self.decouple_in_solvent:
+            raise ValueError("screening_windows requires decouple_in_solvent: True")
+        if self.decouple_in_solvent and self.gb_extdiel_windows:
+            raise ValueError("decouple_in_solvent has no GB-dielectric band; remove gb_extdiel_windows")
+        if self.gb_dielectric_cpu_cores is not None and int(self.gb_dielectric_cpu_cores) < 1:
+            raise ValueError(f"gb_dielectric_cpu_cores must be >= 1, got {self.gb_dielectric_cpu_cores}")
+        if self.rmsd_site_atoms not in ("heavy", "global"):
+            raise ValueError(f"rmsd_site_atoms must be 'heavy' or 'global', got {self.rmsd_site_atoms!r}")
+        if float(self.receptor_ramp_slope) < 1.0:
+            raise ValueError("receptor_ramp_slope must be >= 1 so the ramp is at or below the network")
+        if self.boresch_anchors not in ("pocket_backbone", "legacy"):
+            raise ValueError(
+                f"boresch_anchors must be 'pocket_backbone' or 'legacy', got {self.boresch_anchors!r}"
+            )
+
+        if int(self.pose_cluster_skip) < 0:
+            raise ValueError(f"pose_cluster_skip must be >= 0, got {self.pose_cluster_skip!r}")
 
         if self.restraint_reference not in ("lastframe", "pose_medoid"):
-            raise ValueError(
-                f"restraint_reference must be 'lastframe' or 'pose_medoid', "
-                f"got {self.restraint_reference!r}"
-            )
+            if not os.path.isfile(str(self.restraint_reference)):
+                raise ValueError(
+                    f"restraint_reference must be 'lastframe', 'pose_medoid' or a path to a "
+                    f"complex restart, got {self.restraint_reference!r}"
+                )
+            self.restraint_reference = str(Path(self.restraint_reference).resolve())
 
         # Ensure mdin path is absolute
         self.mdin_intermediate_file = str(Path(self.mdin_intermediate_file).resolve())
@@ -939,7 +1197,8 @@ class IntermediateStateArgs:
         Raises
         ------
         ValueError
-            If any required MDIN keys are missing from the template file.
+            If any required MDIN keys are missing from the template file, or ``gbsa`` is non-zero
+            with ``decouple_in_solvent``.
         """
         required_keys = {"igb", "$restraint", "$extdiel", "nmropt"}
 
@@ -958,7 +1217,12 @@ class IntermediateStateArgs:
                 f"Missing required MDIN arguments: {sorted(missing_keys)}.\n"
                 f"Please add them to your file: {mdin_path}"
             )
-    
+
+        # decoupled ligand atoms would still change the receptor's surface area
+        gbsa = re.search(r"\bgbsa\s*=\s*(\d+)", contents)
+        if self.decouple_in_solvent and gbsa and int(gbsa.group(1)) != 0:
+            raise ValueError("decouple_in_solvent requires gbsa=0 in the MDIN template")
+
     def _write_restraint_template(
         self,
         template_paths: Union[str, tuple[str, str]],
@@ -1101,6 +1365,7 @@ class Config:
     ignore_receptor: bool = False
 
     def __post_init__(self):
+        self._resolve_restraint_reference()
         self._config_sanity_check()
 
         # A supplied receptor is reused as-is and may be a multi-frame ensemble; a generated
@@ -1122,6 +1387,10 @@ class Config:
         if not self.intermediate_args.gb_extdiel_windows:
             self.workflow.gb_extdiel_windows = False
 
+        # The in-solvent cycle has no gas-phase receptor state
+        if self.intermediate_args.decouple_in_solvent:
+            self.workflow.remove_GB_solvent_receptor = False
+
         # If receptor coordinates are provided, mark receptor as already prepared
         if self.endstate_files.receptor_coordinate_filename is not None:
             self.ignore_receptor = True
@@ -1142,6 +1411,40 @@ class Config:
         self._check_missing_flatbottom_parameters()
         self._remd_target_temperature()
         self.intermediate_args._sanity_check_mdin()
+
+    def _resolve_restraint_reference(self):
+        """
+        Make a fixed restraint reference the structure every leg is restrained to and starts from.
+
+        Resolved here, before Toil serialization, because config changes made inside a Toil job
+        never reach later phases. The complex REMD / basic-MD endstate starts from it too; a
+        user-provided endstate (method 0) keeps its ensemble, since there the complex coordinate
+        IS the sampled ensemble. Phase 2 swaps it in as the binding mode
+        (``workflow_phases.use_reference_frame``).
+
+        Raises
+        ------
+        ValueError
+            If the reference is not one frame matching the complex topology.
+        """
+        path = self.intermediate_args.restraint_reference_file
+        if path is None:
+            return
+        parm = str(self.endstate_files.complex_parameter_filename)
+        try:
+            n_frames = pt.iterload(path, parm).n_frames
+        except Exception as err:
+            raise ValueError(f"restraint_reference {path} does not match {parm}: {err}") from err
+        # pytraj reports an atom-count mismatch on stderr and yields zero frames, not an error
+        if n_frames == 0:
+            raise ValueError(f"restraint_reference {path} does not match {parm} (atom count?)")
+        if n_frames != 1:
+            raise ValueError(
+                f"restraint_reference {path} has {n_frames} frames; it must be one complex restart"
+            )
+        self.endstate_files.restraint_reference_coordinate = path
+        if self.endstate_method.endstate_method_type != 0:
+            self.endstate_files.complex_coordinate_filename = path
 
     def _check_endstate_method(self):
         """
@@ -1232,8 +1535,74 @@ class Config:
             restraints={},   # Placeholder; can be populated post-init
         )
 
+    @staticmethod
+    def _resolve_restraint_atoms(topology, given, fallback):
+        """Resolve a restraint group to 0-based atom indices.
+
+        Parameters
+        ----------
+        topology : pytraj.Topology
+            Topology the mask is evaluated against.
+        given : list of int, str, or None
+            Explicit indices, an AMBER mask, or None to use `fallback`.
+        fallback : array_like of int
+            Selection used when `given` is None.
+
+        Returns
+        -------
+        list of int
+            0-based atom indices.
+
+        Raises
+        ------
+        ValueError
+            If a supplied mask selects no atoms.
+        """
+        if given is None:
+            selection = fallback
+        elif isinstance(given, str):
+            selection = topology.select(given)
+            if selection is None or len(selection) == 0:
+                raise ValueError(f"restraint mask {given!r} selected no atoms")
+        else:
+            selection = given
+        return [int(index) for index in selection]
+
     def _check_missing_flatbottom_parameters(self):
-        pass
+        """Fill in the flat-bottom restraint groups the config did not supply.
+
+        The receptor side becomes the C-alphas of residues within ``pocket_radius`` of the
+        ligand, so the restrained distance is measured from the binding site and not from
+        the whole receptor's centre of mass, which leaves the ligand free to sit anywhere
+        on the surface at the same radius.
+        """
+        from implicit_solvent_ddm.pose_clusters import build_pocket_atoms
+
+        flat_bottom = self.endstate_method.flat_bottom
+        # a fixed restraint reference defines the site; with endstate_method 0 the complex
+        # coordinate is the sampled ensemble, whose frame 0 is not that structure
+        reference = self.endstate_files.restraint_reference_coordinate
+        if reference is not None:
+            trajectory = pt.iterload(str(reference), str(self.endstate_files.complex_parameter_filename))
+        else:
+            trajectory = self.complex_pytraj_trajectory
+        topology = trajectory.top
+
+        # the initial pose defines the site, not wherever the ensemble wandered
+        pocket_atoms, ligand_atoms, _ = build_pocket_atoms(
+            topology,
+            trajectory[0].xyz,
+            self.amber_masks.ligand_mask,
+            self.amber_masks.receptor_mask,
+            radius=flat_bottom.pocket_radius,
+        )
+
+        flat_bottom.restrained_receptor_atoms = self._resolve_restraint_atoms(
+            topology, flat_bottom.restrained_receptor_atoms, pocket_atoms
+        )
+        flat_bottom.restrained_ligand_atoms = self._resolve_restraint_atoms(
+            topology, flat_bottom.restrained_ligand_atoms, ligand_atoms
+        )
 
     @property
     def complex_pytraj_trajectory(self) -> pt.Trajectory:

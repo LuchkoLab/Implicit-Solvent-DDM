@@ -47,6 +47,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `hardware_parameters.windows_per_gpu` packs several `pmemd.cuda` windows onto each GPU under
+  `single_machine` (default 1). Needs CUDA MPS; 4 per GPU gives ~1.9x window-MD throughput on an
+  RTX 5000 Ada. `maxCores` is lowered by one core per slot, REMD scales its slot request to keep
+  whole devices, and the leader warns if the MPS daemon is missing.
 - `restraint_reference: pose_medoid` anchors the complex restraints to the medoid of the
   dominant ligand pose cluster instead of the endstate last frame. The last frame is a
   single random draw from the pose ensemble -- on MCL-1 ligand-3 it landed in a 2.9%
@@ -55,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrestrained ensemble either way, so the total dG is unchanged. Default off.
 - `pose_cluster_cutoff`, `pose_pocket_radius` and `pose_cluster_stride` tune the
   clustering. Stride 0 auto-sizes to cap the O(n^2) distance matrix at ~2000 frames.
+- `pose_cluster_skip` drops the first N endstate frames from the clustering only
+  (burn-in); the endstate is still scored on every frame.
 - `implicit_solvent_ddm/pose_clusters.py`, a pytraj + scipy port of
   `scripts/analyze_clusters.py`. The script is now a CLI over it, so there is one
   implementation. Reproduces the MDAnalysis result exactly on MCL-1 ligand-3 (26 clusters,

@@ -28,6 +28,7 @@ from implicit_solvent_ddm.alchemical import alter_topology, split_complex_system
 from implicit_solvent_ddm.setup_simulations import SimulationSetup
 from implicit_solvent_ddm.runner import IntermidateRunner, run_post_pass_with_traj
 from implicit_solvent_ddm.adaptive_restraints import (
+    interpolate_partner,
     run_exponential_averaging,
     run_compute_mbar,
     adaptive_lambda_windows,
@@ -66,9 +67,14 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
         Job containing all setup components
     """
     # Generate MD input files for intermediate states
+    # RMSD mode: the two MD mdins get infe=1 + a &pmd block pointing at the per-window cv.in. The
+    # imin=5 scoring mdins deliberately do NOT -- the restraint term is added analytically.
+    nfe_cv_file = "cv.in" if config.intermediate_args.rmsd_mode else None
     mdins = job.addChildJobFn(
-        get_mdins, 
-        config.intermediate_args.mdin_intermediate_file
+        get_mdins,
+        config.intermediate_args.mdin_intermediate_file,
+        nfe_cv_file=nfe_cv_file,
+        nfe_output_freq=config.intermediate_args.rmsd_output_freq,
     )
     
     # Store MDIN file references in config
@@ -93,6 +99,8 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
             get_long_window_mdin,
             config.intermediate_args.mdin_intermediate_file,
             config.intermediate_args.long_restraint_window_ns,
+            nfe_cv_file=nfe_cv_file,
+            nfe_output_freq=config.intermediate_args.rmsd_output_freq,
         )
         config.inputs["long_window_mdin"] = long_mdin.rv(0)
         config.inputs["long_window_nstlim"] = long_mdin.rv(1)
@@ -118,6 +126,8 @@ def setup_workflow_components(job: JobFunctionWrappingJob, config: Config):
             config.intermediate_args.pilot_ps,
             config.intermediate_args.pilot_frames,
             config.intermediate_args.pilot_nstlim,
+            nfe_cv_file=nfe_cv_file,
+            nfe_output_freq=config.intermediate_args.rmsd_output_freq,
         )
         # rv(0) = default (solvated) pilot mdin; rv(1) = no-solvent (igb=6 gas-phase) pilot mdin. Both
         # are swapped into the pilot config so EVERY pilot MD state runs at 50 ps (not just the
@@ -161,8 +171,37 @@ def run_endstate_simulations(job, config: Config):
             endstate_job = job.addChildJobFn(user_defined_endstate, config)
     else:
         endstate_job = job.addChildJobFn(user_defined_endstate, config)
-    
+
+    reference = config.endstate_files.restraint_reference_coordinate
+    if reference is not None:
+        return endstate_job.addFollowOnJobFn(use_reference_frame, endstate_job.rv(), reference).rv()
     return endstate_job.rv()
+
+
+def use_reference_frame(job, endstate, reference):
+    """
+    Replace the endstate's binding mode with the fixed restraint reference.
+
+    Element 0 is the one frame Phase 3 splits and builds every restraint from, and every
+    window's starting coordinate, so swapping it here gives all three legs the same reference
+    in every replicate. The trajectories are untouched.
+
+    Parameters
+    ----------
+    job : JobFunctionWrappingJob
+        Current Toil job.
+    endstate : tuple
+        ``(complex binding mode, complex traj, receptor traj, ligand traj)``.
+    reference : FileID
+        Imported single-frame complex restart.
+
+    Returns
+    -------
+    tuple
+        ``endstate`` with element 0 replaced.
+    """
+    job.fileStore.logToMaster(f"restraint reference: fixed file {reference} (replaces {endstate[0]})")
+    return (reference, *endstate[1:])
 
 
 def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config):
@@ -210,12 +249,15 @@ def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config)
             restraint_type=config.intermediate_args.restraint_type,
             ligand_mask=config.amber_masks.ligand_mask,
             receptor_mask=config.amber_masks.receptor_mask,
-            K_r=config.intermediate_args.max_conformational_restraint,
+            K_r=config.intermediate_args.boresch_Kr,
             K_thetaA=config.intermediate_args.max_orientational_restraint,
             K_thetaB=config.intermediate_args.max_orientational_restraint,
             K_phiA=config.intermediate_args.max_orientational_restraint,
             K_phiB=config.intermediate_args.max_orientational_restraint,
             K_phiC=config.intermediate_args.max_orientational_restraint,
+            anchor_pool=config.intermediate_args.boresch_anchors,
+            pocket_radius=config.intermediate_args.boresch_pocket_radius,
+            excluded_receptor_mask=config.intermediate_args.freed_receptor_mask,
         )
     )
     
@@ -226,6 +268,9 @@ def decompose_system_and_generate_restraints(job, endstate_jobs, config: Config)
             complex_binding_mode=endstate_jobs[0],
             boresch_restraints=boresch_restraints.rv(),
             flat_bottom=config.inputs["flat_bottom_restraint"],
+            # Holo trajectory, for rmsd_reference_source='ensemble_average'. A single snapshot sits
+            # about one thermal RMSF off the apo-to-holo segment, which both legs then pay for.
+            endstate_trajectory=endstate_jobs[1],
         )
     ).rv()
 
@@ -317,9 +362,13 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
         receptor_simulations.setup_post_endstate_simulation()
         ligand_simulations.setup_post_endstate_simulation()
 
-    # Calculate maximum restraint forces
-    max_conformational_force = max(config.intermediate_args.conformational_restraints_forces)
+    # Calculate the pinned restraint anchor (mode-aware: max spring, or min RMSD tolerance)
+    max_conformational_force = config.intermediate_args.strongest_conformational_restraint
     max_orientational_force = max(config.intermediate_args.orientational_restraint_forces)
+    in_solvent = config.intermediate_args.decouple_in_solvent
+    # in solvent the decoupled states also drop the ligand GB screening
+    decoupled_screen = 0.0 if in_solvent else None
+    complex_anchor_key = f"complex_{max_conformational_force}_{max_orientational_force}_rst"
 
     
     # Setup runner jobs for MD simulations
@@ -330,19 +379,20 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
     
     # Setup ligand charge scaling simulations
     for charge in config.intermediate_args.charges_lambda_window:
-        # Scale ligand charges in isolated ligand system
-        ligand_simulations.setup_ligand_charge_simulation(
-            prmtop=job.addChildJobFn(
-                alter_topology,
-                solute_amber_parm=config.endstate_files.ligand_parameter_filename,
-                solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
-                ligand_mask=config.amber_masks.ligand_mask,
-                receptor_mask=config.amber_masks.receptor_mask,
-                set_charge=charge,
-            ).rv(),
-            charge=charge,
-            restraint_key=f"ligand_{max_conformational_force}_rst",
-        )
+        # Scale ligand charges in isolated ligand system; in solvent q=1 is the restraint anchor
+        if not (in_solvent and charge == 1.0):
+            ligand_simulations.setup_ligand_charge_simulation(
+                prmtop=job.addChildJobFn(
+                    alter_topology,
+                    solute_amber_parm=config.endstate_files.ligand_parameter_filename,
+                    solute_amber_coordinate=config.endstate_files.ligand_coordinate_filename,
+                    ligand_mask=config.amber_masks.ligand_mask,
+                    receptor_mask=config.amber_masks.receptor_mask,
+                    set_charge=charge,
+                ).rv(),
+                charge=charge,
+                restraint_key=f"ligand_{max_conformational_force}_rst",
+            )
         
         # Scale ligand charges within the complex
         complex_simulations.setup_ligand_charge_simulation(
@@ -365,10 +415,10 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
             prmtop=config.endstate_files.receptor_parameter_filename,
         )
 
-    # Setup complex ligand exclusion simulations (gas phase)
+    # Setup complex ligand exclusion simulations (gas phase; LJ 0 + SCREEN 0 in solvent)
     if config.workflow.complex_ligand_exclusions:
         complex_simulations.setup_remove_gb_solvent_simulation(
-            restraint_key=f"complex_{max_conformational_force}_{max_orientational_force}_rst",
+            restraint_key=complex_anchor_key,
             prmtop=job.addChildJobFn(
                 alter_topology,
                 solute_amber_parm=config.endstate_files.complex_parameter_filename,
@@ -376,9 +426,29 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                 ligand_mask=config.amber_masks.ligand_mask,
                 receptor_mask=config.amber_masks.receptor_mask,
                 set_charge=0.0,
-                exculsions=True,
+                exculsions=not in_solvent,
+                lj_scale=0.0 if in_solvent else None,
+                screen_scale=decoupled_screen,
             ).rv(),
         )
+
+    # Intermediate ligand-receptor LJ windows between no_interactions and interactions
+    if config.workflow.complex_ligand_exclusions and config.workflow.complex_turn_off_exclusions:
+        for lj_scale in config.intermediate_args.lj_scale_windows:
+            complex_simulations.setup_lj_scaled_simulation(
+                restraint_key=f"complex_{max_conformational_force}_{max_orientational_force}_rst",
+                prmtop=job.addChildJobFn(
+                    alter_topology,
+                    solute_amber_parm=config.endstate_files.complex_parameter_filename,
+                    solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+                    ligand_mask=config.amber_masks.ligand_mask,
+                    receptor_mask=config.amber_masks.receptor_mask,
+                    set_charge=0.0,
+                    lj_scale=lj_scale,
+                    screen_scale=decoupled_screen,
+                ).rv(),
+                lj_scale=lj_scale,
+            )
 
     # Setup LJ interaction simulations
     if config.workflow.complex_turn_off_exclusions:
@@ -391,7 +461,24 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                 ligand_mask=config.amber_masks.ligand_mask,
                 receptor_mask=config.amber_masks.receptor_mask,
                 set_charge=0.0,
+                screen_scale=decoupled_screen,
             ).rv(),
+        )
+
+    # Ligand GB screening windows between interactions and uncharged electrostatics
+    for screen_scale in config.intermediate_args.screening_windows:
+        complex_simulations.setup_screening_simulation(
+            restraint_key=complex_anchor_key,
+            prmtop=job.addChildJobFn(
+                alter_topology,
+                solute_amber_parm=config.endstate_files.complex_parameter_filename,
+                solute_amber_coordinate=config.endstate_files.complex_coordinate_filename,
+                ligand_mask=config.amber_masks.ligand_mask,
+                receptor_mask=config.amber_masks.receptor_mask,
+                set_charge=0.0,
+                screen_scale=screen_scale,
+            ).rv(),
+            screen_scale=screen_scale,
         )
     
     # Setup GB external dielectric scaling simulations
@@ -424,6 +511,8 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     gb_extdiel=dielectric,
                     nstlim=gb_nstlim,
                     ntwx=gb_ntwx,
+                    nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+                    nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
             )
 
@@ -442,6 +531,8 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
                     gb_extdiel=dielectric,
                     nstlim=gb_nstlim,
                     ntwx=gb_ntwx,
+                    nfe_cv_file="cv.in" if config.intermediate_args.rmsd_mode else None,
+                    nfe_output_freq=config.intermediate_args.rmsd_output_freq,
                 ).rv(),
             )
 
@@ -453,7 +544,14 @@ def setup_intermediate_simulations(job, decomposition_jobs, endstate_jobs, confi
         config.intermediate_args.conformational_restraints_forces,
         config.intermediate_args.orientational_restraint_forces,
     ):
-        exponent_conformational = round(np.log2(con_force), 3)
+        # In rmsd mode the conformational slot already HOLDS the state label (an Angstrom tolerance),
+        # so there is no 2^p to undo -- log2 would turn the ladder into exponents and send the
+        # r3 = 0 anchor to -inf.
+        exponent_conformational = (
+            round(float(con_force), 3)
+            if config.intermediate_args.rmsd_mode
+            else round(np.log2(con_force), 3)
+        )
         exponent_orientational = round(np.log2(orien_force), 3)
 
         config.intermediate_args.exponent_conformational_forces_list.append(exponent_conformational)
@@ -508,6 +606,9 @@ class HamiltonianSpec:
     system_type: object
     mpi_command: object
     inptraj: object = None
+    cv_file: object = None
+    cv_key: object = None
+    cv_spec: object = None
 
     @classmethod
     def from_simulation(cls, sim):
@@ -518,6 +619,9 @@ class HamiltonianSpec:
             incrd=sim.incrd,
             restraint_file=sim.restraint_file,
             restraint_key=sim.restraint_key,
+            cv_file=getattr(sim, "cv_file", None),
+            cv_key=getattr(sim, "cv_key", None),
+            cv_spec=getattr(getattr(sim, "restraint_file", None), "cv_spec", None),
             working_directory=sim.working_directory,
             system_type=sim.system_type,
             mpi_command=sim.mpi_command,
@@ -763,7 +867,7 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                     receptor_adaptive_run=receptor_mbar_job.rv(),
                     flat_botton_run=flat_bottom_exp.rv(),  # flat bottom results
                     temperature=config.intermediate_args.temperature,
-                    max_conformation_force=max(config.intermediate_args.exponent_conformational_forces),
+                    max_conformation_force=config.intermediate_args.strongest_conformational_exponent,
                     max_orientational_force=max(config.intermediate_args.exponent_orientational_forces),
                     boresch_df=config.inputs["restraints"],  # restraints
                     complex_filename=config.endstate_files.complex_parameter_filename,
@@ -772,6 +876,7 @@ def compute_free_energy_and_consolidate(job, post_complex_analysis, post_recepto
                     working_path=config.system_settings.cache_directory_output,
                     endstate_label=config.endstate_method.endstate_state_label,
                     plot_overlap_matrix=config.workflow.plot_overlap_matrix,
+                    decouple_in_solvent=config.intermediate_args.decouple_in_solvent,
                 )
             )
             
@@ -831,6 +936,12 @@ def adaptive_restraint_pilot(job, decomposition_jobs, endstate_jobs, config: Con
     pilot_config.inputs["no_solvent_mdin"] = pilot_config.inputs["pilot_no_solvent_mdin"]
     # A pilot must be uniformly short; the als_pilot marker below already covers this.
     pilot_config.inputs.pop("long_window_mdin", None)
+    # ALS needs only adjacent overlaps, so score the pilot as a BAR chain; pruning reads non-adjacent
+    # overlaps and needs every cell. Production keeps its own block size (merge_pilot_windows copies
+    # only the window lists).
+    pilot_config.intermediate_args.post_analysis_block_size = (
+        None if pilot_config.intermediate_args.prune_after_convergence else 2
+    )
     # The ALS restraint overlap is a banded MBAR over the restraint windows + their max-restraint
     # anchor only (adaptive_lambda_windows -> compute_mbar(restraint_band=True)); the endstate is not in
     # that band. So skip re-scoring it entirely — it removes the expensive full-length endstate
@@ -912,18 +1023,24 @@ def _pilot_band_passes(job, complex_runner, receptor_runner, pilot_config: Confi
     reads its own banded overlap and inserts in its own coordinate; the converged config (expanded window
     lists) is threaded into the next pass and ultimately returned for the production rebuild (Stage D).
     """
-    # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
-    diel = job.addChildJobFn(
-        pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
-    )
     # Pass 2 — charge band on the complex leg. adaptive_lambda_windows -> (results, config, runner).
-    charge = diel.addFollowOnJobFn(
-        adaptive_lambda_windows,
-        diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
-        diel.rv(2),  # dielectric-converged config
-        "complex",
-        charge_scaling=True,
-    )
+    if pilot_config.intermediate_args.decouple_in_solvent:
+        # no dielectric band to schedule
+        charge = job.addChildJobFn(
+            adaptive_lambda_windows, complex_runner, pilot_config, "complex", charge_scaling=True
+        )
+    else:
+        # Pass 1 — matched GB-dielectric on both legs. Returns (complex_runner, receptor_runner, config).
+        diel = job.addChildJobFn(
+            pilot_dielectric_scheduler, complex_runner, receptor_runner, pilot_config
+        )
+        charge = diel.addFollowOnJobFn(
+            adaptive_lambda_windows,
+            diel.rv(0),  # complex runner (post_output now carries the inserted dielectric windows)
+            diel.rv(2),  # dielectric-converged config
+            "complex",
+            charge_scaling=True,
+        )
     # Pass 3 — restraint band on the complex leg.
     restr = charge.addFollowOnJobFn(
         adaptive_lambda_windows,
@@ -976,8 +1093,30 @@ def apply_converged_schedule(production_config: Config, converged_config: Config
     if con_exps and len(con_exps) == len(orient_exps):
         m.exponent_conformational_forces = con_exps
         m.exponent_orientational_forces = orient_exps
-        m.conformational_restraints_forces = np.exp2(con_exps)
         m.orientational_restraint_forces = np.exp2(orient_exps)
+        if m.rmsd_mode:
+            # The conformational slot holds Angstrom tolerances, so there is no 2^p to apply. Keep the
+            # tolerance list, the anchor and the Boresch distance ladder in step with the merged
+            # schedule -- deepcopy does NOT re-run __post_init__, the lesson of commit 5adfa35.
+            m.conformational_restraints_forces = np.asarray(con_exps, dtype=float)
+            m.rmsd_tolerance_windows = list(con_exps)
+            m.strongest_conformational_restraint = min(con_exps)
+            m.strongest_conformational_exponent = min(con_exps)
+            m.boresch_distance_forces = np.exp2(
+                [
+                    interpolate_partner(
+                        conv.exponent_conformational_forces_list,
+                        [float(np.log2(f)) for f in conv.boresch_distance_forces],
+                        c,
+                    )
+                    for c in con_exps
+                ]
+            )
+        else:
+            m.conformational_restraints_forces = np.exp2(con_exps)
+            m.strongest_conformational_restraint = float(max(np.exp2(con_exps)))
+            m.strongest_conformational_exponent = float(max(con_exps))
+            m.boresch_distance_forces = np.exp2(con_exps)
     return merged
 
 

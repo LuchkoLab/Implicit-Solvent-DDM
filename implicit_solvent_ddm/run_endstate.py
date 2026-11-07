@@ -35,6 +35,7 @@ def _pose_medoid_args(user_config: Config, directory_args: dict) -> dict:
         cluster_cutoff=args.pose_cluster_cutoff,
         pocket_radius=args.pose_pocket_radius,
         cluster_stride=args.pose_cluster_stride,
+        cluster_skip=args.pose_cluster_skip,
         working_directory=user_config.system_settings.working_directory,
         directory_args=directory_args,
     )
@@ -52,11 +53,15 @@ def run_remd(job, user_config: Config):
         user_config.system_settings.remd_executable
         or user_config.system_settings.executable
     )
-    remd_accelerators = user_config.system_settings.remd_accelerators
+    # Packed slots: request windows_per_gpu slots per device so REMD still claims whole GPUs.
+    remd_accelerators = (
+        user_config.system_settings.remd_accelerators
+        * user_config.system_settings.windows_per_gpu
+    )
     ngroups = user_config.endstate_method.remd_args.ngroups
-    if user_config.system_settings.CUDA and 0 < remd_accelerators < ngroups:
+    if user_config.system_settings.CUDA and 0 < user_config.system_settings.remd_accelerators < ngroups:
         job.log(
-            f"[REMD] {ngroups} replicas share {remd_accelerators} GPU(s). AMBER binds one "
+            f"[REMD] {ngroups} replicas share {user_config.system_settings.remd_accelerators} GPU(s). AMBER binds one "
             "device per MPI rank, so the extra ranks serialize unless the CUDA MPS daemon "
             "(nvidia-cuda-mps-control -d) is running on the node."
         )
@@ -92,6 +97,7 @@ def run_remd(job, user_config: Config):
                 "topdir": user_config.system_settings.top_directory_path,
             },
             working_directory=user_config.system_settings.working_directory,
+            sim_debug=user_config.workflow.debug,
         )
     )
     # config.endstate_method.remd_args.nthreads
@@ -188,6 +194,7 @@ def run_remd(job, user_config: Config):
             working_directory=user_config.system_settings.working_directory,
             memory=user_config.system_settings.memory,
             disk=user_config.system_settings.disk,
+            sim_debug=user_config.workflow.debug,
         )
     )
     # The ligand endstate runs on CPU. A 17-atom fragment never justifies a GPU, and
@@ -290,6 +297,7 @@ def run_remd(job, user_config: Config):
                 working_directory=user_config.system_settings.working_directory,
                 memory=user_config.system_settings.memory,
                 disk=user_config.system_settings.disk,
+                sim_debug=user_config.workflow.debug,
             )
         )
 
