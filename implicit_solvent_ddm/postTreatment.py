@@ -11,6 +11,7 @@ import pandas as pd
 from toil.job import Job
 from implicit_solvent_ddm.get_dirstruct import Dirstruct
 from implicit_solvent_ddm.mdout import min_to_dataframe
+from implicit_solvent_ddm.nfe_energy import band_restraint_energy
 
 from implicit_solvent_ddm.restraints import RestraintMaker
 from typing import Union, Optional
@@ -21,6 +22,24 @@ WORKDIR = os.getcwd()
 AVAGADRO = 6.0221367e23
 BOLTZMAN = 1.380658e-23
 JOULES_PER_KCAL = 4184
+
+
+def cache_output_path(working_path, complex_filename) -> str:
+    """Directory a run's results go to: ``<working_path>/.cache/<complex name>``.
+
+    Parameters
+    ----------
+    working_path : str
+        ``system_settings.cache_directory_output``.
+    complex_filename : str
+        Complex topology path; its basename without extensions names the directory.
+
+    Returns
+    -------
+    str
+    """
+    name = re.sub(r"\..*", "", os.path.basename(str(complex_filename)))
+    return os.path.join(f"{working_path}", f".cache/{name}")
 
 
 class ConsolidateData(Job):
@@ -64,6 +83,8 @@ class ConsolidateData(Job):
     plot_overlap_matrix: bool
         If true, an overlap-matrix heatmap PDF is written for each leg (complex, receptor, ligand).
         The raw overlap matrices are written as .h5 regardless of this flag.
+    decouple_in_solvent: bool
+        If true, the ligand is decoupled in GB water and the leg endpoints follow the in-solvent cycle.
 
     Methods
     -------
@@ -88,7 +109,9 @@ class ConsolidateData(Job):
         complex_filename,
         ligand_filename,
         receptor_filename,
+        endstate_label: str = "endstate",
         plot_overlap_matrix: bool = False,
+        decouple_in_solvent: bool = False,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -116,12 +139,16 @@ class ConsolidateData(Job):
         self.flat_botton_run = flat_botton_run
         self.max_con_force = str(max_conformation_force)
         self.max_orien_force = str(max_orientational_force)
+        # Matches the endstate row's state_label, which names the endstate method.
+        self.endstate_label = endstate_label
         self.boresch = boresch_df
         self.complex_name = re.sub(r"\..*", "", os.path.basename(complex_filename))
         self.ligand_name = re.sub(r"\..*", "", os.path.basename(ligand_filename))
         self.receptor_name = re.sub(r"\..*", "", os.path.basename(receptor_filename))
         self.working_path = working_path
         self.plot_overlap_matrix = plot_overlap_matrix
+        self.decouple_in_solvent = decouple_in_solvent
+        self.decoupled_extdiel = "78.5" if decouple_in_solvent else "0.0"
 
     @property
     def mbar_model(self) -> MBAR:
@@ -187,16 +214,21 @@ class ConsolidateData(Job):
     def _get_ligand_deltaG(self):
         """Get the ligand free energy contribution for DeltaG"""
         return self.ligand_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
-            [("electrostatics", "0.0", "0.0", self.max_con_force)],
+            (self.endstate_label, "78.5", "1.0", "0.0"),
+            [("electrostatics", self.decoupled_extdiel, "0.0", self.max_con_force)],
         ].values[0]
 
     @property
     def _get_receptor_deltaG(self):
         """Get the receptor free energy contribution for DeltaG"""
+        end = (
+            ("lambda_window", "78.5", "1.0", self.max_con_force)
+            if self.decouple_in_solvent
+            else ("no_gb", "0.0", "1.0", self.max_con_force)
+        )
         return self.receptor_fe.loc[
-            ("endstate", "78.5", "1.0", "0.0"),
-            [("no_gb", "0.0", "1.0", self.max_con_force)],
+            (self.endstate_label, "78.5", "1.0", "0.0"),
+            [end],
         ].values[0]
 
     @property
@@ -205,11 +237,11 @@ class ConsolidateData(Job):
         return self.complex_fe.loc[
             (
                 "no_interactions",
-                "0.0",
+                self.decoupled_extdiel,
                 "0.0",
                 f"{self.max_con_force}_{self.max_orien_force}",
             ),
-            [("endstate", "78.5", "1.0", "0.0_0.0")],
+            [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
         ].values[0]
 
     @property
@@ -218,7 +250,7 @@ class ConsolidateData(Job):
         return self.flat_bottom_fe.loc[
             (
                 ("no_flat_bottom", "78.5", "1.0", "0.0_0.0"),
-                [("endstate", "78.5", "1.0", "0.0_0.0")],
+                [(self.endstate_label, "78.5", "1.0", "0.0_0.0")],
             )
         ].values[0]
 
@@ -230,12 +262,12 @@ class ConsolidateData(Job):
     @property
     def compute_binding_deltaG(self) -> float:
         """Compute the total sum of DeltaG"""
+        # the complex endstate is already flat-bottom restrained; _flat_bottom_contribution is reported only
         return (
             self._get_complex_deltaG
             + self._get_ligand_deltaG
             + self._get_receptor_deltaG
             + self._get_boresch_standard_state
-            + self._flat_bottom_contribution
         )
 
     def _export_overlap_matrices(self):
@@ -347,7 +379,8 @@ class ConsolidateData(Job):
         deltaG_df[f"{self.ligand_name}_endstate->no_charges"] = [
             self._get_ligand_deltaG
         ]
-        deltaG_df[f"{self.receptor_name}_endstate->no_gb"] = [self._get_receptor_deltaG]
+        receptor_end = "restrained" if self.decouple_in_solvent else "no_gb"
+        deltaG_df[f"{self.receptor_name}_endstate->{receptor_end}"] = [self._get_receptor_deltaG]
         deltaG_df["boresch_restraints"] = [self._get_boresch_standard_state]
         deltaG_df["flat_bottom_contribution"] = [self._flat_bottom_contribution]
         deltaG_df[f"{self.complex_name}_no-interactions->endstate"] = [
@@ -366,6 +399,8 @@ class ConsolidateData(Job):
         # export MBAR overlap matrices for all three legs (raw .h5 always; PDFs when requested)
         self._export_overlap_matrices()
 
+        return deltaG_df
+
 
 def create_mdout_dataframe(
     job,
@@ -373,14 +408,88 @@ def create_mdout_dataframe(
     dirstruct: str,
     output_dir: str,
     compress: bool = True,
+    mdout_id=None,
+    rmsd_series=None,
+    nfe_params=None,
+    endstate_label: str = "endstate",
 ) -> pd.DataFrame:
+    """Parse one ``imin=5`` mdout into the row block MBAR consumes.
+
+    Parameters
+    ----------
+    job : toil.job.Job
+        Owning job, for fileStore access.
+    directory_args : dict
+        Directory-structure fields identifying this Hamiltonian and trajectory.
+    dirstruct : str
+        Which ``mdgb.json`` structure to parse the output path against.
+    output_dir : str
+        Logical output directory; state labels are parsed from this path.
+    compress : bool, optional
+        Write the parquet cache. False when export is off, so nothing touches the network.
+    mdout_id : toil.fileStore.FileID, optional
+        Read the mdout from the jobStore instead of ``output_dir``.
+    rmsd_series : dict of str to numpy.ndarray, optional
+        Per-frame collective-variable values keyed by group, for the RMSD restraint. When given, the
+        analytic restraint energy is added to ``ENERGY``; see the note at the call site.
+    nfe_params : dict, optional
+        ``force_constant``, ``r1``, ``r2``, ``r4`` and optional per-group ``scales``.
+    endstate_label : str, optional
+        State label that carries no restraint, so no bias is added to it.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per frame, with the columns the MBAR index is built from.
+
+    Raises
+    ------
+    ValueError
+        If the RMSD series and the mdout disagree on frame count.
+    """
     sim = Dirstruct("mdgb", directory_args, dirstruct=dirstruct)
 
-    mdout = f"{output_dir}/mdout"
-
-    job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
-    run_args = sim.dirStruct.fromPath2Dict(mdout)
+    # run_args are parsed from the LOGICAL output_dir path (state labels etc.), which is
+    # just string parsing and needs no file on disk. The mdout CONTENT comes either from
+    # the network output_dir (default) or, when export is off, from the jobStore via the
+    # promised FileID (mdout_id) -- so post-analysis never reads the network.
+    # Parse labels from the DIRECTORY path directly. Do NOT append "/mdout": fromPath2Dict
+    # only strips a trailing component when os.path.isfile() is true, so with export off (the
+    # mdout lives only in the jobStore, never written to output_dir) the "mdout" segment would
+    # NOT be stripped -> every field shifts by one -> state_label lands in traj_igb (dropped
+    # from the MBAR index) -> distinct windows collapse into duplicate rows. output_dir is the
+    # directory, so this is correct whether or not the mdout file exists on disk.
+    run_args = sim.dirStruct.fromPath2Dict(output_dir)
+    if mdout_id is not None:
+        mdout = job.fileStore.readGlobalFile(mdout_id)
+    else:
+        mdout = f"{output_dir}/mdout"
+        job.log(f"List files in postprocess directory {os.listdir(output_dir)}\n")
     data = min_to_dataframe(mdout)
+
+    # RMSD-restraint mode scores WITHOUT NFE (the post mdins carry no &pmd), so sander returns the
+    # unbiased U0 and the restraint term is added here. MBAR is invariant to a per-sample additive
+    # constant and every window in the band shares U0, so this reproduces exactly what AMBER would
+    # have applied -- MULTI_RMSD was measured equal to cpptraj `rms ... mass` to 3e-5 A. Omitting it
+    # would make every band window the same Hamiltonian, giving overlap 1 and a restraint dG of 0.
+    # the flat-bottom endstate pair (no_flat_bottom / endstate) is never RMSD-restrained
+    if rmsd_series is not None and run_args["state_label"] not in (endstate_label, "no_flat_bottom"):
+        tolerance = float(run_args["conformational_restraint"])
+        series_length = len(next(iter(rmsd_series.values())))
+        if series_length != len(data):
+            raise ValueError(
+                f"rmsd series has {series_length} frames but the mdout has {len(data)}; a silent "
+                "off-by-one here would corrupt every window in the band"
+            )
+        data["ENERGY"] = data["ENERGY"] + band_restraint_energy(
+            rmsd_series,
+            tolerance,
+            nfe_params["force_constant"],
+            r1=nfe_params["r1"],
+            r2=nfe_params["r2"],
+            r4=nfe_params["r4"],
+            scales=nfe_params.get("scales"),
+        )
 
     # data["traj_state_label"] = run_args["traj_state_label"]
     # data["state_label"] = run_args["state_label"]

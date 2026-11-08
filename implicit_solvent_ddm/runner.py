@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from email import message
 from importlib.metadata import files
 from pathlib import Path
@@ -11,9 +12,11 @@ from matplotlib.backend_bases import key_press_handler
 from toil.batchSystems import abstractBatchSystem
 from toil.job import FileID, Job, JobFunctionWrappingJob, PromisedRequirement
 
+from implicit_solvent_ddm import block_mbar
 from implicit_solvent_ddm.config import Config
+from implicit_solvent_ddm.matrix_order import CycleSteps, cycle_steps_from_config
 from implicit_solvent_ddm.postTreatment import create_mdout_dataframe
-from implicit_solvent_ddm.restraints import RestraintMaker
+from implicit_solvent_ddm.restraints import RestraintMaker, rmsd_series_for_trajectory
 from implicit_solvent_ddm.simulations import Simulation
 from itertools import islice
 
@@ -33,7 +36,7 @@ class IntermidateRunner(Job):
     - Launching intermediate MD simulations (if not already run),
     - Collecting and caching output data (parsed from mdout),
     - Running post-analysis jobs (e.g., energy decomposition),
-    - Supporting adaptive workflows and optional "post-only" modes.
+    - Optional "post-only" mode (score trajectories already on disk).
 
     Parameters
     ----------
@@ -45,14 +48,15 @@ class IntermidateRunner(Job):
         Input file for post-processing jobs that should exclude implicit solvent (e.g., for igb=6).
     post_process_mdin : FileID
         Standard input file for post-analysis energy evaluation (e.g., sander).
+    post_process_saltfree_mdin : FileID, optional
+        Scoring input file for gb_dielectric columns (saltcon=0). Falls back to
+        ``post_process_mdin`` when None, so resumed jobstores keep working.
     post_process_distruct : str
         Directory structure key or identifier used to organize post-processing job outputs.
     post_only : bool
         If True, skips MD simulations and runs post-analysis only.
     config : Config
         Global configuration object for the workflow.
-    adaptive : bool, optional
-        Enables adaptive lambda window or restraint scheduling if True.
     loaded_dataframe : list, optional
         Tracks previously parsed output directories to avoid reprocessing.
     post_output : list or list of pd.DataFrame, optional
@@ -110,9 +114,11 @@ class IntermidateRunner(Job):
         post_process_distruct: str,
         post_only: bool,
         config: Config,
-        adaptive: bool = False,
+        post_process_saltfree_mdin: Optional[FileID] = None,
         loaded_dataframe: Optional[list] = None,
         post_output: Optional[Union[list, list[pd.DataFrame]]] = None,
+        traj_map: Optional[dict] = None,
+        restrict_completed: Optional[set] = None,
         memory: Optional[Union[int, str]] = None,
         cores: Optional[Union[int, float, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -137,18 +143,131 @@ class IntermidateRunner(Job):
         self.restraints = restraints
         self.no_solvent_mdin = post_process_no_solv_mdin
         self.mdin = post_process_mdin
+        self.saltfree_mdin = post_process_saltfree_mdin
         self.post_only = post_only
         self.config = config
-        self.adaptive = adaptive
         # Mutable-default fix: fresh per-instance lists, so production runners don't alias one
-        # shared module-level list. Callers that WANT to share by reference (e.g. new_runner
-        # threading post_output across pilot iterations) pass explicit non-None lists.
+        # shared module-level list. Callers that want to share by reference pass explicit lists.
         self.post_output = post_output if post_output is not None else []
         self.ligand_output = []
         self.receptor_output = []
         self.complex_output = []
         self._loaded_dataframe = loaded_dataframe if loaded_dataframe is not None else []
+        # {output_dir -> trajectory FileID promise}, so a post pass can set inptraj straight from
+        # the jobStore and never read the network output_dir.
+        self.traj_map = traj_map if traj_map is not None else {}
+        # Per-window post-analysis scoping (merged MD->post pipeline). When set, the post_only pass
+        # scores ONLY the completed window(s) whose output_dir is in this set -- the trajectory-row
+        # for that window -- leaving the inner Hamiltonian loop (every state's re-score of that
+        # trajectory) intact. None (default) preserves the legacy whole-list behaviour. Robust to
+        # on-disk state: unlike a lone
+        # traj_map entry, this filter holds even on warm/export-on runs where other windows' mdouts
+        # exist on disk.
+        self.restrict_completed = restrict_completed
         self.post_process_distruct = post_process_distruct
+        # {system_type -> set of (traj_state, hamiltonian_state)} for banded post-analysis.
+        # Built lazily per system_type in _post_analysis_pairs, None when banding is off.
+        self._block_pairs_cache: dict = {}
+
+    def _post_analysis_pairs(self, system_type: str, fileStore) -> Optional[set]:
+        """Return the (trajectory, Hamiltonian) pairs post-analysis should evaluate.
+
+        Parameters
+        ----------
+        system_type : str
+            ``"complex"``, ``"ligand"`` or ``"receptor"``.
+        fileStore : FileStore-like
+            Used for logging.
+
+        Returns
+        -------
+        tuple of (set, set) or None
+            ``(required_pairs, known_states)`` for the configured block chain, or None when
+            banding is off and the full N^2 should be evaluated.
+        """
+        block_size = getattr(
+            self.config.intermediate_args, "post_analysis_block_size", None
+        )
+        if not block_size:
+            return None
+        if system_type in self._block_pairs_cache:
+            return self._block_pairs_cache[system_type]
+
+        cycle_steps = cycle_steps_from_config(self.config)
+        order = {
+            "complex": cycle_steps.complex_order,
+            "ligand": cycle_steps.ligand_order,
+            "receptor": cycle_steps.receptor_order,
+        }[system_type]
+
+        bounds = block_mbar.band_boundaries(order)
+        # ALS fixes the block ends at its first insertion so new states join an existing block
+        anchors = (getattr(self.config.intermediate_args, "block_anchor_states", None) or {}).get(system_type)
+        pairs = block_mbar.required_pairs(order, block_size, bounds, anchors)
+        fileStore.logToMaster(
+            f"[block_mbar] {system_type}: block_size={block_size}, {len(order)} states -> "
+            f"{len(pairs)} evaluations instead of {len(order) ** 2} "
+            f"({len(order) ** 2 / len(pairs):.1f}x fewer sander jobs)"
+        )
+        self._block_pairs_cache[system_type] = (pairs, set(order))
+        return self._block_pairs_cache[system_type]
+
+    @staticmethod
+    def _column_is_required(source_key, target_key, pairs) -> bool:
+        """Should this (trajectory, Hamiltonian) cell be evaluated under a block chain?
+
+        Parameters
+        ----------
+        source_key : tuple
+            Canonical state tuple of the completed trajectory.
+        target_key : tuple or None
+            Canonical state tuple of the Hamiltonian, or None when it resolves to no state
+            in the cycle order.
+        pairs : set of tuple
+            Pairs the block chain needs, from ``_post_analysis_pairs``.
+
+        Returns
+        -------
+        bool
+            True to evaluate. An unresolved ``target_key`` returns True: skipping it would
+            punch a hole in a block the chained solve later requires, surfacing as a
+            ValueError in ``chained_mbar_result`` long after the cheap sander job could
+            have filled it. One extra evaluation is the safe direction to err.
+        """
+        if target_key is None:
+            return True
+        return (source_key, target_key) in pairs
+
+    def _select_post_mdin(self, post_simulation):
+        """Pick the scoring mdin for one post-analysis column.
+
+        Parameters
+        ----------
+        post_simulation : Simulation
+            The window supplying the Hamiltonian this cell is scored under.
+
+        Returns
+        -------
+        FileID
+            ``no_solvent_mdin`` for gas (igb=6) columns; ``saltfree_mdin`` for
+            ``gb_dielectric`` columns, whose MD is written salt-free by
+            ``generate_extdiel_mdin`` so scoring must match it; ``mdin`` otherwise.
+
+        Notes
+        -----
+        The gb_dielectric branch dispatches on ``state_label``, not ``igb_value``:
+        ``setup_gb_external_dielectric`` sets the string ``"igb_2"`` while the ALS insertion
+        path sets the int. ``saltfree_mdin`` is None on jobstores predating that fix, in
+        which case this falls back to ``mdin`` (the original, salted behaviour).
+        """
+        if post_simulation.directory_args["igb_value"] == 6:
+            return self.no_solvent_mdin
+        if (
+            post_simulation.directory_args.get("state_label") == "gb_dielectric"
+            and self.saltfree_mdin is not None
+        ):
+            return self.saltfree_mdin
+        return self.mdin
 
     def run(self, fileStore):
         """
@@ -192,6 +311,21 @@ class IntermidateRunner(Job):
                 continue
 
             if self.post_only:
+                # Per-window scoping (merged MD->post pipeline): this runner is the trajectory-row
+                # for exactly one completed window, so skip every OTHER window as a completed_sim.
+                # The inner Hamiltonian loop in only_post_analysis is unaffected -- the surviving
+                # window is still re-scored under every state. None -> legacy whole-list behaviour.
+                if (
+                    self.restrict_completed is not None
+                    and simulation.output_dir not in self.restrict_completed
+                ):
+                    continue
+                # No-network hand-off: if this window's trajectory was produced with export
+                # off, its FileID is in the shared traj_map -> set inptraj straight from the
+                # jobStore so the guard below is satisfied and _get_md_traj/os.listdir (the
+                # network read) is never reached.
+                if simulation.inptraj is None and simulation.output_dir in self.traj_map:
+                    simulation.inptraj = self.traj_map[simulation.output_dir]
                 # Post-analysis logic
                 if self._check_mdout(simulation) or simulation.inptraj is not None:
                     if simulation.inptraj is None:
@@ -233,11 +367,81 @@ class IntermidateRunner(Job):
         # Toil coordinates GPU usage globally across every runner.
         if md_jobs:
             fileStore.logToMaster(f"Submitting {len(md_jobs)} MD job(s) to the Toil scheduler")
+        _export = self.config.system_settings.export_intermediate_files
+        # Map output_dir -> trajectory FileID promise. sim.run() returns
+        # (restart_ID, trajectory_ID); rv(1) is the trajectory FileID list. The
+        # post-analysis pass (Phase 6) reads this map and sets each window's inptraj
+        # so it re-scores straight from the jobStore -- the Toil-promise hand-off used
+        # when export is off (no network trajectory copy). Carried on `self` and read
+        # off the resolved runner exactly like self.post_output reaches MBAR. MERGE (do not
+        # reset) so it accumulates every window's trajectory.
         for sim in md_jobs:
+            sim.export_network = _export
             self.addChild(sim)
+            self.traj_map[sim.output_dir] = sim.rv(1)
 
         return self
     
+    def _rmsd_post_analysis_inputs(self, completed_sim, md_traj):
+        """Prepare the analytic restraint term for one trajectory's post-analysis row.
+
+        Parameters
+        ----------
+        completed_sim : Simulation
+            The finished MD window whose trajectory is about to be re-scored.
+        md_traj : toil.fileStore.FileID or list
+            That window's trajectory.
+
+        Returns
+        -------
+        rmsd_series_job : toil.job.Job or None
+            The job computing the per-group RMSD series, or None when not in RMSD mode. The caller
+            must attach each post-analysis job BENEATH it -- Toil refuses a promise to a job that is
+            not a successor of the promising one.
+        nfe_params : dict or None
+            Flat-bottom parameters and per-group tolerance scales for ``band_restraint_energy``.
+        """
+        args = self.config.intermediate_args
+        if not args.rmsd_mode:
+            return None, None
+        # The runner is constructed with the RestraintMaker itself, so it is the reliable source.
+        # Reaching through completed_sim only works when that object is a live Simulation; on the
+        # post_only path it can be a HamiltonianSpec whose restraint_file was still an unresolved
+        # promise when the spec was built, so cv_spec came back None there.
+        spec_id = (
+            getattr(getattr(self, "restraints", None), "cv_spec", None)
+            or getattr(completed_sim, "cv_spec", None)
+            or getattr(getattr(completed_sim, "restraint_file", None), "cv_spec", None)
+        )
+        if spec_id is None:
+            # Failing loudly matters here: without the bias every window in the restraint band is the
+            # same Hamiltonian, so MBAR returns overlap ~1 and a restraint dG of ~0 -- a plausible
+            # number that is simply wrong, rather than an error anyone would notice.
+            raise RuntimeError(
+                "rmsd_mode is on but no collective-variable specification reached post-analysis for "
+                f"{completed_sim.system_type}; the restraint term could not be reconstructed"
+            )
+        series_job = self.addChild(
+            Job.wrapJobFn(
+                rmsd_series_for_trajectory,
+                spec_id,
+                completed_sim.system_type,
+                completed_sim.prmtop,
+                md_traj,
+            )
+        )
+        return series_job, {
+            "force_constant": args.rmsd_force_constant,
+            "r1": args.rmsd_r1,
+            "r2": args.rmsd_r2,
+            "r4": args.rmsd_r4,
+            "scales": {
+                "receptor": 1.0,
+                "site": args.rmsd_site_tolerance_scale,
+                "ligand": args.rmsd_ligand_tolerance_scale,
+            },
+        }
+
     def only_post_analysis(self, completed_sim: Simulation, md_traj, fileStore):
         """
         Run post-analysis calculations on a completed MD simulation.
@@ -269,15 +473,57 @@ class IntermidateRunner(Job):
         fileStore.logToMaster("RUNNING POST only\n")
         fileStore.logToMaster(f"loaded dataframe: {self._loaded_dataframe}")
 
+        # RMSD mode: the post mdins carry no NFE, so sander returns the unbiased U0 and the restraint
+        # term is rebuilt analytically. One cpptraj-equivalent pass per TRAJECTORY, not per cell --
+        # every window in the band shares this series and differs only in its tolerance.
+        rmsd_series_job, nfe_params = self._rmsd_post_analysis_inputs(completed_sim, md_traj)
+        rmsd_series_rv = rmsd_series_job.rv() if rmsd_series_job is not None else None
+
+        # Banded post-analysis: evaluate only the cells a K-state block chain needs.
+        block_pairs = self._post_analysis_pairs(completed_sim.system_type, fileStore)
+        source_key = None
+        if block_pairs is not None:
+            pairs, known_states = block_pairs
+            source_key = block_mbar.canonical_state_key(
+                completed_sim.directory_args, known_states
+            )
+            if source_key is None:
+                # The completed window is not in the cycle order -- schedule/data drift, or a
+                # state this runner does not own. Fall back to the full row rather than
+                # silently dropping every evaluation for it.
+                fileStore.logToMaster(
+                    "[block_mbar] WARNING trajectory state "
+                    f"{block_mbar.state_key_from_dirargs(completed_sim.directory_args)} "
+                    f"is absent from the {completed_sim.system_type} cycle order; "
+                    "scoring it against ALL states"
+                )
+                block_pairs = None
+
         for post_simulation in self.simulations:
+            if block_pairs is not None:
+                target_key = block_mbar.canonical_state_key(
+                    post_simulation.directory_args, known_states
+                )
+                if target_key is None:
+                    # Unrecognised Hamiltonian: evaluate it rather than skip. Skipping would
+                    # punch a hole in a block the chained solve later requires, and that
+                    # surfaces as a ValueError in chained_mbar_result long after the cheap
+                    # sander job could have filled it. One extra evaluation is the safe error.
+                    fileStore.logToMaster(
+                        "[block_mbar] WARNING Hamiltonian state "
+                        f"{block_mbar.state_key_from_dirargs(post_simulation.directory_args)} "
+                        f"is absent from the {completed_sim.system_type} cycle order; "
+                        "evaluating it rather than dropping the cell"
+                    )
+                if not self._column_is_required(source_key, target_key, pairs):
+                    continue
+
             directory_args = post_simulation.directory_args.copy()
             #fileStore.logToMaster(f"directory args before update: {directory_args}\n")
             # fileStore.logToMaster(f"args {completed_sim.directory_args} & {md_traj}")
             directory_args.update(self.update_postprocess_dirstruct(completed_sim.directory_args))  # type: ignore
             #fileStore.logToMaster(f"directory args after update: {directory_args}\n")
-            mdin = self.mdin
-            if post_simulation.directory_args["igb_value"] == 6:
-                mdin = self.no_solvent_mdin
+            mdin = self._select_post_mdin(post_simulation)
 
             # run simulation if its not endstate with endstate
             post_dirstruct = self.get_system_dirs(post_simulation.system_type)
@@ -307,7 +553,16 @@ class IntermidateRunner(Job):
                     f"Using trajectory from {completed_sim.output_dir}\n"
                 )
 
-            if not self.has_post_analysis_data(post_process_job.output_dir):    
+            # In-memory dedup (authoritative): skip any cell whose output_dir was already
+            # scored/scheduled this run. Dedup previously hung off has_post_analysis_data (the
+            # NETWORK parquet check); with export_intermediate_files=False that parquet never
+            # exists, so without this guard the same cell (repeated labels) would be recomputed
+            # and re-appended -> duplicate MBAR rows ("Index contains duplicates").
+            if post_process_job.output_dir in self._loaded_dataframe:
+                continue
+
+            cached = self._read_cached_cell(post_process_job.output_dir)
+            if cached is None:
                 fileStore.logToMaster(
                     f"simulations_mdout.parquet is not found in  {post_process_job.output_dir} or is empty\n"
                 )
@@ -321,246 +576,75 @@ class IntermidateRunner(Job):
                 )
                 # fileStore.logToMaster(f"state args: {post_simulation.directory_args}")
 
-                self.addChild(post_process_job)
+                _export = self.config.system_settings.export_intermediate_files
+                post_process_job.export_network = _export
+                if rmsd_series_job is not None:
+                    rmsd_series_job.addChild(post_process_job)
+                else:
+                    self.addChild(post_process_job)
 
                 data_frame = post_process_job.addFollowOnJobFn(
                     create_mdout_dataframe,
                     post_process_job.directory_args,
                     post_process_job.dirstruct,
                     post_process_job.output_dir,
+                    rmsd_series=rmsd_series_rv,
+                    nfe_params=nfe_params,
+                    endstate_label=self.config.endstate_method.endstate_state_label,
+                    # When export is off the mdout is never written to the network;
+                    # read it from the jobStore via the post job's returned FileID
+                    # promise, and skip the parquet cache write (compress=False) so
+                    # nothing touches output_dir. The dataframe still reaches MBAR via rv().
+                    compress=_export,
+                    mdout_id=(None if _export else post_process_job.rv()),
                 )
 
                 self.post_output.append(data_frame.rv())
 
-            elif post_process_job.output_dir in self._loaded_dataframe:
-                fileStore.logToMaster(f"Energy post-analysis already completed and already loaded the results")
-                fileStore.logToMaster(
-                    f"Already loaded the Energy post-analysis results in the directory {post_process_job.output_dir}\n"
-                )
-                continue
-
             else:
+                # Warm/resume: the parquet exists on disk (export was on in a prior run); load
+                # it instead of re-scoring. The top-of-loop guard already handled the
+                # already-loaded-this-run case, so this only runs once per cell.
                 if post_simulation.directory_args["state_label"] == "lambda_window":
                     fileStore.logToMaster(f"Energy post-analysis already completed and loading the results") 
                     fileStore.logToMaster(
                         f"Loading the Energy post-analysis results in the directory {post_process_job.output_dir}\n"
                     )
-                self.post_output.append(
-                    pd.read_parquet(
-                        os.path.join(
-                            post_process_job.output_dir, "simulation_mdout.parquet.gzip"
-                        ),
-                    )
+                _pa_t0 = time.perf_counter()
+                self.post_output.append(cached)
+                # Cache-load timing record (parsed by timing_report.py). The imin=5 re-scoring for this
+                # window was computed in a PRIOR run; here we only re-read its cached parquet, so this
+                # counts as ~0 compute for the post_analysis phase (vs. the full sander re-score that
+                # simulations.Calculation.run times on a COLD run). Emitting it keeps the phase VISIBLE
+                # on warm/resumed runs (jobs=N, cpu_h~=load cost) instead of vanishing. Routed through
+                # logToMaster so it lands in the same leader log as every other phase.
+                fileStore.logToMaster(
+                    f"[TIMING] phase=post_analysis wall_s={time.perf_counter() - _pa_t0:.2f} "
+                    f"cores={post_process_job.num_cores} gpu=0 end={time.time():.0f} "
+                    f"| post_analysis cache-load {post_process_job.directory_args.get('state_label', '')}"
                 )
             self._loaded_dataframe.append(post_process_job.output_dir)
     
-    def has_post_analysis_data(self, output_dir):
-        """Return True if the parquet file exists and is not empty; otherwise False."""
+    @staticmethod
+    def _read_cached_cell(output_dir) -> Optional[pd.DataFrame]:
+        """The cell's scored energies from a previous run, or None when they must be computed.
+
+        Read once and reused, rather than checking the parquet and then reading it again: a warm
+        round loads every existing cell of the leg.
+        """
         path = os.path.join(output_dir, "simulation_mdout.parquet.gzip")
-
         if not os.path.exists(path):
-            return False
-
+            return None
         try:
             df = pd.read_parquet(path)
-            return not df.empty
         except (ValueError, OSError):
-            return False
+            return None
+        return None if df.empty else df
+
+    def has_post_analysis_data(self, output_dir):
+        """Return True if the parquet file exists and is not empty; otherwise False."""
+        return self._read_cached_cell(output_dir) is not None
     
-    def _add_complex_simulation(
-        self,
-        conformational,
-        orientational,
-        mdin,
-        restraint_file,
-        charge=1.0,
-        charge_parm=None,
-        gb_extdiel=None,
-    ):
-        con_force = float(round(conformational, 3))
-        orient_force = float(round(orientational, 3))
-
-        dirs_args = (
-            {
-                "topology": self.config.endstate_files.complex_parameter_filename,
-                "state_label": "lambda_window",
-                "extdiel": 78.5,
-                "charge": charge,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "conformational_restraint": con_force,
-                "orientational_restraints": orient_force,
-                "filename": f"state_8_{con_force}_{orient_force}_prod",
-                "runtype": f"Running restraint window. Conformational restraint: {con_force} and orientational restraint: {orient_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
-        )
-
-        parm_file = self.config.endstate_files.complex_parameter_filename
-
-        # scaling GB external dielectric
-        if gb_extdiel is not None:
-            # prmtop was create with charge = 0
-            parm_file = charge_parm.rv()  # type: ignore
-            dirs_args[0].update({"state_label": "gb_dielectric"})
-            dirs_args[0].update({"extdiel": gb_extdiel})
-            dirs_args[0].update({"charge": charge})
-        # scaling ligand charge windows
-        elif charge_parm is not None:
-            parm_file = charge_parm.rv()
-            dirs_args[0].update({"state_label": "electrostatics"})  # type: ignore
-
-        # scaling restraint windows
-        else:
-            restraint_file = restraint_file.rv()
-
-        new_job = Simulation(
-            executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
-            num_cores=self.config.num_cores_per_system.complex_ncores,
-            # ALS pilot (and the revived adaptive path) must honour the CUDA flag exactly like the
-            # static path (setup_simulations.setup_apply_restraint_windows): complex runs on GPU for
-            # protein-ligand. The previous hardcoded CUDA=False only happened to match host-guest
-            # (cb7), where config.system_settings.CUDA is already falsy.
-            CUDA=self.config.system_settings.CUDA,
-            prmtop=parm_file,
-            incrd=self.config.inputs["endstate_complex_lastframe"],
-            input_file=mdin,
-            restraint_file=restraint_file,
-            working_directory=self.config.system_settings.working_directory,
-            system_type="complex",
-            directory_args=dirs_args[0],
-            dirstruct="dirstruct_halo",
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
-        )
-
-        self.simulations.append(new_job)
-
-    def _add_ligand_simulation(
-        self,
-        conformational,
-        mdin,
-        restraint_file,
-        charge=1.0,
-        charge_parm=None,
-    ):
-        con_force = float(round(conformational, 3))
-
-        dirs_args = (
-            {
-                "topology": self.config.endstate_files.ligand_parameter_filename,
-                "state_label": "lambda_window",
-                "conformational_restraint": con_force,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "extdiel": 78.5,
-                "charge": charge,
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "filename": f"state_2_{con_force}_prod",
-                "runtype": f"Running restraint window, Conformational restraint: {con_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
-        )
-
-        parm_file = self.config.endstate_files.ligand_parameter_filename
-        if charge_parm is not None:
-            parm_file = charge_parm.rv()
-            dirs_args[0].update({"state_label": "electrostatics"})  # type: ignore
-            dirs_args[0].update({"igb": "igb_6"})
-            dirs_args[0].update({"filename": "state_4_prod"})
-            dirs_args[0].update({"extdiel": 0.0})
-            dirs_args[0].update(
-                {
-                    "runtype": f"Scailing ligand charges: {charge}",
-                }
-            )
-        else:
-            restraint_file = restraint_file.rv()
-        new_job = Simulation(
-            executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
-            num_cores=self.config.num_cores_per_system.ligand_ncores,
-            CUDA=self.config.system_settings.CUDA,
-            prmtop=parm_file,
-            incrd=self.config.inputs["ligand_endstate_frame"],
-            input_file=mdin,
-            restraint_file=restraint_file,
-            working_directory=self.config.system_settings.working_directory,
-            system_type="ligand",
-            directory_args=dirs_args[0],
-            dirstruct="dirstruct_apo",
-        )
-
-        self.simulations.append(new_job)
-
-    def _add_receptor_simulation(self, conformational, mdin, restraint_file):
-        con_force = float(round(conformational, 3))
-        new_job = Simulation(
-            executable=self.config.system_settings.executable,
-            mpi_command=self.config.system_settings.mpi_command,
-            num_cores=self.config.num_cores_per_system.receptor_ncores,
-            CUDA=self.config.system_settings.CUDA,
-            prmtop=self.config.endstate_files.receptor_parameter_filename,
-            incrd=self.config.inputs["receptor_endstate_frame"],
-            input_file=mdin,
-            restraint_file=restraint_file.rv(),
-            working_directory=self.config.system_settings.working_directory,
-            system_type="receptor",
-            directory_args={
-                "topology": self.config.endstate_files.receptor_parameter_filename,
-                "state_label": "lambda_window",
-                "extdiel": 78.5,
-                "charge": 1.0,
-                "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
-                "igb_value": self.config.intermediate_args.igb_solvent,
-                "conformational_restraint": con_force,
-                "filename": f"state_2_{con_force}_prod",
-                "runtype": f"Running restraint window, Conformational restraint: {con_force}",
-                "topdir": self.config.system_settings.top_directory_path,
-            },
-            dirstruct="dirstruct_apo",
-            # Receptor runs on GPU when CUDA is set (mirrors setup_apply_restraint_windows: a
-            # non-ligand system requests an accelerator so Toil pins it to a distinct device).
-            accelerators=(
-                self.config.system_settings.num_accelerators
-                if self.config.system_settings.CUDA
-                else None
-            ),
-        )
-
-        self.simulations.append(new_job)
-
-    @classmethod
-    def new_runner(
-        cls: Type["IntermidateRunner"],
-        config: Config,
-        obj: dict,
-        post_only: bool = True,
-        simulations: Optional[list] = None,
-    ):
-        """Build a runner that shares ``post_output``/``_loaded_dataframe`` by reference with ``obj``.
-
-        ``post_only`` selects the MD pass (``False``) or the post-analysis pass (``True``) of the ALS
-        pilot's two-phase sub-runner; ``simulations`` overrides the simulation list (e.g. to run ONLY
-        the newly-inserted pilot windows) while still accumulating into the shared ``post_output``.
-        Defaults preserve the original behaviour (post-only over ``obj['simulations']``).
-        """
-        return cls(
-            simulations=simulations if simulations is not None else obj["simulations"],
-            restraints=obj["restraints"],
-            config=config,
-            post_process_distruct=obj["post_process_distruct"],
-            post_process_no_solv_mdin=config.inputs["post_nosolv_mdin"],
-            post_process_mdin=config.inputs["post_mdin"],
-            adaptive=True,
-            post_only=post_only,
-            post_output=obj["post_output"],
-            loaded_dataframe=obj["_loaded_dataframe"],
-        )
-
     @staticmethod
     def _get_md_traj(simulation: Simulation, fileStore):
         """Return an absolute path to completed AMBER (.nc) trajectory filename.
@@ -629,5 +713,3 @@ class IntermidateRunner(Job):
             return "post_process_apo"
 
         return "post_process_halo"
-
-    # /nas0/ayoub/sampl9_runs/sampl9_extend_windows_diel/WP6_G2_Hmass/lambda_window/1.0/78.5/-0.2857142857142864/3.7142857142857135/WP6_G2_Hmass_state_8_0.8203353560076375_13.1253656961222_prod_traj.nc

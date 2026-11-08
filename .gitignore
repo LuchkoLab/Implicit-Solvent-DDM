@@ -110,3 +110,9 @@ old_repo/
 
 # ignore hidden files
 **/._*
+
+# test and analysis outputs
+mdgb/
+toilWorkflowRun/
+.block_mbar_cache/
+*_work/

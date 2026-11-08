@@ -2,6 +2,7 @@
 Setup simulations for the Double Decoupling Method (DDM) workflow.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Union
 from copy import copy
@@ -10,6 +11,32 @@ from implicit_solvent_ddm.restraints import RestraintMaker
 from implicit_solvent_ddm.simulations import Simulation
 from toil.common import FileID
 from toil.job import Promise
+
+# Legs whose lowest restraint window runs intermediate_args.long_restraint_window_ns. Receptor only:
+# its endstate<->floor link is the one measured to collapse at short run length; the complex leg's
+# equivalent junction has never been measured.
+LONG_WINDOW_LEGS = ("receptor",)
+
+
+def cv_key_for(restraint_key):
+    """Map a restraint dict key onto its collective-variable sibling.
+
+    The two dicts are keyed identically apart from the suffix, so a window's ``cv.in`` needs no
+    separate bookkeeping -- ``complex_0.5_8.0_rst`` pairs with ``complex_0.5_8.0_cv``.
+
+    Parameters
+    ----------
+    restraint_key : str or None
+        Key into ``RestraintMaker.restraints``.
+
+    Returns
+    -------
+    str or None
+        The matching ``cv_files`` key, or None when there is no restraint key.
+    """
+    if not restraint_key:
+        return None
+    return re.sub(r"_rst$", "_cv", restraint_key)
 
 
 @dataclass
@@ -25,6 +52,7 @@ class SimulationSetup:
     num_cores: float = field(init=False)
     max_conformational_exponent: float = field(init=False)
     max_orientational_exponent: float = field(init=False)
+    long_window_exponent: Optional[float] = field(init=False, default=None)
 
     def __post_init__(self):
         """
@@ -34,13 +62,19 @@ class SimulationSetup:
         - Sets the topology file, number of cores, and directory structure based on system type.
         - For GPU-enabled systems (`complex` and `receptor`), reduces CPU core allocation to 0.1.
         """
-        # Round and store max exponents
+        # The pinned anchor: largest spring constant in force mode, SMALLEST tolerance in rmsd
+        # mode, where the tightest flat bottom is the smallest number.
         self.max_conformational_exponent = round(
-            max(self.config.intermediate_args.exponent_conformational_forces), 3
+            self.config.intermediate_args.strongest_conformational_exponent, 3
         )
         self.max_orientational_exponent = round(
             max(self.config.intermediate_args.exponent_orientational_forces), 3
         )
+
+        if self.system_type in LONG_WINDOW_LEGS:
+            self.long_window_exponent = (
+                self.config.intermediate_args.long_restraint_window_exponent
+            )
 
         # Default values
         dirstruct_map = {
@@ -64,9 +98,17 @@ class SimulationSetup:
             self.topology = endstate_files.ligand_parameter_filename
             self.num_cores = ncores_map.ligand_ncores
 
-        # Reduce CPU usage for GPU-bound receptor/complex jobs
+        # GPU-bound receptor/complex MD requests ZERO core fractions (not 0.1) so it never draws from
+        # Toil single_machine's core pool. [review H1] Once MD and post-analysis share one queue
+        # (merged run_intermediate_and_post), ~1-CPU-hr `sander imin=5` post jobs (cores=1) can drain
+        # the whole core pool; with cores=0.1 a freed GPU would then idle up to ~1 hr waiting for its
+        # sliver of a core. Accelerators are a SEPARATE ResourceSet, so a 0-core GPU job is always
+        # startable the instant a GPU frees -- pmemd.cuda saturates the GPU regardless of `cores`.
+        # NOTE: verify Toil 8.2.0 accepts a 0-core request on the cluster (int(0/minCores)=0,
+        # acquireNow(0)->True suggests yes). If it rejects/coerces 0, revert to 0.1 and instead bound
+        # post concurrency to (maxCores - nGPU) of headroom.
         if self.config.system_settings.CUDA and self.system_type in {"complex", "receptor"}:
-            self.num_cores = 0.1
+            self.num_cores = 0
  
 
     def setup_post_endstate_simulation(self, flat_bottom: bool = False):
@@ -179,6 +221,16 @@ class SimulationSetup:
             )
             num_acelerators=self.config.system_settings.num_accelerators
             cpu_required=0.1
+        elif self.config.intermediate_args.decouple_in_solvent:
+            mdin_file = self.config.inputs["default_mdin"]
+            temp_args["igb"] = f"igb_{self.config.intermediate_args.igb_solvent}"
+            temp_args["extdiel"] = 78.5
+            temp_args["filename"] = "state_4_prod"
+            temp_args["igb_value"] = self.config.intermediate_args.igb_solvent
+            temp_args["runtype"] = (
+                f"Running production Simulation in state 4 (GB solvent). Max conformational force: {self.max_conformational_exponent}"
+            )
+            num_acelerators=None
         # scale ligand charge
         else:
             mdin_file = self.config.inputs["no_solvent_mdin"]
@@ -206,6 +258,8 @@ class SimulationSetup:
                 dirstruct=self.dirstruct,
                 system_type=self.system_type,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 working_directory=self.config.system_settings.working_directory,
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
@@ -233,8 +287,11 @@ class SimulationSetup:
 
         else:
             dirstruct_args = "dirstruct_halo"
-
-
+        mdin = (
+            self.config.inputs["no_solvent_mdin"]
+            if self.system_type == "receptor"
+            else self._decoupled_mdin(temp_args)
+        )
 
         self.simulations.append(
             Simulation(
@@ -244,13 +301,59 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["no_solvent_mdin"],
+                input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
                 dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
+                memory=self.config.system_settings.memory,
+                disk=self.config.system_settings.disk,
+                sim_debug=self.config.workflow.debug,
+                accelerators=self.config.system_settings.num_accelerators,
+            )
+        )
+
+    def setup_lj_scaled_simulation(self, restraint_key: str, prmtop: FileID, lj_scale: float):
+        """
+        Add a complex window with ligand-receptor LJ scaled by ``lj_scale``.
+
+        Parameters
+        ----------
+        restraint_key : str
+            Key of the max-restraint complex restraint file.
+        prmtop : FileID
+            Topology from ``alter_topology(..., lj_scale=lj_scale)``.
+        lj_scale : float
+            Scale on the ligand-receptor LJ, between 0 and 1.
+        """
+        temp_args = copy(self.no_gb_args)
+        # the state key has no LJ slot, so the scale lives in the label
+        temp_args["state_label"] = f"lj_{lj_scale}"
+        temp_args["filename"] = f"state_7_lj{lj_scale}_prod"
+        temp_args["runtype"] = f"Running production simulation in state 7: ligand-receptor LJ at {lj_scale} in vacuum"
+        mdin = self._decoupled_mdin(temp_args)
+
+        self.simulations.append(
+            Simulation(
+                executable=self.config.system_settings.executable,
+                mpi_command=self.config.system_settings.mpi_command,
+                num_cores=self.num_cores,
+                CUDA=self.config.system_settings.CUDA,
+                prmtop=prmtop,
+                incrd=self.binding_mode,
+                input_file=mdin,
+                restraint_file=self.restraints,
+                directory_args=temp_args,
+                system_type=self.system_type,
+                dirstruct="dirstruct_halo",
+                working_directory=self.config.system_settings.working_directory,
+                restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -271,6 +374,7 @@ class SimulationSetup:
         temp_args["runtype"] = (
             "Running production simulation in state 7a: Turing back on interactions with recetor and guest in vacuum"
         )
+        mdin = self._decoupled_mdin(temp_args)
 
         self.simulations.append(
             Simulation(
@@ -280,13 +384,80 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["no_solvent_mdin"],
+                input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
                 dirstruct="dirstruct_halo",
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
+                memory=self.config.system_settings.memory,
+                disk=self.config.system_settings.disk,
+                sim_debug=self.config.workflow.debug,
+                accelerators=self.config.system_settings.num_accelerators,
+            )
+        )
+
+    def _decoupled_mdin(self, temp_args: dict) -> FileID:
+        """Return the mdin for a decoupled-ligand complex window, moving it into GB water when decoupling in solvent.
+
+        Parameters
+        ----------
+        temp_args : dict
+            Directory arguments of the window, updated in place.
+
+        Returns
+        -------
+        FileID
+            ``default_mdin`` in solvent, ``no_solvent_mdin`` otherwise.
+        """
+        if not self.config.intermediate_args.decouple_in_solvent:
+            return self.config.inputs["no_solvent_mdin"]
+        igb = self.config.intermediate_args.igb_solvent
+        temp_args["extdiel"] = 78.5
+        temp_args["igb"] = f"igb_{igb}"
+        temp_args["igb_value"] = igb
+        temp_args["runtype"] = temp_args["runtype"].replace("in vacuum", "in GB solvent")
+        return self.config.inputs["default_mdin"]
+
+    def setup_screening_simulation(self, restraint_key: str, prmtop: FileID, screen_scale: float):
+        """
+        Add an uncharged-ligand complex window in GB water with the ligand SCREEN scaled by ``screen_scale``.
+
+        Parameters
+        ----------
+        restraint_key : str
+            Key of the max-restraint complex restraint file.
+        prmtop : FileID
+            Topology from ``alter_topology(..., set_charge=0.0, screen_scale=screen_scale)``.
+        screen_scale : float
+            Scale on the ligand GB SCREEN parameters, between 0 and 1.
+        """
+        temp_args = copy(self.no_gb_args)
+        temp_args["state_label"] = f"screening_{screen_scale}"
+        temp_args["filename"] = f"state_7_screen{screen_scale}_prod"
+        temp_args["runtype"] = f"Running production simulation in state 7: ligand GB screening at {screen_scale} in vacuum"
+        mdin = self._decoupled_mdin(temp_args)
+
+        self.simulations.append(
+            Simulation(
+                executable=self.config.system_settings.executable,
+                mpi_command=self.config.system_settings.mpi_command,
+                num_cores=self.num_cores,
+                CUDA=self.config.system_settings.CUDA,
+                prmtop=prmtop,
+                incrd=self.binding_mode,
+                input_file=mdin,
+                restraint_file=self.restraints,
+                directory_args=temp_args,
+                system_type=self.system_type,
+                dirstruct="dirstruct_halo",
+                working_directory=self.config.system_settings.working_directory,
+                restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -305,37 +476,73 @@ class SimulationSetup:
         """
         temp_args = copy(self.no_gb_args)
 
+        # Receptor (apo-host) GB band carries the FULL host charge (q=1; no ligand to decharge) under the
+        # apo directory structure; the complex band decharges the ligand (q=0) under dirstruct_halo.
+        is_receptor = self.system_type == "receptor"
+        dirstruct_args = "dirstruct_apo" if is_receptor else "dirstruct_halo"
+
         temp_args["state_label"] = "gb_dielectric"
         temp_args["filename"] = "state_8_prod"
         temp_args["extdiel"] = extdiel
         temp_args["igb"] = f"igb_{self.config.intermediate_args.igb_solvent}"
         temp_args["igb_value"] = f"igb_{self.config.intermediate_args.igb_solvent}"
-        temp_args["charge"] = 0.0
+        temp_args["charge"] = 1.0 if is_receptor else 0.0
         temp_args["runtype"] = (
             f"Running production Simulation in state 8. Changing extdiel to: {extdiel}."
         )
 
+        engine = dict(
+            executable=self.config.system_settings.executable,
+            num_cores=self.num_cores,
+            CUDA=self.config.system_settings.CUDA,
+            accelerators=self.config.system_settings.num_accelerators,
+        )
+        engine.update(self.config.intermediate_args.gb_dielectric_engine())
         self.simulations.append(
             Simulation(
-                executable=self.config.system_settings.executable,
+                **engine,
                 mpi_command=self.config.system_settings.mpi_command,
-                num_cores=self.num_cores,
-                CUDA=self.config.system_settings.CUDA,
                 prmtop=prmtop,
                 incrd=self.binding_mode,
                 input_file=mdin,
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
-                dirstruct="dirstruct_halo",
+                dirstruct=dirstruct_args,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
-                accelerators=self.config.system_settings.num_accelerators,
             )
         )
+
+    def _restraint_window_mdin(self, exponent_conformational: float) -> FileID:
+        """``default_mdin``, or the stretched mdin for this leg's lowest restraint window.
+
+        A missing ``long_window_mdin`` key falls back to ``default_mdin``, so a config predating this
+        feature resumes unchanged.
+
+        Parameters
+        ----------
+        exponent_conformational: float
+            The window's conformational restraint exponent (log2 of the force constant).
+
+        Returns
+        -------
+        FileID
+            The mdin this window's MD should run.
+        """
+        long_mdin = self.config.inputs.get("long_window_mdin")
+        if (
+            long_mdin is not None
+            and self.long_window_exponent is not None
+            and round(float(exponent_conformational), 3) == self.long_window_exponent
+        ):
+            return long_mdin
+        return self.config.inputs["default_mdin"]
 
     def setup_apply_restraint_windows(
         self,
@@ -383,13 +590,15 @@ class SimulationSetup:
                 CUDA=self.config.system_settings.CUDA,
                 prmtop=self.topology,
                 incrd=self.binding_mode,
-                input_file=self.config.inputs["default_mdin"],
+                input_file=self._restraint_window_mdin(exponent_conformational),
                 restraint_file=self.restraints,
                 directory_args=temp_args,
                 system_type=self.system_type,
                 dirstruct=dirstruct_type,
                 working_directory=self.config.system_settings.working_directory,
                 restraint_key=restraint_key,
+                cv_file=self.restraints,
+                cv_key=cv_key_for(restraint_key),
                 memory=self.config.system_settings.memory,
                 disk=self.config.system_settings.disk,
                 sim_debug=self.config.workflow.debug,
@@ -441,9 +650,12 @@ class SimulationSetup:
         Returns:
             _type_: _description_
         """
+        # Names the method that produced this trajectory, so a vanilla-MD and a REMD
+        # endstate cannot share a post-analysis directory (and therefore a warm cache).
+        endstate_label = self.config.endstate_method.endstate_state_label
         return {
             "topology": self.topology,
-            "state_label": "endstate",
+            "state_label": endstate_label,
             "charge": 1.0,
             "extdiel": 78.5,
             "igb": f"igb_{self.config.intermediate_args.igb_solvent}",
@@ -451,7 +663,7 @@ class SimulationSetup:
             "conformational_restraint": 0.0,
             "orientational_restraints": 0.0,
             "runtype": "remd",
-            "traj_state_label": "endstate",
+            "traj_state_label": endstate_label,
             "traj_charge": 1.0,
             "traj_extdiel": 78.5,
             "topdir": self.config.system_settings.top_directory_path,

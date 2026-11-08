@@ -2,15 +2,18 @@
 
 #user input values
 workflow_jobs:
-  plot_overlap_matrix: False 
-  # debug: True  
+  adaptive_lambda: false            # no post-production ALS rounds in the workflow tests
 hardware_parameters:
-  executable: "sander" # executable machine for MD choice : [sander, sander.MPI, pmemed, pemed.MPI, pmeded.CUDA]
+  executable: "sander" # MD engine: sander, sander.MPI, pmemd, pmemd.MPI or pmemd.cuda
   mpi_command:  # system dependent /
   CUDA:  # run on GPU
   memory: "2G"
   disk: "3G"
   output_directory_name: mdgb
+  # test_completed_workflow / test_complex_exclusions read mdout and parm7 from the output
+  # tree, and those only get there via fileStore.export_file, which this flag gates. With it
+  # off the windows all ran but wrote nothing but simulations.log, so the tests saw 0 mdouts.
+  export_intermediate_files: true
 
 endstate_parameter_files:
   complex_parameter_filename: implicit_solvent_ddm/tests/structs/cb7-mol01.parm7 # list of topology file of a complex
@@ -36,6 +39,7 @@ workflow:
   
   intermediate_states_arguments:
     mdin_intermediate_file: implicit_solvent_ddm/tests/input_files/intermediate.mdin #intermidate mdins required states 3-8
+    long_restraint_window_ns: null # this ladder is 0.2 ps per window; a 10 ns floor window would never finish
     igb_solvent: 2 #igb [1,2,3,7,8]
     exponent_conformational_forces: [-8.0, -2.0, 4.0] # list exponent values 2**p 
     exponent_orientational_forces: [-4.0, 2.0, 8.0] # list exponent values 2**p 

@@ -22,6 +22,32 @@ import logging
 import time
 
 
+def resolve_output_dir(working_directory, directory_args, dirstruct="dirstruct"):
+    """The on-disk output directory for a job, creating it if needed.
+
+    Shared by Calculation (which owns directory_args) and ExtractTrajectories (which
+    is a plain Job and has to resolve the same path itself so its cluster artifacts
+    land alongside the REMD outputs).
+    """
+    dirs = Dirstruct("mdgb", directory_args, dirstruct=dirstruct)
+    output_dir = os.path.join(
+        working_directory, dirs.dirStruct.fromArgs(**dirs.parameters)
+    )
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    return output_dir
+
+
+def serial_executable(executable: str) -> str:
+    """Single-replica AMBER binary: pmemd.cuda.MPI -> pmemd.cuda."""
+    return re.sub(r"\.MPI$", "", executable)
+
+
+def mpi_executable(executable: str) -> str:
+    """Multi-replica (-ng) AMBER binary: pmemd.cuda -> pmemd.cuda.MPI."""
+    return executable if executable.endswith(".MPI") else f"{executable}.MPI"
+
+
 class Calculation(Job):
     """Base calculation class. All other calculation classes should be inherited
     from this class.
@@ -60,6 +86,11 @@ class Calculation(Job):
         self.calc_setup = False  # This means that the setup has run successfully
         self.post_analysis = post_analysis
         self.debug = debug
+        # Whether to export outputs to the (network) output_dir. Left True here so every
+        # existing construction site keeps current behavior; IntermidateRunner.run()
+        # overrides it from config.system_settings.export_intermediate_files before it
+        # schedules each MD / post-analysis job.
+        self.export_network = True
         self.exec_list = [self.mpi_command]
         # self.exec_list = []
         self.read_files = {}
@@ -76,15 +107,9 @@ class Calculation(Job):
 
     def _output_directory(self):
         print(self.dirstruct)
-        dirs = Dirstruct("mdgb", self.directory_args, dirstruct=self.dirstruct)
-
-        output_dir = os.path.join(
-            self.working_directory, dirs.dirStruct.fromArgs(**dirs.parameters)
+        self.output_dir = resolve_output_dir(
+            self.working_directory, self.directory_args, dirstruct=self.dirstruct
         )
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-
-        self.output_dir = output_dir
         # self._path2dict(dirs)
 
     def _setLogging(self):
@@ -108,6 +133,20 @@ class Calculation(Job):
         restraint_file = shutil.copyfile(
             self.read_files["restraint_file"], "restraint.RST"
         )
+        # cv_file='cv.in' is a literal in the mdin, so per-window variation rides a swapped FILE and
+        # no per-window mdin has to be regenerated.
+        if self.read_files.get("cv_file"):
+            shutil.copyfile(self.read_files["cv_file"], "cv.in")
+            # A cv.in that no &pmd block references means the collective-variable restraint is simply
+            # not applied -- the run completes and every window in the band is the same Hamiltonian.
+            # Fail here rather than let that reach MBAR as a plausible-looking zero.
+            with open(mdin) as handle:
+                mdin_text = handle.read()
+            if "&pmd" not in mdin_text or "infe" not in mdin_text:
+                raise RuntimeError(
+                    f"a cv.in was staged for {self.output_dir} but the mdin has no infe/&pmd block, "
+                    "so the RMSD restraint would silently not be applied"
+                )
 
         with open(mdin) as temp:
             template = Template(temp.read())
@@ -126,6 +165,32 @@ class Calculation(Job):
         # os.remove("mdin")
         return fileStore.readGlobalFile(mdin_ID)
 
+    def _mdout_tails(self, max_files=3, lines=25):
+        """Tail of each mdout, for the RuntimeError raised on a failed AMBER run.
+
+        Setup errors -- a bad ladder, a groupfile mismatch, an unreadable restart -- are
+        written to the mdout, not to stderr, and export_files() never runs on a failure,
+        so without this they die with the job's scratch directory.
+        """
+        found = sorted(
+            f for f in os.listdir(".")
+            if re.match(r".*\.?mdout(\.\w+)*$", f) and os.path.isfile(f)
+        )
+        if not found:
+            return "  mdout: none written"
+
+        out = []
+        for name in found[:max_files]:
+            try:
+                with open(name, errors="replace") as fh:
+                    tail = fh.read().strip().splitlines()[-lines:]
+            except OSError as err:
+                tail = [f"<unreadable: {err}>"]
+            out.append(f"  {name}:\n" + "\n".join(f"    {t}" for t in tail))
+        if len(found) > max_files:
+            out.append(f"  ... {len(found) - max_files} more mdout files")
+        return "\n".join(out)
+
     def export_files(self, fileStore, output_directory, parameter_files):
         restart_files = []
         traj_files = []
@@ -140,11 +205,16 @@ class Calculation(Job):
                     output_file = fileStore.writeGlobalFile(name, cleanup=True)
                     restart_files.append(str(output_file))
                 elif re.match(r".*\.nc.*", name):
+                    # Keep the raw jobStore FileID (not str()): the MD run() returns
+                    # traj_files so a downstream post-analysis job can consume it as
+                    # inptraj via readGlobalFile -- the Toil-promise hand-off used when
+                    # export_network is off (no network trajectory copy).
                     output_file = fileStore.writeGlobalFile(name)  # cleanup=True
-                    traj_files.append(str(output_file))
+                    traj_files.append(output_file)
 
+                # rem.log stays exported: it is the only record of whether the ladder mixed
                 elif not self.debug and re.match(
-                    r"(rem.log)|(equilibrate)?(remd)?\.mdout\.\d*", name
+                    r"(equilibrate)?(remd)?\.mdout\.\d*", name
                 ):
                     fileStore.logToMaster(
                         f"checking the name that is not exporting {name}"
@@ -153,44 +223,50 @@ class Calculation(Job):
 
                 else:
                     output_file = fileStore.writeGlobalFile(name, cleanup=True)
-                fileStore.export_file(
-                    output_file,
-                    "file://"
-                    + os.path.abspath(
-                        os.path.join(output_directory, os.path.basename(name))
-                    ),
-                )
-        # export parameter files
-        fileStore.export_file(
-            self.read_files["prmtop"],
-            "file://"
-            + os.path.abspath(
-                os.path.join(
-                    self.output_dir, os.path.basename(self.read_files["prmtop"])
-                )
-            ),
-        )
-        # export coordinate file
-        if "incrd" in self.read_files.keys():
+                # writeGlobalFile above always lands the file in the jobStore (local
+                # workDir) so the DAG/promises still work; export_file is the extra copy
+                # to the (network) output_dir -- skip it entirely when export is off.
+                if self.export_network:
+                    fileStore.export_file(
+                        output_file,
+                        "file://"
+                        + os.path.abspath(
+                            os.path.join(output_directory, os.path.basename(name))
+                        ),
+                    )
+        if self.export_network:
+            # export parameter files
             fileStore.export_file(
-                self.read_files["incrd"],
+                self.read_files["prmtop"],
                 "file://"
                 + os.path.abspath(
                     os.path.join(
-                        self.output_dir, os.path.basename(self.read_files["incrd"])
+                        self.output_dir, os.path.basename(self.read_files["prmtop"])
                     )
                 ),
             )
-        # export restraint File
-        fileStore.export_file(
-            self.read_files["restraint_file"],
-            "file://"
-            + os.path.abspath(
-                os.path.join(
-                    self.output_dir, os.path.basename(self.read_files["restraint_file"])
+            # export coordinate file
+            if "incrd" in self.read_files.keys():
+                fileStore.export_file(
+                    self.read_files["incrd"],
+                    "file://"
+                    + os.path.abspath(
+                        os.path.join(
+                            self.output_dir, os.path.basename(self.read_files["incrd"])
+                        )
+                    ),
                 )
-            ),
-        )
+            # export restraint File
+            fileStore.export_file(
+                self.read_files["restraint_file"],
+                "file://"
+                + os.path.abspath(
+                    os.path.join(
+                        self.output_dir,
+                        os.path.basename(self.read_files["restraint_file"]),
+                    )
+                ),
+            )
         # fileStore.logToMaster(f"the current trajectory files {traj_files}")
         # fileStore.logToMaster(f"the restart files: {restart_files}")
 
@@ -279,23 +355,56 @@ class Calculation(Job):
         fileStore.logToMaster(f"amber_stdout: {amber_stdout}")
         fileStore.logToMaster(f"amber_stderr: {amber_stderr}")
 
-        # if post analysis simulation just export the mdout file
-        if self.post_analysis:
-            # for not don't export any data
-            # return fileStore.writeGlobalFile("mdout", cleanup=True),
-
-            # fileStore.export_file(
-            #     fileStore.writeGlobalFile("mdout", cleanup=True),
-            #     "file://"
-            #     + os.path.abspath(
-            #         os.path.join(self.output_dir, os.path.basename("mdout"))
-            #     ),
-            # )
-            # Export all ouput files from MD simulation
-            restart_ID, trajectory_ID = self.export_files(
-                fileStore, self.output_dir, files_in_current_directory
+        # Stop here on a failed AMBER run. export_files() below just collects whatever
+        # landed in the working directory, so a dead simulation used to "succeed" with an
+        # empty restart list and the run only fell over in the follow-on job that consumed
+        # it (REMD's `KeyError: 'incrd'`), pointing at the wrong job.
+        if amber_output.returncode != 0:
+            raise RuntimeError(
+                f"AMBER exited {amber_output.returncode} running "
+                f"{self.directory_args.get('runtype', '?')} in {self.output_dir}\n"
+                f"  command: {' '.join(str(arg) for arg in self.exec_list)}\n"
+                f"  stderr: {amber_stderr.strip()[-2000:]}\n"
+                f"  stdout: {amber_stdout.strip()[-2000:]}\n"
+                f"{self._mdout_tails()}"
             )
-            return
+
+        # Per-job timing record -> parsed by research/timing_report.py into a phase breakdown.
+        # Phase is inferred from the runtype: post-analysis jobs carry post_analysis=True
+        # (-> "post_analysis"), endstate setup MD has an endstate/minimization runtype, everything
+        # else is the production intermediate MD.
+        # cores is ~0.1 for GPU windows, so the parser uses the gpu flag (GPU-hours = wall; else CPU-hours
+        # = wall*cores). end= is an absolute epoch so the parser can recover parallel-adjusted wall-clock.
+        _wall = time.perf_counter() - start
+        _rt = self.directory_args.get("runtype", "")
+        if self.post_analysis:
+            _phase = "post_analysis"
+        elif any(k in _rt for k in ("endstate", "minimization", "remd", "equil")):
+            _phase = "endstate"
+        else:
+            _phase = "intermediate_md"
+        fileStore.logToMaster(
+            f"[TIMING] phase={_phase} wall_s={_wall:.2f} cores={self.num_cores} "
+            f"gpu={int(bool(self.CUDA))} end={time.time():.0f} | runtype={_rt}"
+        )
+
+        # Post-analysis re-score only needs its `mdout`: the follow-on create_mdout_dataframe
+        # reads {output_dir}/mdout to build simulation_mdout.parquet.gzip. The re-score's
+        # trajectory / restart / parameter files are never read by anything downstream, so the
+        # old full export_files() call streamed ~4188 jobs' worth of trajectories to the network
+        # for nothing. Export just the mdout (restores the intent of the code below).
+        if self.post_analysis:
+            # Always land the mdout in the jobStore and RETURN its FileID so the
+            # follow-on create_mdout_dataframe can read it via a Toil promise
+            # (readGlobalFile) with no network access. The export_file copy to the
+            # network output_dir is only for archival/warm-resume, so skip it when off.
+            mdout_ID = fileStore.writeGlobalFile("mdout")
+            if self.export_network:
+                fileStore.export_file(
+                    mdout_ID,
+                    "file://" + os.path.abspath(os.path.join(self.output_dir, "mdout")),
+                )
+            return mdout_ID
 
         else:
             # Export all ouput files from MD simulation
@@ -339,6 +448,8 @@ class Simulation(Calculation):
         inptraj=None,
         post_analysis=False,
         restraint_key=None,
+        cv_file: Union[RestraintMaker, str, None] = None,
+        cv_key=None,
         sim_debug: bool = False,
         memory: Optional[Union[int, str]] = None,
         disk: Optional[Union[int, str]] = None,
@@ -379,6 +490,8 @@ class Simulation(Calculation):
             debug=sim_debug,
         )
         self.restraint_key = restraint_key
+        self.cv_file = cv_file
+        self.cv_key = cv_key
         self.system_type = system_type
 
     def setup(self):
@@ -390,20 +503,24 @@ class Simulation(Calculation):
 
 
         if self.CUDA and self.system_type in ["complex", "receptor"]:
-            if self.mpi_command == None:
-                self.exec_list.pop(0)
-            self.exec_list.append(self.executable)
+            # One window, one GPU -> serial CUDA build, no MPI launcher. exec_list[0] is
+            # always the launcher, so drop it: keeping it gave `mpirun pmemd.cuda.MPI`
+            # with no -np, which is not a single-replica launch.
+            self.exec_list.pop(0)
+            self.exec_list.append(serial_executable(self.executable))
             # self.exec_list.append("--cuda")
             # self.exec_list.append("--gpu")
             # self.exec_list.append("--gpu_id")
             # self.exec_list.append("0")
             # self.exec_list.append("--gpu_mem")
 
-        
+
         elif self.num_cores == 1 or self.mpi_command == None:
+            # Serial CPU leg (the ligand endstate, by design): strip at the first dot so a
+            # CUDA build name becomes the plain CPU binary, pmemd.cuda.MPI -> pmemd.
             self.exec_list.pop(0)
             self.exec_list.append(re.sub(r"\..*", "", self.executable))
-        
+
         else:
             if self.mpi_command in ["mpiexec", "mpirun"]:
 
@@ -492,6 +609,19 @@ class Simulation(Calculation):
                 self.restraint_file,
                 userPath=os.path.join(tempDir, os.path.basename(self.restraint_file)),
             )
+        if self.cv_file is not None:
+            cv_source = (
+                # .get, not [], because cv_files is empty in force mode -- the same RestraintMaker
+                # is handed to every Simulation either way.
+                self.cv_file.cv_files.get(self.cv_key)
+                if isinstance(self.cv_file, RestraintMaker)
+                else self.cv_file
+            )
+            if cv_source is not None:
+                self.read_files["cv_file"] = fileStore.readGlobalFile(
+                    cv_source,
+                    userPath=os.path.join(tempDir, os.path.basename(str(cv_source))),
+                )
         self.read_files["mdin"] = Calculation._mdin_restraint(
             self, fileStore, self.read_files["input_file"]
         )
@@ -529,17 +659,22 @@ class REMDSimulation(Calculation):
         inptraj=None,
         memory: Optional[Union[int, str]] = None,
         disk: Optional[Union[int, str]] = None,
+        accelerators: Optional[int] = None,
         preemptable: Optional[Union[bool, int, str]] = None,
         unitName: Optional[str] = "",
         checkpoint: Optional[bool] = False,
         displayName: Optional[str] = "",
         descriptionClass: Optional[str] = None,
     ):
+        # accelerators is the GPU request for THIS job, which runs every replica in the chain --
+        # unlike Simulation, where one job is one window on one device. AMBER binds one device per
+        # MPI rank, so the natural value is ngroups; fewer means replicas share devices.
         Job.__init__(
             self,
             memory=memory,
             cores=num_cores,
             disk=disk,
+            accelerators=accelerators,
             preemptible="false",
             unitName=unitName,
             checkpoint=checkpoint,
@@ -573,8 +708,35 @@ class REMDSimulation(Calculation):
         necessary command-line arguments
         """
 
-        self.exec_list.extend(("-n", str(self.num_cores)))
-        self.exec_list.append(self.executable)
+        if self.mpi_command is None:
+            raise RuntimeError(
+                "REMD runs every replica as an MPI rank, so it needs a launcher: set "
+                "hardware_parameters.mpi_command (mpirun / mpiexec / srun) in the config."
+            )
+
+        # Only multipmemd / multisander understand -ng, so spawn the MPI build even when
+        # the config names the serial binary its alchemical windows use.
+        executable = mpi_executable(self.executable)
+
+        # `-n` is the MPI RANK count, not the Toil `cores` reservation -- a GPU REMD
+        # reserves a fraction of a core the way the pmemd.cuda windows do. Snap to one
+        # rank per replica unless nthreads is a whole multiple of -ng, which AMBER
+        # requires to start at all.
+        ranks = int(self.nthreads) if float(self.nthreads).is_integer() else 0
+        if ranks < self.ng or ranks % self.ng != 0:
+            ranks = self.ng
+
+        if shutil.which(executable) is None:
+            raise RuntimeError(
+                f"REMD executable {executable!r} is not on PATH on this node. Load the "
+                "AMBER module that provides it (a CUDA REMD needs AMBER built with -cuda "
+                "AND -mpi), or point hardware_parameters.remd_executable at an MPI build "
+                "that exists -- e.g. pmemd.MPI / sander.MPI to run the replica ladder on "
+                "CPU while the alchemical windows stay on GPU."
+            )
+
+        self.exec_list.extend(("-n", str(ranks)))
+        self.exec_list.append(executable)
         self.exec_list.extend(("-ng", str(self.ng)))
         self.exec_list.extend(("-groupfile", self.read_files["groupfile"]))
 
@@ -626,6 +788,12 @@ class REMDSimulation(Calculation):
                     fileStore.logToMaster(f"count: {count}")
                     fileStore.logToMaster(f"single_coordinate: {single_coordinate}")
 
+                    if not single_coordinate:
+                        raise RuntimeError(
+                            f"REMD replica {count:03} has no equilibration restart among "
+                            f"{self.incrd}: the equilibration wrote fewer than -ng {self.ng} "
+                            "restarts. Check equilibrate.mdout.* in its output directory."
+                        )
                     read_coordinate = fileStore.readGlobalFile(
                         single_coordinate[0],
                         userPath=os.path.join(
@@ -664,7 +832,19 @@ class REMDSimulation(Calculation):
             userPath=os.path.join(tempDir, os.path.basename(self.restraint_file)),
         )
         # The case in running REMD possible many equilibration restart files
-        if len(self.incrd) == 1:
+        if not self.incrd:
+            raise RuntimeError(
+                f"No input coordinates for the {self.runtype} REMD job in "
+                f"{self.output_dir}: the upstream "
+                f"{'minimization' if self.runtype == 'equil' else 'equilibration'} "
+                "returned an empty restart list, meaning its AMBER run produced no "
+                "restart file. Read that job's mdout / simulations.log -- the fault is "
+                "there, not here."
+            )
+        # Equilibration starts every replica from the same minimized restart. Take the
+        # first rather than demanding len == 1, which left read_files['incrd'] unset and
+        # sent _groupfile() into `KeyError: 'incrd'`.
+        if self.runtype == "equil" or len(self.incrd) == 1:
             self.read_files["incrd"] = fileStore.readGlobalFile(
                 self.incrd[0],
                 userPath=os.path.join(tempDir, os.path.basename(self.incrd[0])),
@@ -688,19 +868,46 @@ class ExtractTrajectories(Job):
 
     """
 
-    def __init__(self, solute_topology, trajectory_files, target_temp=0.0):
+    def __init__(
+        self,
+        solute_topology,
+        trajectory_files,
+        target_temp=0.0,
+        pose_medoid=False,
+        ligand_mask=None,
+        receptor_mask=None,
+        cluster_cutoff=2.0,
+        pocket_radius=8.0,
+        cluster_stride=0,
+        cluster_skip=0,
+        working_directory=None,
+        directory_args=None,
+    ):
         Job.__init__(
             self,
-            memory="2G",
+            # clustering holds an O(n^2) distance matrix; a cpptraj one-liner does not
+            memory="8G" if pose_medoid else "2G",
             cores=1,
             disk="3G",
             preemptible="false",
         )
 
+        if pose_medoid and not ligand_mask:
+            raise ValueError("pose_medoid requires ligand_mask")
+
         self.solute_topology = solute_topology
         self.trajectory_files = trajectory_files
         self.target_temp = target_temp
         self.read_trajs = []
+        self.pose_medoid = pose_medoid
+        self.ligand_mask = ligand_mask
+        self.receptor_mask = receptor_mask
+        self.cluster_cutoff = cluster_cutoff
+        self.pocket_radius = pocket_radius
+        self.cluster_stride = cluster_stride
+        self.cluster_skip = int(cluster_skip)
+        self.working_directory = working_directory
+        self.directory_args = directory_args
 
     def run(self, fileStore) -> tuple[FileID, FileID, FileID]:
         temp_dir = fileStore.getLocalTempDir()
@@ -755,24 +962,40 @@ class ExtractTrajectories(Job):
             target_trajectoryID = self.trajectory_files
 
         solu = re.sub(r"\..*", "", os.path.basename(self.read_solute))
-        lastframe_nc = f"{solu}_{self.target_temp}K_lastframe.ncrst"
-        lastframe_rst7 = f"{solu}_{self.target_temp}K_lastframe.rst7"
 
-        # get the last frame at the target temperature
+        medoid_frame = self._pose_medoid_frame(fileStore, solu, read_target_traj)
+        # name the file after the frame it actually holds, so a downstream command line
+        # says which reference the restraints were built from
+        tag = "lastframe" if medoid_frame is None else f"medoid{medoid_frame}"
+        lastframe_nc = f"{solu}_{self.target_temp}K_{tag}.ncrst"
+        lastframe_rst7 = f"{solu}_{self.target_temp}K_{tag}.rst7"
+
+        # get the reference frame at the target temperature
         fileStore.logToMaster(f"read_target_traj {read_target_traj}")
-        sp.run(
-            [
-                "cpptraj",
-                "-p",
-                self.read_solute,
-                "-y",
-                read_target_traj,
-                "-ya",
-                "lastframe",
-                "-x",
-                lastframe_nc,
-            ]
-        )
+        if medoid_frame is None:
+            sp.run(
+                [
+                    "cpptraj",
+                    "-p",
+                    self.read_solute,
+                    "-y",
+                    read_target_traj,
+                    "-ya",
+                    "lastframe",
+                    "-x",
+                    lastframe_nc,
+                ]
+            )
+        else:
+            # cpptraj splits -ya on whitespace and maps each token to a separate input
+            # trajectory, so a "N N" range cannot go there -- use an input script
+            script = f"{solu}_medoid_frame.cpptraj"
+            with open(script, "w") as fh:
+                fh.write(f"parm {self.read_solute}\n")
+                fh.write(f"trajin {read_target_traj} {medoid_frame} {medoid_frame}\n")
+                fh.write(f"trajout {lastframe_nc}\n")
+                fh.write("go\n")
+            sp.run(["cpptraj", "-i", script], capture_output=True)
         sp.run(
             [
                 "cpptraj",
@@ -803,6 +1026,95 @@ class ExtractTrajectories(Job):
         lastframe_rst7_ID = fileStore.writeGlobalFile(lastframe_rst7)
 
         return (target_trajectoryID, lastframe_nc_ID, lastframe_rst7_ID)
+
+    def _pose_medoid_frame(self, fileStore, solu, read_target_traj):
+        """1-based frame number of the dominant pose cluster's medoid.
+
+        ``None`` when the flag is off, the trajectory is too short to cluster, or the
+        clustering itself fails, which leaves the caller on the unchanged
+        ``-ya lastframe`` path.
+        """
+        if not self.pose_medoid:
+            return None
+
+        from implicit_solvent_ddm import pose_clusters
+
+        traj = pose_clusters.load_trajectory(self.read_solute, read_target_traj)
+        if len(traj) - self.cluster_skip < pose_clusters.MIN_CLUSTER_FRAMES:
+            fileStore.logToMaster(
+                f"[POSE] only {len(traj)} frames ({self.cluster_skip} skipped), too few "
+                f"to cluster; using lastframe"
+            )
+            return None
+
+        # a bad pocket selection must not throw away an endstate that already ran
+        try:
+            result = pose_clusters.analyze(
+                traj,
+                self.ligand_mask,
+                self.receptor_mask,
+                cutoff=self.cluster_cutoff,
+                radius=self.pocket_radius,
+                stride=self.cluster_stride,
+                skip=self.cluster_skip,
+            )
+        except ValueError as exc:
+            fileStore.logToMaster(
+                f"[POSE] WARNING: clustering failed for {solu} ({exc}); falling back to "
+                f"lastframe. dG is still correct, the restrained leg is just noisier."
+            )
+            return None
+
+        _, medoid_frame, fraction = pose_clusters.dominant_medoid(result["summary"])
+
+        if fraction < 0.5:
+            runner_up = (
+                f"{result['summary'][1]['fraction']:.1%}"
+                if len(result["summary"]) > 1
+                else "n/a"
+            )
+            fileStore.logToMaster(
+                f"[POSE] WARNING: no dominant basin for {solu} -- top cluster is only "
+                f"{fraction:.1%} (runner-up {runner_up}) of {len(result['frames'])} "
+                f"frames across {len(result['summary'])} clusters. Using the largest, "
+                f"but the restraint reference is not representative of the ensemble."
+            )
+
+        fileStore.logToMaster(
+            f"[POSE] {solu} restraint reference = frame {medoid_frame} 0-based "
+            f"(cpptraj frame {medoid_frame + 1}, the number in the filename; medoid of "
+            f"cluster 1, {fraction:.1%} of {len(result['frames'])} frames, "
+            f"stride {result['stride']})"
+        )
+
+        self._export_cluster_artifacts(fileStore, solu, result)
+
+        # cpptraj trajin is 1-based
+        return medoid_frame + 1
+
+    def _export_cluster_artifacts(self, fileStore, solu, result):
+        if self.working_directory is None or self.directory_args is None:
+            fileStore.logToMaster(
+                "[POSE] no output directory configured; cluster artifacts not exported"
+            )
+            return
+
+        from implicit_solvent_ddm import pose_clusters
+
+        output_dir = resolve_output_dir(self.working_directory, self.directory_args)
+        paths = pose_clusters.write_artifacts(
+            result,
+            self.tempdir,
+            prefix=f"{solu}_{self.target_temp}K_pose_clusters_",
+            cutoff=self.cluster_cutoff,
+        )
+        for path in paths.values():
+            fileStore.export_file(
+                fileStore.writeGlobalFile(path, cleanup=True),
+                "file://" + os.path.abspath(
+                    os.path.join(output_dir, os.path.basename(path))
+                ),
+            )
 
     @property
     def extract_target_temperature(self) -> FileID:

@@ -8,6 +8,8 @@ import yaml
 import numpy as np
 from implicit_solvent_ddm.config import Config
 
+pytestmark = pytest.mark.workflow
+
 working_directory = os.getcwd()
 
 

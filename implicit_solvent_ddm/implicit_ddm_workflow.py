@@ -21,11 +21,9 @@ from implicit_solvent_ddm.workflow_phases import (
     setup_workflow_components,
     run_endstate_simulations,
     decompose_system_and_generate_restraints,
-    setup_intermediate_simulations,
-    run_post_analysis_intermediate_simulations,
-    compute_free_energy_and_consolidate,
-    run_intermediate_simulations,
-    adaptive_restraint_pilot,
+    chain_phases_4_to_7,
+    als_round,
+    refine_schedule,
     initilized_jobs,
 )
 
@@ -85,6 +83,19 @@ def ddm_workflow(
         initilized_jobs,
         message="--> Moving to phase 3: System Decomposition and Restraint Generation"
     )
+    if config.workflow.adaptive_lambda:
+        # Post-production adaptive lambda scheduling: round 0 is ordinary production (Phases 3-7).
+        # refine_schedule then adds full-length windows wherever adjacent two-state overlap is below
+        # min_degree_overlap and re-runs Phases 3-7 with warm resume, so only the new windows and the
+        # new energy cells are computed. The Phase-2 endstate is shared by every round.
+        round0 = endstate_jobs.addFollowOnJobFn(als_round, 0, updated_config, endstate_jobs.rv())
+        refine = round0.addFollowOnJobFn(refine_schedule, 0, round0.rv(), endstate_jobs.rv(), [])
+        refine.addFollowOnJobFn(
+            initilized_jobs,
+            message="🎉 DDM Workflow Complete: production and ALS refinement finished",
+        )
+        return refine
+
     # Phase 3: System Decomposition and Restraint Generation (depends on endstate)
     decomposition_jobs = endstate_jobs.addFollowOnJobFn(
         decompose_system_and_generate_restraints,
@@ -93,102 +104,20 @@ def ddm_workflow(
     )
     decomposition_jobs.addFollowOnJobFn(
         initilized_jobs,
-        message="✓ Phase 3 Complete: System decomposition and restraint generation finished"
-    )
-    decomposition_jobs.addFollowOnJobFn(
-        initilized_jobs,
         message="--> Moving to phase 4: Intermediate State Simulations"
     )
-    # Phase 4: Intermediate State Simulations (depends on decomposition)
-    setup_intermediate_jobs = decomposition_jobs.addFollowOnJobFn(
-        setup_intermediate_simulations,
-        decomposition_jobs.rv(), 
-        endstate_jobs.rv(),
-        updated_config
+    # Phase 4 -> Phases 5/6 -> aggregation -> Phase 7
+    _, phases56, phase7 = chain_phases_4_to_7(
+        decomposition_jobs, endstate_jobs.rv(), updated_config, config
     )
+    if phase7 is None:  # md_only
+        return phases56
 
-    setup_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 4 Complete: Intermidate simulations setup finished"
-    )
-    setup_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 5: Intermediate State Simulations"
-    )
-
-    # Phase 4.5: Adaptive Lambda Scheduler pilot (OBSERVATIONAL, flag-gated). Runs a short-MD pilot of
-    # the complex leg and LOGS a converged restraint schedule. It is a strict barrier before Phase 5 so
-    # it runs with exclusive resources, but production Phases 5/6/7 still read the Phase-4 seed setups
-    # (setup_intermediate_jobs.rv(0..4)) below — so the free-energy path is unchanged and the pilot's
-    # return is not consumed (Step 5a). Flag off -> no pilot job, Phase 5 follows Phase 4 as before
-    # (byte-identical DAG).
-    phase4_tail = setup_intermediate_jobs
-    if config.workflow.adaptive_lambda:
-        phase4_tail = setup_intermediate_jobs.addFollowOnJobFn(
-            adaptive_restraint_pilot,
-            decomposition_jobs.rv(),
-            endstate_jobs.rv(),
-            updated_config,
-        )
-
-    # Phase 5: Run intermediate state simulations
-    run_intermediate_jobs = phase4_tail.addFollowOnJobFn(
-        run_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
-    )
-    run_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 5 Complete: Intermediate state simulations finished"
-    )
-    run_intermediate_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 6: Energy post-processing and analysis"
-    )
-    # Phase 6: Post-processing and Analysis (depends on intermediate)
-    analysis_jobs = run_intermediate_jobs.addFollowOnJobFn(
-        run_post_analysis_intermediate_simulations,
-        setup_intermediate_jobs.rv(0), # config 
-        setup_intermediate_jobs.rv(1), # complex simulations
-        setup_intermediate_jobs.rv(2), # receptor simulations
-        setup_intermediate_jobs.rv(3), # ligand simulations
-        setup_intermediate_jobs.rv(4), # flat bottom simulations
-    )
-    analysis_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 6 Complete: Energy post-processing and analysis finished"
-    )
-    post_analysis_complete = analysis_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="--> Moving to phase 7: Free energy computation and consolidation"
-    )
-
-    # Phase 7: Compute Free Energy and Consolidate Results
-    free_energy_difference_jobs = analysis_jobs.addFollowOnJobFn(
-        compute_free_energy_and_consolidate,
-        analysis_jobs.rv(0), # complex post-analysis results
-        analysis_jobs.rv(1), # receptor post-analysis results
-        analysis_jobs.rv(2), # receptor post-analysis results
-        analysis_jobs.rv(3), # ligand post-analysis results
-        setup_intermediate_jobs.rv(0), # config 
-    )
-
-    free_energy_difference_jobs.addFollowOnJobFn(
-        initilized_jobs,
-        message="✓ Phase 7 Complete: Free energy computation and consolidation finished"
-    )
-
-    # Final workflow completion message
-    
-    free_energy_difference_jobs.addFollowOnJobFn(
+    phase7.addFollowOnJobFn(
         initilized_jobs,
         message="🎉 DDM Workflow Complete: All phases finished successfully!"
     )
-    
-    return free_energy_difference_jobs
+    return phase7
 
 
 def _allocated_gpu_count() -> int:
@@ -215,8 +144,90 @@ def _allocated_gpu_count() -> int:
         return 0
 
 
-def _confine_single_machine_to_allocated_gpus(options):
-    """Place one GPU MD window per Slurm-allocated GPU under Toil's single_machine batch system.
+def _slots_to_visible_devices(acquired, allocated_gpus, windows_per_gpu=1):
+    """Map acquired Toil accelerator slots to a ``CUDA_VISIBLE_DEVICES`` string.
+
+    Parameters
+    ----------
+    acquired : Iterable[int]
+        Accelerator slot indices Toil acquired for one job.
+    allocated_gpus : list[str]
+        Allocated GPU ids, in order.
+    windows_per_gpu : int
+        Number of consecutive slots that share one device.
+
+    Returns
+    -------
+    str
+        Comma-separated device ids, duplicates removed in order.
+    """
+    devices = []
+    for i in sorted(acquired):
+        gpu = allocated_gpus[i // windows_per_gpu]
+        if gpu not in devices:
+            devices.append(gpu)
+    return ",".join(devices)
+
+
+def _reserve_cores_for_gpu_slots(max_cores, n_slots):
+    """Lower the Toil core pool by one core per GPU slot.
+
+    Parameters
+    ----------
+    max_cores : Optional[int]
+        ``options.maxCores``; None or ``sys.maxsize`` means unset.
+    n_slots : int
+        Number of advertised GPU slots.
+
+    Returns
+    -------
+    int
+        Cores left for CPU jobs.
+
+    Raises
+    ------
+    ValueError
+        If fewer than one core would remain.
+    """
+    import sys
+
+    if max_cores is None or max_cores >= sys.maxsize:
+        slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK", "")
+        if slurm_cpus.strip().isdigit():
+            max_cores = int(slurm_cpus)
+        elif hasattr(os, "sched_getaffinity"):
+            max_cores = len(os.sched_getaffinity(0))
+        else:
+            max_cores = os.cpu_count() or 1
+    remaining = int(max_cores) - n_slots
+    if remaining < 1:
+        raise ValueError(
+            f"[GPU] {n_slots} GPU window slots need one core each, but only {max_cores} "
+            "core(s) are available; lower windows_per_gpu or request more CPUs."
+        )
+    return remaining
+
+
+def _mps_daemon_running():
+    """Return True if the CUDA MPS control daemon is reachable."""
+    import subprocess
+
+    try:
+        if subprocess.run(["pgrep", "-x", "nvidia-cuda-mps-control"],
+                          capture_output=True, timeout=10).returncode == 0:
+            return True
+    except Exception:
+        pass
+    try:
+        out = subprocess.run(["nvidia-cuda-mps-control"], input="get_server_list\n",
+                             capture_output=True, text=True, timeout=10)
+        return out.returncode == 0
+    except Exception:
+        return False
+
+
+def _confine_single_machine_to_allocated_gpus(options, windows_per_gpu=1):
+    """Place ``windows_per_gpu`` GPU MD windows per Slurm-allocated GPU under Toil's single_machine batch system.
 
     When this workflow runs ``single_machine`` inside one Slurm allocation
     (``--gres=gpu:N``), three behaviours in Toil 8.2.0 (still present in 9.5.0,
@@ -237,11 +248,13 @@ def _confine_single_machine_to_allocated_gpus(options):
     We correct all three at the leader, before the batch system is built, so Toil
     keeps global ownership of GPU assignment.  (A per-runner round-robin would
     double-book GPU 0 across concurrently-running runners -- see runner.py.)
+
+    Returns the number of advertised GPU slots, 0 when nothing was confined.
     """
     if getattr(options, "batchSystem", None) not in (None, "single_machine"):
         # Other batch systems (e.g. slurm) submit each job separately and let the
         # scheduler pin GPUs per sub-job; this single-allocation fix-up is moot.
-        return
+        return 0
 
     # GPUs this process may use, in ITS OWN namespace. Under cgroup-constrained
     # Slurm (this cluster) the allocated GPUs are exposed to the process as logical
@@ -275,7 +288,7 @@ def _confine_single_machine_to_allocated_gpus(options):
             "'#SBATCH --gres=gpu:N'.",
             flush=True,
         )
-        return
+        return 0
 
     import toil.batchSystems.singleMachine as single_machine
 
@@ -288,19 +301,21 @@ def _confine_single_machine_to_allocated_gpus(options):
     ):
         os.environ.pop(_var, None)
 
-    # (2) Advertise only the allocated GPUs so Toil runs one GPU window per GPU.
+    # (2) Advertise windows_per_gpu slots per allocated GPU.
+    n_slots = len(allocated_gpus) * windows_per_gpu
+
     def _allocated_accelerators():
         return [
             {"kind": "gpu", "brand": "nvidia", "api": "cuda", "count": 1}
-            for _ in allocated_gpus
+            for _ in range(n_slots)
         ]
 
-    # (3) Translate Toil's acquired slot back to the real allocated GPU id.
-    #     Safe because Toil's accelerator slot space is range(len(allocated_gpus))
+    # (3) Translate Toil's acquired slots back to the real allocated GPU ids.
+    #     Safe because Toil's accelerator slot space is range(n_slots)
     #     -- it acquires from the same list advertised in _allocated_accelerators.
     def _restrictive_environment(acquired):
         try:
-            gpu_list = ",".join(allocated_gpus[i] for i in sorted(acquired))
+            gpu_list = _slots_to_visible_devices(acquired, allocated_gpus, windows_per_gpu)
         except (IndexError, TypeError):
             # Unreachable under the invariant above; warn loudly rather than
             # silently emitting raw indices (which would re-introduce the GPU-0
@@ -322,11 +337,12 @@ def _confine_single_machine_to_allocated_gpus(options):
         _restrictive_environment
     )
 
-    logger.info(
-        "[GPU] Toil single_machine confined to %d allocated GPU(s): %s",
-        len(allocated_gpus),
-        ",".join(allocated_gpus),
+    print(
+        f"[GPU] Toil single_machine confined to {len(allocated_gpus)} allocated GPU(s): "
+        f"{','.join(allocated_gpus)} ({windows_per_gpu} window(s) per GPU, {n_slots} slot(s))",
+        flush=True,
     )
+    return n_slots
 
 
 def main():
@@ -345,6 +361,8 @@ def main():
     )
     options = parser.parse_args()
     options.clean = "onSuccess"
+    # INFO is what carries the per-job [TIMING] records into the leader log that
+    # timing_report.py parses; without it the timing breakdown is empty.
     options.logLevel = "INFO"
     config_file = options.config_file[0]
     ignore_receptor = options.ignore_receptor
@@ -383,9 +401,28 @@ def main():
     ).touch()
 
     options.logFile = f"{config.system_settings.top_directory_path}/{complex_name}_job_{job_number:03}.txt"
-    # Pin one GPU window per Slurm-allocated GPU and stop the leader environment
+    # Pin windows_per_gpu GPU windows per Slurm-allocated GPU and stop the leader environment
     # from clobbering each worker's per-job GPU assignment (Toil single_machine).
-    _confine_single_machine_to_allocated_gpus(options)
+    windows_per_gpu = config.system_settings.windows_per_gpu
+    if windows_per_gpu > 1 and getattr(options, "batchSystem", None) not in (None, "single_machine"):
+        print(
+            f"[GPU] WARNING: windows_per_gpu={windows_per_gpu} only applies to single_machine; "
+            "using 1.",
+            flush=True,
+        )
+        windows_per_gpu = config.system_settings.windows_per_gpu = 1
+    n_slots = _confine_single_machine_to_allocated_gpus(options, windows_per_gpu)
+    if windows_per_gpu > 1 and n_slots:
+        # GPU windows request 0 cores, so keep one core per slot out of the CPU pool.
+        options.maxCores = _reserve_cores_for_gpu_slots(getattr(options, "maxCores", None), n_slots)
+        print(f"[GPU] maxCores lowered to {options.maxCores} for {n_slots} GPU slot(s)", flush=True)
+        if not _mps_daemon_running():
+            print(
+                "[GPU] WARNING: CUDA MPS daemon not found. Packed windows will time-slice and run "
+                f"~{windows_per_gpu}x slower with no throughput gain. Start it with "
+                "'nvidia-cuda-mps-control -d'.",
+                flush=True,
+            )
     # setup toil workflow
     with Toil(options) as toil:
         config.workflow.ignore_receptor_endstate = ignore_receptor
