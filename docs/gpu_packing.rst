@@ -19,6 +19,43 @@ Do not put a gas-phase cycle with ``gb_extdiel_windows`` on the GPU. ``pmemd.cud
 ``extdiel`` in GB MD, so those windows sample water and give a wrong answer. Nothing in the
 code catches this yet.
 
+.. _gpu-mps:
+
+Start CUDA MPS first
+--------------------
+
+.. important::
+
+   Packing only pays off when the CUDA MPS daemon is running in the job **before**
+   ``run_implicit_ddm.py`` starts. Without MPS the packed windows take turns on the GPU instead of
+   running together: each one runs about ``windows_per_gpu`` times slower and the total stays at
+   the single-window rate (about 1,400 to 1,750 ns/day in the benchmark below, against 3,327 with
+   MPS at four windows per GPU). The workflow still runs, it only prints a warning.
+
+Put these lines in the Slurm script, before the workflow command:
+
+.. code-block:: bash
+
+    # Stop early if pmemd.cuda or the MPS control program is missing.
+    for exe in pmemd.cuda nvidia-cuda-mps-control; do
+        command -v "$exe" >/dev/null || { echo "ERROR: $exe not on PATH"; exit 1; }
+    done
+
+    # Start a private MPS daemon for this job and shut it down when the job ends.
+    mkdir -p /tmp/slurm.$SLURM_JOB_ID
+    export CUDA_MPS_PIPE_DIRECTORY=/tmp/slurm.$SLURM_JOB_ID/mps_pipe
+    export CUDA_MPS_LOG_DIRECTORY=/tmp/slurm.$SLURM_JOB_ID/mps_log
+    mkdir -p "$CUDA_MPS_PIPE_DIRECTORY" "$CUDA_MPS_LOG_DIRECTORY"
+    nvidia-cuda-mps-control -d || { echo "ERROR: could not start MPS"; exit 1; }
+    trap 'echo quit | nvidia-cuda-mps-control' EXIT
+
+The loop checks both programs up front, so a missing AMBER module or CUDA install fails in the
+first second of the job instead of after the end states have run. ``nvidia-cuda-mps-control`` comes
+with the NVIDIA driver; if it is not on ``PATH``, load your cluster's CUDA module or ask the
+admins where it lives. Setting the two ``CUDA_MPS_*`` directories per job gives each job its own
+daemon, so two jobs on the same node do not share one, and the Toil workers find it through the
+same environment variables. The full script is in the next section.
+
 Config
 ------
 
@@ -72,11 +109,12 @@ used, with the site-specific parts made generic:
     module load amber            # must provide pmemd.cuda (and pmemd.cuda.MPI for GPU REMD)
     if [ -n "$_PP_BEFORE" ]; then export PYTHONPATH="$_PP_BEFORE"; else unset PYTHONPATH; fi
 
+    # Stop early if pmemd.cuda or the MPS control program is missing.
     for exe in pmemd.cuda nvidia-cuda-mps-control; do
         command -v "$exe" >/dev/null || { echo "ERROR: $exe not on PATH"; exit 1; }
     done
 
-    # A private MPS daemon for this job, so two jobs on one node do not share one.
+    # Required for packing: a private MPS daemon for this job, started before the workflow.
     # Toil's workers inherit the pipe directory from the environment.
     mkdir -p /tmp/slurm.$SLURM_JOB_ID
     export CUDA_MPS_PIPE_DIRECTORY=/tmp/slurm.$SLURM_JOB_ID/mps_pipe
