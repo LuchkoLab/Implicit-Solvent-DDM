@@ -5,10 +5,11 @@
 # endstate_method 0, give the ligand and receptor topology and trajectory as well as the complex.
 #
 # The three trajectories in script_examples/structs/ are 4 ps demo ensembles (100 frames, one every
-# 0.04 ps), not production-length sampling. The NetCDF files do not record a temperature. Their
-# length and frame spacing match endstate_templates_required/basic_md.template (temp0 = 300), so
-# treat them as 300 K samples. This example keeps temperature at 298 to match the intermediate mdin
-# template, which leaves a known 2 K offset at the end states.
+# 0.04 ps), not production-length sampling. The NetCDF files do not record a temperature. They
+# were made with the length and frame spacing of endstate_templates_required/basic_md.template,
+# but at temp0 = 300 (the template now uses 298), so treat them as 300 K samples. This example
+# keeps temperature at 298 to match the intermediate mdin template, which leaves a known 2 K offset
+# at the end states.
 #
 # For your own system, sample the end states at the same temperature as the intermediate windows,
 # strip solvent from the topologies and trajectories, and use the GB radii recommended for
