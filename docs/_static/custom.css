@@ -1,0 +1,17 @@
+/* Landing-page cards: a little lift on hover, titles in the accent colour. */
+.sd-card {
+    transition: box-shadow 0.15s ease-in-out, transform 0.15s ease-in-out;
+}
+.sd-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+}
+.sd-card .sd-card-title {
+    color: var(--color-brand-primary);
+    font-weight: 600;
+}
+/* Wide tables (config keys, benchmark) scroll instead of squeezing. */
+table.docutils {
+    display: block;
+    overflow-x: auto;
+}

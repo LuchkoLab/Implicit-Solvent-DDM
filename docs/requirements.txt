@@ -1,3 +1,5 @@
 sphinx
-sphinxawesome_theme
+furo
+sphinx-design
+sphinx-copybutton
 sphinx_autodoc_typehints

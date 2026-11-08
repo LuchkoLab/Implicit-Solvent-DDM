@@ -23,7 +23,7 @@ import implicit_solvent_ddm
 # -- Project information -----------------------------------------------------
 
 project = 'Implicit_Solvent_DDM'
-copyright = ("2025, LuckoLab. Project structure based on the "
+copyright = ("2025-2026, LuchkoLab. Project structure based on the "
              "Computational Molecular Science Python Cookiecutter version 1.5")
 author = 'LuckoLab'
 
@@ -44,7 +44,6 @@ release = ''
 # ones.
 #####
 extensions = [
-    'sphinxawesome_theme',
     'sphinx.ext.autosummary',
     'sphinx.ext.autodoc',
     'sphinx.ext.mathjax',
@@ -53,6 +52,8 @@ extensions = [
     'sphinx_autodoc_typehints',
     'sphinx.ext.intersphinx',
     'sphinx.ext.extlinks',
+    'sphinx_design',
+    'sphinx_copybutton',
 ]
 # extensions = [
 #     'autoapi.extension',
@@ -106,7 +107,6 @@ language = 'en'
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 # The name of the Pygments (syntax highlighting) style to use.
-pygments_style = 'default'
 
 
 # -- Options for HTML output -------------------------------------------------
@@ -114,7 +114,26 @@ pygments_style = 'default'
 # The theme to use for HTML and HTML Help pages.  See the documentation for
 # a list of builtin themes.
 #
-html_theme = 'sphinxawesome_theme'
+html_theme = 'furo'
+html_title = 'Implicit Solvent DDM'
+html_theme_options = {
+    # one accent colour for links, buttons and the active sidebar entry
+    'light_css_variables': {
+        'color-brand-primary': '#1d6f8a',
+        'color-brand-content': '#1d6f8a',
+    },
+    'dark_css_variables': {
+        'color-brand-primary': '#5bb4d3',
+        'color-brand-content': '#5bb4d3',
+    },
+    'navigation_with_keys': True,
+    'source_repository': 'https://github.com/LuchkoLab/Implicit-Solvent-DDM/',
+    'source_branch': 'main',
+    'source_directory': 'docs/',
+}
+# copy buttons skip shell prompts and Python REPL prompts
+copybutton_prompt_text = r'\$ |>>> '
+copybutton_prompt_is_regexp = True
 
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
@@ -126,7 +145,7 @@ html_theme = 'sphinxawesome_theme'
 # relative to this directory. They are copied after the builtin static files,
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
-html_css_files = ['formats.css']
+html_css_files = ['custom.css']
 # Custom sidebar templates, must be a dictionary that maps document names
 # to template names.
 #
