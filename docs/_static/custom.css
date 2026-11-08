@@ -1,15 +1,41 @@
-/* Landing-page cards: a little lift on hover, titles in the accent colour. */
-.sd-card {
+/* Front page: section labels styled like the sidebar captions, not full-size headings. */
+p.rubric.landing-section {
+    margin: 2.25rem 0 0.75rem;
+    padding-bottom: 0.35rem;
+    border-bottom: 1px solid var(--color-background-border);
+    color: var(--color-foreground-muted);
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+/* Front page cards: title-only tiles of one height, a little lift on hover. */
+.landing-grid.sd-container-fluid {
+    padding-left: 0;
+    padding-right: 0;
+}
+.landing-grid .sd-card {
     transition: box-shadow 0.15s ease-in-out, transform 0.15s ease-in-out;
 }
-.sd-card:hover {
+.landing-grid .sd-card:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
 }
-.sd-card .sd-card-title {
-    color: var(--color-brand-primary);
-    font-weight: 600;
+.landing-grid .sd-card-body {
+    display: flex;
+    align-items: center;
+    min-height: 5.5rem;   /* fits a three-line title, so every tile is the same height */
+    padding: 0.75rem 1rem;
 }
+.landing-grid .sd-card-title {
+    margin: 0;
+    color: var(--color-brand-primary);
+    font-size: 0.98rem;
+    font-weight: 600;
+    line-height: 1.35;
+}
+
 /* Wide tables (config keys, benchmark) scroll instead of squeezing. */
 table.docutils {
     display: block;
