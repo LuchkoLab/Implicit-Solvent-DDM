@@ -218,6 +218,14 @@ poorly. Turn it on with ``workflow_jobs.adaptive_lambda: True``. In this cycle i
 restraint, charge, LJ and screening bands. The paper runs left it off. Details are in
 ``docs/post_production_als.md``.
 
+**Faster analysis.** By default each leg is analysed with one MBAR over all of its windows, so
+every window's frames are re-scored at every other window: N\ :sup:`2` energy evaluations. With
+``post_analysis_block_size: K`` under ``intermediate_states_arguments``, each leg is solved as a
+chain of K-window MBAR blocks and only the evaluations those blocks need are run. ``2`` is the
+adjacent-window BAR chain (3N - 2 evaluations); a larger K pools more windows per solve. The
+example configs carry this option commented out. See :ref:`block-mbar` for the details,
+including how it works with ALS.
+
 Common errors
 -------------
 
