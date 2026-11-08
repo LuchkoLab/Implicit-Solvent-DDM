@@ -68,7 +68,9 @@ GPU packing benchmark (`scripts/gpu_packing_benchmark.py`, MPS on, one MCL-1 lig
 | 12 | 290 | 3,480 | 2.01x | 4,823 |
 | 16 | 218 | 3,489 | 2.01x | 6,418 |
 
-Four windows per GPU already reach about 95% of the plateau, which is why the production runs use `windows_per_gpu: 4`. Without MPS the windows time-slice and the total stays around 1,400-1,750 ns/day however many you pack.
+Four windows per GPU already reach about 95% of the plateau, which is why the production runs use `windows_per_gpu: 4`.
+
+**Start the CUDA MPS daemon in your job script before the workflow, or packing gives no speed-up.** Without MPS the windows take turns on the GPU and the total stays around 1,400-1,750 ns/day however many you pack. The lines to add (a check that `pmemd.cuda` and `nvidia-cuda-mps-control` are on `PATH`, then `nvidia-cuda-mps-control -d`) and a full Slurm script are in [docs/gpu_packing.rst](docs/gpu_packing.rst).
 
 ## Key features
 
