@@ -18,6 +18,16 @@ Getting Started
    DDM_Workflow
    config
 
+Running
+=======
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Running
+
+   in_solvent_protocol
+   gpu_packing
+
 Examples
 ========
 
@@ -37,6 +47,7 @@ Software Documentation
    :caption: Software Documentation
 
    api
+   testing
    Updates
    about
 
