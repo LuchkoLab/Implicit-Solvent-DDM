@@ -16,26 +16,12 @@ Every key within the YAML config file has been covered in previous section :ref:
 
 Basic MD mdin template (``md_template_mdin``) 
 ---------------------------------------------
-Only requirment is to set ``DISANG=$restraint`` the restraint file will be loaded in during the workflow.
+The template must contain ``DISANG=$restraint``; the workflow writes the restraint file and fills
+in the path. This is the template the example uses
+(``script_examples/endstate_templates_required/basic_md.template``):
 
-.. code-block:: bash 
-
- Relaxation 
- &cntrl
-   irest=0, ntx=1, 
-   nstlim=25000, dt=0.004,
-   ntt=3, gamma_ln=1.0,
-   temp0=300, ig=-1,
-   ntc=2, ntf=2, nscm=1000,
-   ntb=0, igb=2,
-   cut=999.0, rgbmax=999.0,
-   ntpr=1, ntwx=1,
-   nmropt=1, ioutfm=1,
-   saltcon=0.3, gbsa = 0
- /
- &wt TYPE='END'
- /
- DISANG=$restraint  
+.. literalinclude:: ../../script_examples/endstate_templates_required/basic_md.template
+   :language: text
 
 Running entire workflow
 -----------------------
