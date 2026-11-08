@@ -99,9 +99,8 @@ Toil's ``single_machine`` batch system. It is ignored (reset to ``1``) for other
   the core count comes from ``SLURM_CPUS_PER_TASK``, else the process CPU affinity.
 - **REMD** requests ``remd_accelerators * windows_per_gpu`` slots, so it still claims whole devices.
 
-Benchmark (MCL-1 ligand-17 window, 2,471 atoms, RTX 5000 Ada, ``scripts/gpu_packing_benchmark.py``):
-the GPU total is 1,735 / 2,726 / 3,327 / 3,480 ns/day at 1 / 2 / 4 / 8 copies under MPS, with identical
-energies. Without MPS it stays flat at ~1,400-1,750 ns/day. ``4`` reaches ~95% of the plateau.
+Four windows per GPU nearly double the throughput of one (1,735 to 3,327 ns/day on an MCL-1
+window). The Slurm script, the MPS setup and the full benchmark table are in :doc:`gpu_packing`.
 
 Other hardware keys
 -------------------
