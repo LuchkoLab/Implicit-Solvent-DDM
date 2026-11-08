@@ -53,3 +53,10 @@ workflow:
     restraint_type: 2              # 1: CoM-CoM, 2: CoM-heavy atom, 3: heavy atom-heavy atom
     exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]   # 2**p kcal/mol/A^2: pairwise network and Boresch distance
     exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]        # 2**p kcal/mol/rad^2: Boresch angles and dihedrals
+
+    # Block-MBAR (optional). Leave it unset for the full N x N MBAR over every window of a leg.
+    # A number K solves each leg as a chain of K-window MBAR blocks and runs only the energy
+    # evaluations those blocks need: K = 2 is the adjacent-window BAR chain (3N - 2 evaluations
+    # instead of N^2), and a larger K pools more windows per solve. See "Block-chained
+    # post-analysis" in docs/config.rst.
+    # post_analysis_block_size: 3

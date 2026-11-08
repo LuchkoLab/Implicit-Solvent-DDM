@@ -45,3 +45,10 @@ workflow:
 
     # Optional windows, off in this example.
     # charges_lambda_window: [0.5, 1.0]          # ligand charge fractions; 0 and 1 are always added
+
+    # Block-MBAR (optional). Leave it unset for the full N x N MBAR over every window of a leg.
+    # A number K solves each leg as a chain of K-window MBAR blocks and runs only the energy
+    # evaluations those blocks need: K = 2 is the adjacent-window BAR chain (3N - 2 evaluations
+    # instead of N^2), and a larger K pools more windows per solve. See "Block-chained
+    # post-analysis" in docs/config.rst.
+    # post_analysis_block_size: 3
