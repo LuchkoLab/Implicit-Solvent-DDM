@@ -3,6 +3,10 @@
 Implementation Details
 ==============================================
 
+This page describes the gas-phase cycle and its conformationally restrained alchemical pathway.
+The in-solvent cycle used in the paper has its own page, :doc:`in_solvent_protocol`.
+
+.. _alchemical-pathway:
 
 Conformationally restrained Alchemical-Pathway
 ==============================================
