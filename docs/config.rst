@@ -572,6 +572,8 @@ neither list is given (RMSD mode only), the distance ladder is the orientational
 or null, default ``null``) sets the distance force constant written at the anchor and used in the
 analytic standard-state correction; ``null`` takes the largest value of the distance ladder.
 
+.. _block-mbar:
+
 Block-chained post-analysis
 ---------------------------
 
