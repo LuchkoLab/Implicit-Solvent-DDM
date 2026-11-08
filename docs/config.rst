@@ -91,9 +91,10 @@ Packing GPU windows
 ``windows_per_gpu`` (default ``1``) sets how many ``pmemd.cuda`` windows share each allocated GPU under
 Toil's ``single_machine`` batch system. It is ignored (reset to ``1``) for other batch systems.
 
-- **CUDA MPS is required.** Start the daemon on the node before the workflow
+- **CUDA MPS is required.** Start the daemon in the job before the workflow
   (``nvidia-cuda-mps-control -d``). Without it the windows time-slice and gain nothing; the leader
-  prints a warning if the daemon is not found.
+  prints a warning if the daemon is not found. The lines to put in the Slurm script are in
+  :ref:`gpu-mps`.
 - **One core per slot.** Each packed window holds about one CPU core, so ``maxCores`` is lowered by
   ``n_gpus * windows_per_gpu`` to keep CPU post-analysis off those cores. With ``--maxCores`` unset,
   the core count comes from ``SLURM_CPUS_PER_TASK``, else the process CPU affinity.
