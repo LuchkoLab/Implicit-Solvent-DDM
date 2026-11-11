@@ -43,7 +43,6 @@
       ~IntermidateRunner.has_post_analysis_data
       ~IntermidateRunner.loadJob
       ~IntermidateRunner.log
-      ~IntermidateRunner.new_runner
       ~IntermidateRunner.only_post_analysis
       ~IntermidateRunner.preemptable
       ~IntermidateRunner.prepareForPromiseRegistration

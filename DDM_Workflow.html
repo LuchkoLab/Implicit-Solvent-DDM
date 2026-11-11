@@ -1,81 +1,219 @@
-<!DOCTYPE html>
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="author" title="About these documents" href="about.html"><link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Running the in-solvent (paper) protocol" href="in_solvent_protocol.html"><link rel="prev" title="Implementation Details" href="Implementation.html">
 
-<html :class="{'dark': darkMode === 'dark' || (darkMode === 'system' &amp;&amp; window.matchMedia('(prefers-color-scheme: dark)').matches)}" class="scroll-smooth" data-content_root="./" lang="en" x-data="{ darkMode: localStorage.getItem('darkMode') || localStorage.setItem('darkMode', 'system'), activeSection: '' }" x-init="$watch('darkMode', val =&gt; localStorage.setItem('darkMode', val))">
-<head>
-<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<meta charset="utf-8"/>
-<meta content="white" media="(prefers-color-scheme: light)" name="theme-color"/>
-<meta content="black" media="(prefers-color-scheme: dark)" name="theme-color"/>
-<meta content="width=device-width, initial-scale=1" name="viewport"/>
-<title>DDM Workflow Structure | Implicit_Solvent_DDM  documentation</title>
-<meta content="DDM Workflow Structure | Implicit_Solvent_DDM  documentation" property="og:title"/>
-<meta content="DDM Workflow Structure | Implicit_Solvent_DDM  documentation" name="twitter:title"/>
-<link href="_static/pygments.css?v=b86133f3" rel="stylesheet" type="text/css"/>
-<link href="_static/theme.css?v=42baaae4" rel="stylesheet" type="text/css"/>
-<link href="_static/formats.css?v=5908a523" rel="stylesheet" type="text/css"/>
-<link href="search.html" rel="search" title="Search"/>
-<link href="genindex.html" rel="index" title="Index"/>
-<link href="config.html" rel="next" title="YAML Config Syntax"/>
-<link href="Implementation.html" rel="prev" title="Implementation Details"/>
-<script>
-    <!-- Prevent Flash of wrong theme -->
-      const userPreference = localStorage.getItem('darkMode');
-      let mode;
-      if (userPreference === 'dark' || window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        mode = 'dark';
-        document.documentElement.classList.add('dark');
-      } else {
-        mode = 'light';
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
+        <title>DDM Workflow Structure - Implicit Solvent DDM</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=8d3cf25f" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  --color-brand-primary: #1d6f8a;
+  --color-brand-content: #1d6f8a;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
       }
-      if (!userPreference) {localStorage.setItem('darkMode', mode)}
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
     </script>
-</head>
-<body :class="{ 'overflow-hidden': showSidebar }" class="min-h-screen font-sans antialiased bg-background text-foreground" x-data="{ showSidebar: false, showScrollTop: false }">
-<div @click.self="showSidebar = false" class="fixed inset-0 z-50 overflow-hidden bg-background/80 backdrop-blur-sm md:hidden" x-cloak="" x-show="showSidebar"></div><div class="relative flex flex-col min-h-screen" id="page"><a class="absolute top-0 left-0 z-[100] block bg-background p-4 text-xl transition -translate-x-full opacity-0 focus:translate-x-0 focus:opacity-100" href="#content">
-      Skip to content
-    </a><header class="sticky top-0 z-40 w-full border-b shadow-sm border-border supports-backdrop-blur:bg-background/60 bg-background/95 backdrop-blur"><div class="container flex items-center h-14">
-<div class="hidden mr-4 md:flex">
-<a class="flex items-center mr-6" href="index.html"><span class="hidden font-bold sm:inline-block text-clip whitespace-nowrap">Implicit_Solvent_DDM  documentation</span>
-</a></div><button @click="showSidebar = true" class="inline-flex items-center justify-center h-10 px-0 py-2 mr-2 text-base font-medium transition-colors rounded-md hover:text-accent-foreground hover:bg-transparent md:hidden" type="button">
-<svg aria-hidden="true" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M152.587 825.087q-19.152 0-32.326-13.174t-13.174-32.326q0-19.152 13.174-32.326t32.326-13.174h440q19.152 0 32.326 13.174t13.174 32.326q0 19.152-13.174 32.326t-32.326 13.174h-440Zm0-203.587q-19.152 0-32.326-13.174T107.087 576q0-19.152 13.174-32.326t32.326-13.174h320q19.152 0 32.326 13.174T518.087 576q0 19.152-13.174 32.326T472.587 621.5h-320Zm0-203.587q-19.152 0-32.326-13.174t-13.174-32.326q0-19.152 13.174-32.326t32.326-13.174h440q19.152 0 32.326 13.174t13.174 32.326q0 19.152-13.174 32.326t-32.326 13.174h-440ZM708.913 576l112.174 112.174q12.674 12.674 12.674 31.826t-12.674 31.826Q808.413 764.5 789.261 764.5t-31.826-12.674l-144-144Q600 594.391 600 576t13.435-31.826l144-144q12.674-12.674 31.826-12.674t31.826 12.674q12.674 12.674 12.674 31.826t-12.674 31.826L708.913 576Z"></path>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
 </svg>
-<span class="sr-only">Toggle navigation menu</span>
-</button>
-<div class="flex items-center justify-between flex-1 space-x-2 sm:space-x-4 md:justify-end">
-<div class="flex-1 w-full md:w-auto md:flex-none"><form @keydown.k.window.meta="$refs.search.focus()" action="search.html" class="relative flex items-center group" id="searchbox" method="get">
-<input aria-label="Search the docs" class="inline-flex items-center font-medium transition-colors bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background border border-input hover:bg-accent focus:bg-accent hover:text-accent-foreground focus:text-accent-foreground hover:placeholder-accent-foreground py-2 px-4 relative h-9 w-full justify-start rounded-[0.5rem] text-sm text-muted-foreground sm:pr-12 md:w-40 lg:w-64" id="search-input" name="q" placeholder="Search ..." type="search" x-ref="search"/>
-<kbd class="pointer-events-none absolute right-1.5 top-2 hidden h-5 select-none text-muted-foreground items-center gap-1 rounded border border-border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex group-hover:bg-accent group-hover:text-accent-foreground">
-<span class="text-xs">⌘</span>
-    K
-  </kbd>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="index.html"><div class="brand">Implicit Solvent DDM</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
+  
+  <span class="sidebar-brand-text">Implicit Solvent DDM</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
 </form>
-</div>
-<nav class="flex items-center space-x-1">
-<button @click="darkMode = darkMode === 'light' ? 'dark' : 'light'" aria-label="Color theme switcher" class="relative inline-flex items-center justify-center px-0 text-sm font-medium transition-colors rounded-md hover:bg-accent hover:text-accent-foreground h-9 w-9" type="button">
-<svg class="absolute transition-all scale-100 rotate-0 dark:-rotate-90 dark:scale-0" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 685q45.456 0 77.228-31.772Q589 621.456 589 576q0-45.456-31.772-77.228Q525.456 467 480 467q-45.456 0-77.228 31.772Q371 530.544 371 576q0 45.456 31.772 77.228Q434.544 685 480 685Zm0 91q-83 0-141.5-58.5T280 576q0-83 58.5-141.5T480 376q83 0 141.5 58.5T680 576q0 83-58.5 141.5T480 776ZM80 621.5q-19.152 0-32.326-13.174T34.5 576q0-19.152 13.174-32.326T80 530.5h80q19.152 0 32.326 13.174T205.5 576q0 19.152-13.174 32.326T160 621.5H80Zm720 0q-19.152 0-32.326-13.174T754.5 576q0-19.152 13.174-32.326T800 530.5h80q19.152 0 32.326 13.174T925.5 576q0 19.152-13.174 32.326T880 621.5h-80Zm-320-320q-19.152 0-32.326-13.174T434.5 256v-80q0-19.152 13.174-32.326T480 130.5q19.152 0 32.326 13.174T525.5 176v80q0 19.152-13.174 32.326T480 301.5Zm0 720q-19.152 0-32.326-13.17Q434.5 995.152 434.5 976v-80q0-19.152 13.174-32.326T480 850.5q19.152 0 32.326 13.174T525.5 896v80q0 19.152-13.174 32.33-13.174 13.17-32.326 13.17ZM222.174 382.065l-43-42Q165.5 327.391 166 308.239t13.174-33.065q13.435-13.674 32.587-13.674t32.065 13.674l42.239 43q12.674 13.435 12.555 31.706-.12 18.272-12.555 31.946-12.674 13.674-31.445 13.413-18.772-.261-32.446-13.174Zm494 494.761-42.239-43q-12.674-13.435-12.674-32.087t12.674-31.565Q686.609 756.5 705.38 757q18.772.5 32.446 13.174l43 41.761Q794.5 824.609 794 843.761t-13.174 33.065Q767.391 890.5 748.239 890.5t-32.065-13.674Zm-42-494.761Q660.5 369.391 661 350.62q.5-18.772 13.174-32.446l41.761-43Q728.609 261.5 747.761 262t33.065 13.174q13.674 13.435 13.674 32.587t-13.674 32.065l-43 42.239q-13.435 12.674-31.706 12.555-18.272-.12-31.946-12.555Zm-495 494.761Q165.5 863.391 165.5 844.239t13.674-32.065l43-42.239q13.435-12.674 32.087-12.674t31.565 12.674Q299.5 782.609 299 801.38q-.5 18.772-13.174 32.446l-41.761 43Q231.391 890.5 212.239 890t-33.065-13.174ZM480 576Z"></path>
-</svg>
-<svg class="absolute transition-all scale-0 rotate-90 dark:rotate-0 dark:scale-100" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 936q-151 0-255.5-104.5T120 576q0-138 90-239.5T440 218q25-3 39 18t-1 44q-17 26-25.5 55t-8.5 61q0 90 63 153t153 63q31 0 61.5-9t54.5-25q21-14 43-1.5t19 39.5q-14 138-117.5 229T480 936Zm0-80q88 0 158-48.5T740 681q-20 5-40 8t-40 3q-123 0-209.5-86.5T364 396q0-20 3-40t8-40q-78 32-126.5 102T200 576q0 116 82 198t198 82Zm-10-270Z"></path>
-</svg>
-</button>
-</nav>
-</div>
-</div>
-</header>
-<div class="flex-1"><div class="container flex-1 items-start md:grid md:grid-cols-[220px_minmax(0,1fr)] md:gap-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-10"><aside :aria-hidden="!showSidebar" :class="{ 'translate-x-0': showSidebar }" class="fixed inset-y-0 left-0 md:top-14 z-50 md:z-30 bg-background md:bg-transparent transition-all duration-100 -translate-x-full md:translate-x-0 ml-0 p-6 md:p-0 md:-ml-2 md:h-[calc(100vh-3.5rem)] w-5/6 md:w-full shrink-0 overflow-y-auto border-r border-border md:sticky" id="left-sidebar">
-<a class="!justify-start text-sm md:!hidden bg-background" href="index.html"><span class="font-bold text-clip whitespace-nowrap">Implicit_Solvent_DDM  documentation</span>
-</a>
-<div class="relative overflow-hidden md:overflow-auto my-4 md:my-0 h-[calc(100vh-8rem)] md:h-auto">
-<div class="overflow-y-auto h-full w-full relative pr-6"><nav class="table w-full min-w-full my-6 lg:my-8">
-<p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
-<ul class="current">
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Get started</span></p>
+<ul>
 <li class="toctree-l1"><a class="reference internal" href="Installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config.html">YAML Config Syntax</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Method</span></p>
+<ul class="current">
 <li class="toctree-l1"><a class="reference internal" href="Implementation.html">Implementation Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="Implementation.html#conformationally-restrained-alchemical-pathway">Conformationally restrained Alchemical-Pathway</a></li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">DDM Workflow Structure</a></li>
-<li class="toctree-l1"><a class="reference internal" href="config.html">YAML Config Syntax</a></li>
+<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">DDM Workflow Structure</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Run</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="in_solvent_protocol.html">Running the in-solvent (paper) protocol</a></li>
+<li class="toctree-l1"><a class="reference internal" href="gpu_packing.html">Running on GPUs with window packing</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul>
@@ -83,12 +221,13 @@
 <li class="toctree-l1"><a class="reference internal" href="examples/remd_example.html">Running REMD at the endstate simulation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="examples/user_defined_example.html">User Provided Endstate Simulation</a></li>
 </ul>
-<p class="caption" role="heading"><span class="caption-text">Software Documentation</span></p>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
 <ul>
-<li class="toctree-l1" x-data="{ expanded: $el.classList.contains('current') ? true : false }"><a :class="{ 'expanded' : expanded }" @click="expanded = !expanded" class="reference internal expandable" href="api.html">API Documentation<button @click.prevent.stop="expanded = !expanded" type="button"><span class="sr-only"></span><svg fill="currentColor" height="18px" stroke="none" viewbox="0 0 24 24" width="18px" xmlns="http://www.w3.org/2000/svg"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path></svg></button></a><ul x-show="expanded">
+<li class="toctree-l1 has-children"><a class="reference internal" href="api.html">API Documentation</a><input aria-label="Toggle navigation of API Documentation" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.implicit_ddm_workflow.html">implicit_solvent_ddm.implicit_ddm_workflow</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.workflow_phases.html">implicit_solvent_ddm.workflow_phases</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.setup_simulations.html">implicit_solvent_ddm.setup_simulations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.als_refine.html">implicit_solvent_ddm.als_refine</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.runner.IntermidateRunner.html">implicit_solvent_ddm.runner.IntermidateRunner</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.run_endstate.html">implicit_solvent_ddm.run_endstate</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.config.html">implicit_solvent_ddm.config</a></li>
@@ -98,257 +237,365 @@
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdin.html">implicit_solvent_ddm.mdin</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdout.html">implicit_solvent_ddm.mdout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pandasmbar.html">implicit_solvent_ddm.pandasmbar</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.block_mbar.html">implicit_solvent_ddm.block_mbar</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.postTreatment.html">implicit_solvent_ddm.postTreatment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraint_helper.html">implicit_solvent_ddm.restraint_helper</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraints.html">implicit_solvent_ddm.restraints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pose_clusters.html">implicit_solvent_ddm.pose_clusters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.nfe_energy.html">implicit_solvent_ddm.nfe_energy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.simulations.html">implicit_solvent_ddm.simulations</a></li>
 </ul>
 </li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Tests and continuous integration</a></li>
 <li class="toctree-l1"><a class="reference internal" href="Updates.html">Updates and Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Updates.html#version-2-0-0-in-solvent-protocol-and-post-production-als">Version 2.0.0 - In-Solvent Protocol and Post-Production ALS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="Updates.html#version-1-1-1-gpu-acceleration-support">Version 1.1.1 - GPU Acceleration Support</a></li>
 <li class="toctree-l1"><a class="reference internal" href="Updates.html#version-1-0-0-initial-stable-release">Version 1.0.0 - Initial Stable Release</a></li>
 <li class="toctree-l1"><a class="reference internal" href="about.html">About this package</a></li>
 </ul>
-</nav>
+
 </div>
 </div>
-<button @click="showSidebar = false" class="absolute md:hidden right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100" type="button">
-<svg class="h-4 w-4" fill="currentColor" height="24" stroke="none" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 632 284 828q-11 11-28 11t-28-11q-11-11-11-28t11-28l196-196-196-196q-11-11-11-28t11-28q11-11 28-11t28 11l196 196 196-196q11-11 28-11t28 11q11 11 11 28t-11 28L536 576l196 196q11 11 11 28t-11 28q-11 11-28 11t-28-11L480 632Z"></path>
-</svg>
-</button>
-</aside>
-<main class="relative py-6 lg:gap-10 lg:py-8 xl:grid xl:grid-cols-[1fr_300px]">
-<div class="w-full min-w-0 mx-auto">
-<nav aria-label="breadcrumbs" class="flex items-center mb-4 space-x-1 text-sm text-muted-foreground">
-<a class="overflow-hidden text-ellipsis whitespace-nowrap hover:text-foreground" href="index.html">
-<span class="hidden md:inline">Implicit_Solvent_DDM  documentation</span>
-<svg aria-label="Home" class="md:hidden" fill="currentColor" height="18" stroke="none" viewbox="0 96 960 960" width="18" xmlns="http://www.w3.org/2000/svg">
-<path d="M240 856h120V616h240v240h120V496L480 316 240 496v360Zm-80 80V456l320-240 320 240v480H520V696h-80v240H160Zm320-350Z"></path>
-</svg>
-</a>
-<div class="mr-1">/</div><span aria-current="page" class="font-medium text-foreground overflow-hidden text-ellipsis whitespace-nowrap">DDM Workflow Structure</span>
-</nav>
-<div id="content" role="main">
-<section id="ddm-workflow-structure">
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/blob/main/docs/DDM_Workflow.rst?plain=true" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div><div class="edit-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/edit/main/docs/DDM_Workflow.rst" rel="edit" title="Edit this page">
+    <svg><use href="#svg-pencil"></use></svg>
+    <span class="visually-hidden">Edit this page</span>
+  </a>
+</div>
+
+<div class="edit-this-page github-repo-link">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/" title="GitHub repository">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+    </svg>
+    <span class="visually-hidden">GitHub repository</span>
+  </a>
+</div><div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="ddm-workflow-structure">
 <span id="ddm-workflow-label"></span><h1>DDM Workflow Structure<a class="headerlink" href="#ddm-workflow-structure" title="Link to this heading">¶</a></h1>
-<p>This document shows the structural flow of the Double Decoupling Method (DDM) workflow as implemented in <code class="docutils literal notranslate"><span class="pre">implicit_ddm_workflow.py</span></code>.</p>
+<p>This page shows the order in which the workflow runs its jobs. The entry point is
+<code class="docutils literal notranslate"><span class="pre">ddm_workflow()</span></code> in <code class="docutils literal notranslate"><span class="pre">implicit_ddm_workflow.py</span></code>; the phases themselves live in
+<code class="docutils literal notranslate"><span class="pre">workflow_phases.py</span></code>. Every step is a Toil job in one job store, so a stopped run can be continued
+with <code class="docutils literal notranslate"><span class="pre">--restart</span></code>.</p>
 <section id="overview">
-<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#overview'">¶</a></h2>
-<p>The DDM workflow is organized into seven distinct phases, each handling a specific aspect of the binding free energy calculation. The workflow automates the entire process from initial setup through final analysis and result consolidation.</p>
-</section>
-<section id="simplified-workflow-flow">
-<h2>Simplified Workflow Flow<a class="headerlink" href="#simplified-workflow-flow" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#simplified-workflow-flow'">¶</a></h2>
-<p>The following diagram shows the high-level flow of the DDM workflow:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span><code><span id="line-1">                DDM WORKFLOW START
-</span><span id="line-2">                       │
-</span><span id="line-3">                       ▼
-</span><span id="line-4">┌─────────────────────────────────────┐
-</span><span id="line-5">│        PHASE 1: SETUP               │
-</span><span id="line-6">│   setup_workflow_components()       │
-</span><span id="line-7">│   • Create simulation components    │
-</span><span id="line-8">│   • Setup restraints &amp; templates    │
-</span><span id="line-9">└─────────────────────────────────────┘
-</span><span id="line-10">                       │
-</span><span id="line-11">                       ▼
-</span><span id="line-12">┌─────────────────────────────────────┐
-</span><span id="line-13">│     PHASE 2: ENDSTATE SIMS          │
-</span><span id="line-14">│   run_endstate_simulations()        │
-</span><span id="line-15">│   • Complex MD simulation           │
-</span><span id="line-16">│   • Receptor MD simulation          │
-</span><span id="line-17">│   • Ligand MD simulation            │
-</span><span id="line-18">└─────────────────────────────────────┘
-</span><span id="line-19">                       │
-</span><span id="line-20">                       ▼
-</span><span id="line-21">┌─────────────────────────────────────┐
-</span><span id="line-22">│   PHASE 3: DECOMPOSITION            │
-</span><span id="line-23">│   decompose_system_and_generate_    │
-</span><span id="line-24">│   restraints()                      │
-</span><span id="line-25">│   • Split complex → receptor+ligand │
-</span><span id="line-26">│   • Generate Boresch restraints     │
-</span><span id="line-27">└─────────────────────────────────────┘
-</span><span id="line-28">                       │
-</span><span id="line-29">                       ▼
-</span><span id="line-30">┌─────────────────────────────────────┐
-</span><span id="line-31">│  PHASE 4: INTERMEDIATE SETUP        │
-</span><span id="line-32">│   setup_intermediate_simulations()  │
-</span><span id="line-33">│   • Setup complex intermediates     │
-</span><span id="line-34">│   • Setup receptor intermediates    │
-</span><span id="line-35">│   • Setup ligand intermediates      │
-</span><span id="line-36">│   • Setup flat-bottom simulations   │
-</span><span id="line-37">└─────────────────────────────────────┘
-</span><span id="line-38">                       │
-</span><span id="line-39">                       ▼
-</span><span id="line-40">┌─────────────────────────────────────┐
-</span><span id="line-41">│  PHASE 5: RUN INTERMEDIATES         │
-</span><span id="line-42">│   run_intermediate_simulations()    │
-</span><span id="line-43">│   • Execute complex MD simulations  │
-</span><span id="line-44">│   • Execute receptor MD simulations │
-</span><span id="line-45">│   • Execute ligand MD simulations   │
-</span><span id="line-46">│   • Execute flat-bottom simulations │
-</span><span id="line-47">└─────────────────────────────────────┘
-</span><span id="line-48">                       │
-</span><span id="line-49">                       ▼
-</span><span id="line-50">┌─────────────────────────────────────┐
-</span><span id="line-51">│   PHASE 6: ENERGY ANALYSIS          │
-</span><span id="line-52">│   run_post_analysis_intermediate_   │
-</span><span id="line-53">│   simulations()                     │
-</span><span id="line-54">│   • Post-process complex energies   │
-</span><span id="line-55">│   • Post-process receptor energies  │
-</span><span id="line-56">│   • Post-process ligand energies    │
-</span><span id="line-57">│   • Post-process flat-bottom energies│
-</span><span id="line-58">└─────────────────────────────────────┘
-</span><span id="line-59">                       │
-</span><span id="line-60">                       ▼
-</span><span id="line-61">┌─────────────────────────────────────┐
-</span><span id="line-62">│  PHASE 7: FREE ENERGY &amp; CONSOLIDATE │
-</span><span id="line-63">│   compute_free_energy_and_          │
-</span><span id="line-64">│   consolidate()                     │
-</span><span id="line-65">│   • Run MBAR analysis               │
-</span><span id="line-66">│   • Run exponential averaging       │
-</span><span id="line-67">│   • Consolidate results             │
-</span><span id="line-68">└─────────────────────────────────────┘
-</span><span id="line-69">                       │
-</span><span id="line-70">                       ▼
-</span><span id="line-71">                🎉 WORKFLOW COMPLETE
-</span></code></pre></div>
+<h2>Overview<a class="headerlink" href="#overview" title="Link to this heading">¶</a></h2>
+<p>A run goes through seven phases. Since 2.0, Phases 5 and 6 are one step: each window’s energies
+are scored as soon as that window’s MD finishes, instead of after all MD is done.</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>                     run_implicit_ddm.py
+                             │
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASE 1: SETUP                               │
+│  setup_workflow_components()                  │
+│  • MD input files for the intermediate states │
+│  • empty restraint templates, flat-bottom     │
+└───────────────────────────────────────────────┘
+                             │
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASE 2: END STATES                          │
+│  run_endstate_simulations()                   │
+│  • REMD, basic MD, or your own trajectories   │
+│    for the complex, receptor and ligand       │
+│  • optional restraint reference frame         │
+└───────────────────────────────────────────────┘
+                             │
+                             │  adaptive_lambda: True → Phases 3-7 run as ALS rounds (below)
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASE 3: DECOMPOSITION AND RESTRAINTS        │
+│  decompose_system_and_generate_restraints()   │
+│  • split the complex into receptor + ligand   │
+│  • Boresch and conformational restraints      │
+└───────────────────────────────────────────────┘
+                             │
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASE 4: INTERMEDIATE STATES                 │
+│  setup_intermediate_simulations()             │
+│  • every window of the complex, receptor and  │
+│    ligand legs, plus the flat-bottom pair     │
+└───────────────────────────────────────────────┘
+                             │
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASES 5 + 6: MD AND SCORING                 │
+│  run_intermediate_and_post()                  │
+│  • all MD windows are queued first            │
+│  • each window is re-scored as soon as its    │
+│    own MD finishes                            │
+└───────────────────────────────────────────────┘
+                             │
+                             │  md_only: True → stop here
+                             ▼
+┌───────────────────────────────────────────────┐
+│  AGGREGATION                                  │
+│  _aggregate_post_output()                     │
+│  • collect the scored rows of each leg        │
+└───────────────────────────────────────────────┘
+                             │
+                             ▼
+┌───────────────────────────────────────────────┐
+│  PHASE 7: FREE ENERGY                         │
+│  compute_free_energy_and_consolidate()        │
+│  • MBAR (or block-MBAR) for each leg          │
+│  • flat-bottom term by exponential averaging  │
+│  • binding free energy written to .cache/     │
+└───────────────────────────────────────────────┘
+</pre></div>
 </div>
 </section>
-<section id="workflow-phases">
-<h2>Workflow Phases<a class="headerlink" href="#workflow-phases" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#workflow-phases'">¶</a></h2>
+<section id="the-phases">
+<h2>The phases<a class="headerlink" href="#the-phases" title="Link to this heading">¶</a></h2>
 <dl class="simple">
-<dt><strong>Phase 1: Setup</strong></dt><dd><p>Initial setup of workflow components, including creation of simulation components and setup of restraints and templates.</p>
+<dt><strong>Phase 1: Setup.</strong></dt><dd><p>Writes the MD input files for the intermediate states from your mdin template, creates empty
+restraint templates, and prepares the flat-bottom restraint.</p>
 </dd>
-<dt><strong>Phase 2: Endstate Simulations</strong></dt><dd><p>Execution of the three fundamental simulations:</p>
-<ul class="simple">
-<li><p>Complex MD simulation (bound state)</p></li>
-<li><p>Receptor MD simulation (unbound receptor)</p></li>
-<li><p>Ligand MD simulation (unbound ligand)</p></li>
-</ul>
+<dt><strong>Phase 2: End states.</strong></dt><dd><p>Samples the bound complex, the free receptor and the free ligand with the method set by
+<code class="docutils literal notranslate"><span class="pre">endstate_method</span></code>: temperature REMD (<code class="docutils literal notranslate"><span class="pre">remd</span></code>), one MD run per state (<code class="docutils literal notranslate"><span class="pre">basic_md</span></code>), or
+trajectories you supply (<code class="docutils literal notranslate"><span class="pre">0</span></code>). A finished run’s end-state trajectories can also be reused, so
+a re-run does not repeat REMD. If a restraint reference is configured, the frame the restraints
+are built from is picked here (last frame, pose medoid, or a coordinate file you give).</p>
 </dd>
-<dt><strong>Phase 3: Decomposition</strong></dt><dd><p>System decomposition and restraint generation:</p>
-<ul class="simple">
-<li><p>Split the complex into receptor and ligand components</p></li>
-<li><p>Generate Boresch orientational restraints</p></li>
-</ul>
+<dt><strong>Phase 3: Decomposition and restraints.</strong></dt><dd><p>Splits the complex into receptor and ligand, chooses the Boresch anchor atoms (pocket backbone
+by default), and builds the conformational restraint network and the restraint files the
+windows use.</p>
 </dd>
-<dt><strong>Phase 4: Intermediate Setup</strong></dt><dd><p>Preparation of intermediate simulation states:</p>
-<ul class="simple">
-<li><p>Setup complex intermediate states</p></li>
-<li><p>Setup receptor intermediate states</p></li>
-<li><p>Setup ligand intermediate states</p></li>
-<li><p>Setup flat-bottom restraint simulations</p></li>
-</ul>
+<dt><strong>Phase 4: Intermediate states.</strong></dt><dd><p>Builds every window of the three legs. Which windows exist depends on the cycle: the gas-phase
+cycle has the GB-dielectric band, the in-solvent cycle (<code class="docutils literal notranslate"><span class="pre">decouple_in_solvent</span></code>) has the
+screening and LJ steps instead (see <a class="reference internal" href="in_solvent_protocol.html"><span class="doc">Running the in-solvent (paper) protocol</span></a>). Both have the restraint ladder
+and the ligand charge windows, and by default a 10 ns floor window on the receptor leg.</p>
 </dd>
-<dt><strong>Phase 5: Run Intermediates</strong></dt><dd><p>Execution of all intermediate simulations to sample the thermodynamic pathway.</p>
+<dt><strong>Phases 5 and 6: MD and scoring.</strong></dt><dd><p>All MD windows are queued first, in the order complex, receptor, ligand, flat-bottom. Each
+window’s trajectory is then re-scored at every state of its leg, and that scoring job starts
+as soon as the window’s own MD ends. CPU scoring therefore fills the cores that sit idle while
+the GPU windows run. With <code class="docutils literal notranslate"><span class="pre">post_analysis_block_size</span></code> set, only the energies that block-MBAR
+needs are computed. Windows and energies already on disk are reused. GPU window packing
+(<a class="reference internal" href="gpu_packing.html"><span class="doc">Running on GPUs with window packing</span></a>) applies to the MD in this step. With <code class="docutils literal notranslate"><span class="pre">md_only:</span> <span class="pre">True</span></code> the run stops after
+the MD; run it again without <code class="docutils literal notranslate"><span class="pre">md_only</span></code> and the same <code class="docutils literal notranslate"><span class="pre">output_directory_name</span></code> to score it.</p>
 </dd>
-<dt><strong>Phase 6: Energy Analysis</strong></dt><dd><p>Post-processing of simulation data:</p>
-<ul class="simple">
-<li><p>Extract and analyze energies from all simulations</p></li>
-<li><p>Prepare data for free energy calculations</p></li>
-</ul>
+<dt><strong>Aggregation.</strong></dt><dd><p>Collects the scored rows of each leg into the tables Phase 7 reads.</p>
 </dd>
-<dt><strong>Phase 7: Free Energy &amp; Consolidate</strong></dt><dd><p>Final analysis and result consolidation:</p>
-<ul class="simple">
-<li><p>MBAR analysis for free energy calculations</p></li>
-<li><p>Exponential averaging calculations</p></li>
-<li><p>Consolidation of all results</p></li>
-</ul>
+<dt><strong>Phase 7: Free energy.</strong></dt><dd><p>Solves each leg with MBAR, either one solve over all windows or a chain of blocks (block-MBAR,
+see <a class="reference internal" href="config.html#block-mbar"><span class="std std-ref">Block-chained post-analysis</span></a>). The flat-bottom term comes from exponential averaging; it is written out
+but not added to the binding free energy. The results go to <code class="docutils literal notranslate"><span class="pre">.cache/&lt;complex&gt;/</span></code>:
+<code class="docutils literal notranslate"><span class="pre">deltaG_&lt;complex&gt;.h5</span></code> holds the binding free energy and its terms, next to the per-leg free
+energy (<code class="docutils literal notranslate"><span class="pre">*_fe.h5</span></code>), error (<code class="docutils literal notranslate"><span class="pre">*_error.h5</span></code>) and overlap (<code class="docutils literal notranslate"><span class="pre">*_O_MBAR.h5</span></code>) tables.</p>
 </dd>
 </dl>
 </section>
-<section id="detailed-module-interaction-flow">
-<h2>Detailed Module Interaction Flow<a class="headerlink" href="#detailed-module-interaction-flow" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#detailed-module-interaction-flow'">¶</a></h2>
-<p>The following diagram shows the detailed module structure and interactions:</p>
-<div class="highlight-text notranslate"><div class="highlight"><pre><span></span><code><span id="line-1">implicit_ddm_workflow.py
-</span><span id="line-2">        │
-</span><span id="line-3">        ├── workflow_phases.py
-</span><span id="line-4">        │   ├── setup_workflow_components()
-</span><span id="line-5">        │   ├── run_endstate_simulations()
-</span><span id="line-6">        │   ├── decompose_system_and_generate_restraints()
-</span><span id="line-7">        │   ├── setup_intermediate_simulations()
-</span><span id="line-8">        │   ├── run_intermediate_simulations()
-</span><span id="line-9">        │   ├── run_post_analysis_intermediate_simulations()
-</span><span id="line-10">        │   ├── compute_free_energy_and_consolidate()
-</span><span id="line-11">        │   └── initilized_jobs() [Progress tracking]
-</span><span id="line-12">        │
-</span><span id="line-13">        ├── simulations.py [Called within phases]
-</span><span id="line-14">        │   ├── Simulation class
-</span><span id="line-15">        │   ├── Calculation class
-</span><span id="line-16">        │   └── MD execution logic
-</span><span id="line-17">        │
-</span><span id="line-18">        ├── runner.py [Called within phases]
-</span><span id="line-19">        │   ├── IntermidateRunner class
-</span><span id="line-20">        │   ├── Job orchestration
-</span><span id="line-21">        │   └── Post-processing logic
-</span><span id="line-22">        │
-</span><span id="line-23">        ├── setup_simulations.py [Called within phases]
-</span><span id="line-24">        │   ├── SimulationSetup class
-</span><span id="line-25">        │   └── Parameter setup logic
-</span><span id="line-26">        │
-</span><span id="line-27">        ├── restraints.py [Called within phases]
-</span><span id="line-28">        │   ├── RestraintMaker class
-</span><span id="line-29">        │   └── Boresch restraint generation
-</span><span id="line-30">        │
-</span><span id="line-31">        └── config.py [Used throughout]
-</span><span id="line-32">            ├── Config class
-</span><span id="line-33">            ├── SystemSettings class
-</span><span id="line-34">            └── Configuration management
-</span></code></pre></div>
+<section id="post-production-als">
+<h2>Post-production ALS<a class="headerlink" href="#post-production-als" title="Link to this heading">¶</a></h2>
+<p>With <code class="docutils literal notranslate"><span class="pre">workflow_jobs.adaptive_lambda:</span> <span class="pre">True</span></code>, Phases 3 to 7 run as rounds:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>PHASE 2 (end states, shared by every round)
+     │
+     ▼
+als_round(0)        Phases 3-7 on the windows in your config (ordinary production)
+     │
+     ▼
+refine_schedule()   two-state overlap of every pair of neighbouring windows;
+     │              a new window goes into each gap below min_degree_overlap
+     │
+     ├── no weak gap left, or als_max_rounds reached → stop
+     │
+     ▼
+als_round(1)        Phases 3-7 again; windows and energies already on disk are
+     │              reused, so only the new windows and new energies are computed
+     ▼
+    ...
+</pre></div>
+</div>
+<p>Each round checks the windows already on disk against the restraints and topologies it rebuilt
+before reusing them. The round history goes to <code class="docutils literal notranslate"><span class="pre">.cache/&lt;complex&gt;/als/history.csv</span></code> and the
+outcome to <code class="docutils literal notranslate"><span class="pre">.cache/&lt;complex&gt;/als/final.json</span></code>. <code class="docutils literal notranslate"><span class="pre">docs/post_production_als.md</span></code> in the repository
+has the details.</p>
+</section>
+<section id="modules">
+<h2>Modules<a class="headerlink" href="#modules" title="Link to this heading">¶</a></h2>
+<div class="table-wrapper colwidths-given docutils container">
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 28.0%" />
+<col style="width: 72.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Module</p></th>
+<th class="head"><p>What it does</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">implicit_ddm_workflow.py</span></code></p></td>
+<td><p>Entry point: wires the phases together and assigns GPU slots for window packing.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">workflow_phases.py</span></code></p></td>
+<td><p>The phase functions, the MD-and-scoring step, and the ALS rounds.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">run_endstate.py</span></code></p></td>
+<td><p>REMD, basic MD and user-supplied end states.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">restraints.py</span></code>, <code class="docutils literal notranslate"><span class="pre">restraint_helper.py</span></code></p></td>
+<td><p>Boresch, flat-bottom and conformational restraints.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">setup_simulations.py</span></code></p></td>
+<td><p>Builds the windows of each leg.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">matrix_order.py</span></code></p></td>
+<td><p>The order of the states in each leg (<code class="docutils literal notranslate"><span class="pre">CycleSteps</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">alchemical.py</span></code></p></td>
+<td><p>Topology edits: ligand charges, ligand-receptor LJ and ligand GB <code class="docutils literal notranslate"><span class="pre">SCREEN</span></code>.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">simulations.py</span></code>, <code class="docutils literal notranslate"><span class="pre">runner.py</span></code></p></td>
+<td><p>Run an MD window or a scoring job; one scoring row per window.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">mdin.py</span></code>, <code class="docutils literal notranslate"><span class="pre">mdout.py</span></code></p></td>
+<td><p>Write AMBER input files and parse AMBER output.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">adaptive_restraints.py</span></code></p></td>
+<td><p>MBAR and exponential averaging for each leg.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pandasmbar.py</span></code>, <code class="docutils literal notranslate"><span class="pre">block_mbar.py</span></code></p></td>
+<td><p>pymbar on pandas tables, and block-chained MBAR.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">postTreatment.py</span></code></p></td>
+<td><p>Puts the legs together into the binding free energy (<code class="docutils literal notranslate"><span class="pre">ConsolidateData</span></code>).</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">als_refine.py</span></code></p></td>
+<td><p>Plans the windows post-production ALS adds.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">pose_clusters.py</span></code></p></td>
+<td><p>Ligand pose clustering for the pose-medoid restraint reference.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">nfe_energy.py</span></code></p></td>
+<td><p>Energy of AMBER’s NFE flat-bottom restraint (used by the experimental RMSD restraints).</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">config.py</span></code></p></td>
+<td><p>Reads and checks the YAML config (<a class="reference internal" href="config.html"><span class="doc">YAML Config Syntax</span></a>).</p></td>
+</tr>
+</tbody>
+</table>
 </div>
 </section>
-<section id="module-descriptions">
-<h2>Module Descriptions<a class="headerlink" href="#module-descriptions" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#module-descriptions'">¶</a></h2>
-<dl class="simple">
-<dt><strong>implicit_ddm_workflow.py</strong></dt><dd><p>Main workflow orchestrator that coordinates all phases of the DDM calculation.</p>
-</dd>
-<dt><strong>workflow_phases.py</strong></dt><dd><p>Contains the implementation of all seven workflow phases and progress tracking.</p>
-</dd>
-<dt><strong>simulations.py</strong></dt><dd><p>Core simulation classes and MD execution logic.</p>
-</dd>
-<dt><strong>runner.py</strong></dt><dd><p>Job orchestration and post-processing functionality.</p>
-</dd>
-<dt><strong>setup_simulations.py</strong></dt><dd><p>Simulation setup and parameter configuration.</p>
-</dd>
-<dt><strong>restraints.py</strong></dt><dd><p>Boresch restraint generation and management.</p>
-</dd>
-<dt><strong>config.py</strong></dt><dd><p>Configuration management and system settings.</p>
-</dd>
-</dl>
-</section>
-<section id="related-documentation">
-<h2>Related Documentation<a class="headerlink" href="#related-documentation" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#related-documentation'">¶</a></h2>
+<section id="related-pages">
+<h2>Related pages<a class="headerlink" href="#related-pages" title="Link to this heading">¶</a></h2>
 <ul class="simple">
-<li><p><a class="reference internal" href="Implementation.html#ddm-cycle-label"><span class="std std-ref">Implementation Details</span></a> - Detailed explanation of the thermodynamic cycle</p></li>
-<li><p><span class="xref std std-ref">API Documentation</span> - Complete API reference for all modules</p></li>
+<li><p><a class="reference internal" href="Implementation.html#ddm-cycle-label"><span class="std std-ref">Implementation Details</span></a>: the thermodynamic cycle.</p></li>
+<li><p><a class="reference internal" href="in_solvent_protocol.html"><span class="doc">Running the in-solvent (paper) protocol</span></a>: the cycle used in the paper.</p></li>
+<li><p><a class="reference internal" href="api.html"><span class="doc">API Documentation</span></a>: every module, generated from the code.</p></li>
 </ul>
 </section>
 </section>
-</div></div><aside class="hidden text-sm xl:block" id="right-sidebar">
-<div class="sticky top-16 -mt-10 max-h-[calc(100vh-5rem)] overflow-y-auto pt-6 space-y-2"><p class="font-medium">On this page</p>
-<ul>
-<li><a :data-current="activeSection === '#overview'" class="reference internal" href="#overview">Overview</a></li>
-<li><a :data-current="activeSection === '#simplified-workflow-flow'" class="reference internal" href="#simplified-workflow-flow">Simplified Workflow Flow</a></li>
-<li><a :data-current="activeSection === '#workflow-phases'" class="reference internal" href="#workflow-phases">Workflow Phases</a></li>
-<li><a :data-current="activeSection === '#detailed-module-interaction-flow'" class="reference internal" href="#detailed-module-interaction-flow">Detailed Module Interaction Flow</a></li>
-<li><a :data-current="activeSection === '#module-descriptions'" class="reference internal" href="#module-descriptions">Module Descriptions</a></li>
-<li><a :data-current="activeSection === '#related-documentation'" class="reference internal" href="#related-documentation">Related Documentation</a></li>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="in_solvent_protocol.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">Running the in-solvent (paper) protocol</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="Implementation.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Implementation Details</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025-2026, LuchkoLab. Project structure based on the Computational Molecular Science Python Cookiecutter version 1.5
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">DDM Workflow Structure</a><ul>
+<li><a class="reference internal" href="#overview">Overview</a></li>
+<li><a class="reference internal" href="#the-phases">The phases</a></li>
+<li><a class="reference internal" href="#post-production-als">Post-production ALS</a></li>
+<li><a class="reference internal" href="#modules">Modules</a></li>
+<li><a class="reference internal" href="#related-pages">Related pages</a></li>
 </ul>
-</div>
-</aside>
-</main>
-</div>
-</div><footer class="py-6 border-t border-border md:py-0">
-<div class="container flex flex-col items-center justify-between gap-4 md:h-24 md:flex-row">
-<div class="flex flex-col items-center gap-4 px-8 md:flex-row md:gap-2 md:px-0">
-<p class="text-sm leading-loose text-center text-muted-foreground md:text-left">© 2025, LuckoLab. Project structure based on the Computational Molecular Science Python Cookiecutter version 1.5 Built with <a class="font-medium underline underline-offset-4" href="https://www.sphinx-doc.org" rel="noreferrer">Sphinx 8.1.3</a></p>
-</div>
-</div>
-</footer>
-</div>
-<script src="_static/documentation_options.js?v=5929fcd5"></script>
-<script src="_static/doctools.js?v=9bcbadda"></script>
-<script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-<script defer="defer" src="_static/theme.js?v=073f68d9"></script>
-</body>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=8a448e45"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=2871b0cb"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    </body>
 </html>

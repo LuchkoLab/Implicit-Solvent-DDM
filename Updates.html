@@ -1,81 +1,219 @@
-<!DOCTYPE html>
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="author" title="About these documents" href="about.html"><link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="About this package" href="about.html"><link rel="prev" title="Tests and continuous integration" href="testing.html">
 
-<html :class="{'dark': darkMode === 'dark' || (darkMode === 'system' &amp;&amp; window.matchMedia('(prefers-color-scheme: dark)').matches)}" class="scroll-smooth" data-content_root="./" lang="en" x-data="{ darkMode: localStorage.getItem('darkMode') || localStorage.setItem('darkMode', 'system'), activeSection: '' }" x-init="$watch('darkMode', val =&gt; localStorage.setItem('darkMode', val))">
-<head>
-<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<meta charset="utf-8"/>
-<meta content="white" media="(prefers-color-scheme: light)" name="theme-color"/>
-<meta content="black" media="(prefers-color-scheme: dark)" name="theme-color"/>
-<meta content="width=device-width, initial-scale=1" name="viewport"/>
-<title>Updates and Changelog | Implicit_Solvent_DDM  documentation</title>
-<meta content="Updates and Changelog | Implicit_Solvent_DDM  documentation" property="og:title"/>
-<meta content="Updates and Changelog | Implicit_Solvent_DDM  documentation" name="twitter:title"/>
-<link href="_static/pygments.css?v=b86133f3" rel="stylesheet" type="text/css"/>
-<link href="_static/theme.css?v=42baaae4" rel="stylesheet" type="text/css"/>
-<link href="_static/formats.css?v=5908a523" rel="stylesheet" type="text/css"/>
-<link href="search.html" rel="search" title="Search"/>
-<link href="genindex.html" rel="index" title="Index"/>
-<link href="about.html" rel="next" title="About this package"/>
-<link href="autosummary/implicit_solvent_ddm.simulations.html" rel="prev" title="implicit_solvent_ddm.simulations"/>
-<script>
-    <!-- Prevent Flash of wrong theme -->
-      const userPreference = localStorage.getItem('darkMode');
-      let mode;
-      if (userPreference === 'dark' || window.matchMedia('(prefers-color-scheme: dark)').matches) {
-        mode = 'dark';
-        document.documentElement.classList.add('dark');
-      } else {
-        mode = 'light';
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
+        <title>Updates and Changelog - Implicit Solvent DDM</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=8d3cf25f" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  --color-brand-primary: #1d6f8a;
+  --color-brand-content: #1d6f8a;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
       }
-      if (!userPreference) {localStorage.setItem('darkMode', mode)}
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
     </script>
-</head>
-<body :class="{ 'overflow-hidden': showSidebar }" class="min-h-screen font-sans antialiased bg-background text-foreground" x-data="{ showSidebar: false, showScrollTop: false }">
-<div @click.self="showSidebar = false" class="fixed inset-0 z-50 overflow-hidden bg-background/80 backdrop-blur-sm md:hidden" x-cloak="" x-show="showSidebar"></div><div class="relative flex flex-col min-h-screen" id="page"><a class="absolute top-0 left-0 z-[100] block bg-background p-4 text-xl transition -translate-x-full opacity-0 focus:translate-x-0 focus:opacity-100" href="#content">
-      Skip to content
-    </a><header class="sticky top-0 z-40 w-full border-b shadow-sm border-border supports-backdrop-blur:bg-background/60 bg-background/95 backdrop-blur"><div class="container flex items-center h-14">
-<div class="hidden mr-4 md:flex">
-<a class="flex items-center mr-6" href="index.html"><span class="hidden font-bold sm:inline-block text-clip whitespace-nowrap">Implicit_Solvent_DDM  documentation</span>
-</a></div><button @click="showSidebar = true" class="inline-flex items-center justify-center h-10 px-0 py-2 mr-2 text-base font-medium transition-colors rounded-md hover:text-accent-foreground hover:bg-transparent md:hidden" type="button">
-<svg aria-hidden="true" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M152.587 825.087q-19.152 0-32.326-13.174t-13.174-32.326q0-19.152 13.174-32.326t32.326-13.174h440q19.152 0 32.326 13.174t13.174 32.326q0 19.152-13.174 32.326t-32.326 13.174h-440Zm0-203.587q-19.152 0-32.326-13.174T107.087 576q0-19.152 13.174-32.326t32.326-13.174h320q19.152 0 32.326 13.174T518.087 576q0 19.152-13.174 32.326T472.587 621.5h-320Zm0-203.587q-19.152 0-32.326-13.174t-13.174-32.326q0-19.152 13.174-32.326t32.326-13.174h440q19.152 0 32.326 13.174t13.174 32.326q0 19.152-13.174 32.326t-32.326 13.174h-440ZM708.913 576l112.174 112.174q12.674 12.674 12.674 31.826t-12.674 31.826Q808.413 764.5 789.261 764.5t-31.826-12.674l-144-144Q600 594.391 600 576t13.435-31.826l144-144q12.674-12.674 31.826-12.674t31.826 12.674q12.674 12.674 12.674 31.826t-12.674 31.826L708.913 576Z"></path>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
 </svg>
-<span class="sr-only">Toggle navigation menu</span>
-</button>
-<div class="flex items-center justify-between flex-1 space-x-2 sm:space-x-4 md:justify-end">
-<div class="flex-1 w-full md:w-auto md:flex-none"><form @keydown.k.window.meta="$refs.search.focus()" action="search.html" class="relative flex items-center group" id="searchbox" method="get">
-<input aria-label="Search the docs" class="inline-flex items-center font-medium transition-colors bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background border border-input hover:bg-accent focus:bg-accent hover:text-accent-foreground focus:text-accent-foreground hover:placeholder-accent-foreground py-2 px-4 relative h-9 w-full justify-start rounded-[0.5rem] text-sm text-muted-foreground sm:pr-12 md:w-40 lg:w-64" id="search-input" name="q" placeholder="Search ..." type="search" x-ref="search"/>
-<kbd class="pointer-events-none absolute right-1.5 top-2 hidden h-5 select-none text-muted-foreground items-center gap-1 rounded border border-border bg-muted px-1.5 font-mono text-[10px] font-medium opacity-100 sm:flex group-hover:bg-accent group-hover:text-accent-foreground">
-<span class="text-xs">⌘</span>
-    K
-  </kbd>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="index.html"><div class="brand">Implicit Solvent DDM</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon no-toc" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
+  
+  <span class="sidebar-brand-text">Implicit Solvent DDM</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
 </form>
-</div>
-<nav class="flex items-center space-x-1">
-<button @click="darkMode = darkMode === 'light' ? 'dark' : 'light'" aria-label="Color theme switcher" class="relative inline-flex items-center justify-center px-0 text-sm font-medium transition-colors rounded-md hover:bg-accent hover:text-accent-foreground h-9 w-9" type="button">
-<svg class="absolute transition-all scale-100 rotate-0 dark:-rotate-90 dark:scale-0" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 685q45.456 0 77.228-31.772Q589 621.456 589 576q0-45.456-31.772-77.228Q525.456 467 480 467q-45.456 0-77.228 31.772Q371 530.544 371 576q0 45.456 31.772 77.228Q434.544 685 480 685Zm0 91q-83 0-141.5-58.5T280 576q0-83 58.5-141.5T480 376q83 0 141.5 58.5T680 576q0 83-58.5 141.5T480 776ZM80 621.5q-19.152 0-32.326-13.174T34.5 576q0-19.152 13.174-32.326T80 530.5h80q19.152 0 32.326 13.174T205.5 576q0 19.152-13.174 32.326T160 621.5H80Zm720 0q-19.152 0-32.326-13.174T754.5 576q0-19.152 13.174-32.326T800 530.5h80q19.152 0 32.326 13.174T925.5 576q0 19.152-13.174 32.326T880 621.5h-80Zm-320-320q-19.152 0-32.326-13.174T434.5 256v-80q0-19.152 13.174-32.326T480 130.5q19.152 0 32.326 13.174T525.5 176v80q0 19.152-13.174 32.326T480 301.5Zm0 720q-19.152 0-32.326-13.17Q434.5 995.152 434.5 976v-80q0-19.152 13.174-32.326T480 850.5q19.152 0 32.326 13.174T525.5 896v80q0 19.152-13.174 32.33-13.174 13.17-32.326 13.17ZM222.174 382.065l-43-42Q165.5 327.391 166 308.239t13.174-33.065q13.435-13.674 32.587-13.674t32.065 13.674l42.239 43q12.674 13.435 12.555 31.706-.12 18.272-12.555 31.946-12.674 13.674-31.445 13.413-18.772-.261-32.446-13.174Zm494 494.761-42.239-43q-12.674-13.435-12.674-32.087t12.674-31.565Q686.609 756.5 705.38 757q18.772.5 32.446 13.174l43 41.761Q794.5 824.609 794 843.761t-13.174 33.065Q767.391 890.5 748.239 890.5t-32.065-13.674Zm-42-494.761Q660.5 369.391 661 350.62q.5-18.772 13.174-32.446l41.761-43Q728.609 261.5 747.761 262t33.065 13.174q13.674 13.435 13.674 32.587t-13.674 32.065l-43 42.239q-13.435 12.674-31.706 12.555-18.272-.12-31.946-12.555Zm-495 494.761Q165.5 863.391 165.5 844.239t13.674-32.065l43-42.239q13.435-12.674 32.087-12.674t31.565 12.674Q299.5 782.609 299 801.38q-.5 18.772-13.174 32.446l-41.761 43Q231.391 890.5 212.239 890t-33.065-13.174ZM480 576Z"></path>
-</svg>
-<svg class="absolute transition-all scale-0 rotate-90 dark:rotate-0 dark:scale-100" fill="currentColor" height="24" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 936q-151 0-255.5-104.5T120 576q0-138 90-239.5T440 218q25-3 39 18t-1 44q-17 26-25.5 55t-8.5 61q0 90 63 153t153 63q31 0 61.5-9t54.5-25q21-14 43-1.5t19 39.5q-14 138-117.5 229T480 936Zm0-80q88 0 158-48.5T740 681q-20 5-40 8t-40 3q-123 0-209.5-86.5T364 396q0-20 3-40t8-40q-78 32-126.5 102T200 576q0 116 82 198t198 82Zm-10-270Z"></path>
-</svg>
-</button>
-</nav>
-</div>
-</div>
-</header>
-<div class="flex-1"><div class="container flex-1 items-start md:grid md:grid-cols-[220px_minmax(0,1fr)] md:gap-6 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-10"><aside :aria-hidden="!showSidebar" :class="{ 'translate-x-0': showSidebar }" class="fixed inset-y-0 left-0 md:top-14 z-50 md:z-30 bg-background md:bg-transparent transition-all duration-100 -translate-x-full md:translate-x-0 ml-0 p-6 md:p-0 md:-ml-2 md:h-[calc(100vh-3.5rem)] w-5/6 md:w-full shrink-0 overflow-y-auto border-r border-border md:sticky" id="left-sidebar">
-<a class="!justify-start text-sm md:!hidden bg-background" href="index.html"><span class="font-bold text-clip whitespace-nowrap">Implicit_Solvent_DDM  documentation</span>
-</a>
-<div class="relative overflow-hidden md:overflow-auto my-4 md:my-0 h-[calc(100vh-8rem)] md:h-auto">
-<div class="overflow-y-auto h-full w-full relative pr-6"><nav class="table w-full min-w-full my-6 lg:my-8">
-<p class="caption" role="heading"><span class="caption-text">Getting Started</span></p>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Get started</span></p>
 <ul>
 <li class="toctree-l1"><a class="reference internal" href="Installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config.html">YAML Config Syntax</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Method</span></p>
+<ul>
 <li class="toctree-l1"><a class="reference internal" href="Implementation.html">Implementation Details</a></li>
 <li class="toctree-l1"><a class="reference internal" href="Implementation.html#conformationally-restrained-alchemical-pathway">Conformationally restrained Alchemical-Pathway</a></li>
 <li class="toctree-l1"><a class="reference internal" href="DDM_Workflow.html">DDM Workflow Structure</a></li>
-<li class="toctree-l1"><a class="reference internal" href="config.html">YAML Config Syntax</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Run</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="in_solvent_protocol.html">Running the in-solvent (paper) protocol</a></li>
+<li class="toctree-l1"><a class="reference internal" href="gpu_packing.html">Running on GPUs with window packing</a></li>
 </ul>
 <p class="caption" role="heading"><span class="caption-text">Examples</span></p>
 <ul>
@@ -83,12 +221,13 @@
 <li class="toctree-l1"><a class="reference internal" href="examples/remd_example.html">Running REMD at the endstate simulation</a></li>
 <li class="toctree-l1"><a class="reference internal" href="examples/user_defined_example.html">User Provided Endstate Simulation</a></li>
 </ul>
-<p class="caption" role="heading"><span class="caption-text">Software Documentation</span></p>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
 <ul class="current">
-<li class="toctree-l1" x-data="{ expanded: $el.classList.contains('current') ? true : false }"><a :class="{ 'expanded' : expanded }" @click="expanded = !expanded" class="reference internal expandable" href="api.html">API Documentation<button @click.prevent.stop="expanded = !expanded" type="button"><span class="sr-only"></span><svg fill="currentColor" height="18px" stroke="none" viewbox="0 0 24 24" width="18px" xmlns="http://www.w3.org/2000/svg"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"></path></svg></button></a><ul x-show="expanded">
+<li class="toctree-l1 has-children"><a class="reference internal" href="api.html">API Documentation</a><input aria-label="Toggle navigation of API Documentation" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.implicit_ddm_workflow.html">implicit_solvent_ddm.implicit_ddm_workflow</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.workflow_phases.html">implicit_solvent_ddm.workflow_phases</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.setup_simulations.html">implicit_solvent_ddm.setup_simulations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.als_refine.html">implicit_solvent_ddm.als_refine</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.runner.IntermidateRunner.html">implicit_solvent_ddm.runner.IntermidateRunner</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.run_endstate.html">implicit_solvent_ddm.run_endstate</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.config.html">implicit_solvent_ddm.config</a></li>
@@ -98,50 +237,339 @@
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdin.html">implicit_solvent_ddm.mdin</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdout.html">implicit_solvent_ddm.mdout</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pandasmbar.html">implicit_solvent_ddm.pandasmbar</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.block_mbar.html">implicit_solvent_ddm.block_mbar</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.postTreatment.html">implicit_solvent_ddm.postTreatment</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraint_helper.html">implicit_solvent_ddm.restraint_helper</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraints.html">implicit_solvent_ddm.restraints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pose_clusters.html">implicit_solvent_ddm.pose_clusters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.nfe_energy.html">implicit_solvent_ddm.nfe_energy</a></li>
 <li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.simulations.html">implicit_solvent_ddm.simulations</a></li>
 </ul>
 </li>
-<li class="toctree-l1 current"><a class="current reference internal" href="#">Updates and Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Tests and continuous integration</a></li>
+<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Updates and Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="#version-2-0-0-in-solvent-protocol-and-post-production-als">Version 2.0.0 - In-Solvent Protocol and Post-Production ALS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="#version-1-1-1-gpu-acceleration-support">Version 1.1.1 - GPU Acceleration Support</a></li>
 <li class="toctree-l1"><a class="reference internal" href="#version-1-0-0-initial-stable-release">Version 1.0.0 - Initial Stable Release</a></li>
 <li class="toctree-l1"><a class="reference internal" href="about.html">About this package</a></li>
 </ul>
-</nav>
+
 </div>
 </div>
-<button @click="showSidebar = false" class="absolute md:hidden right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100" type="button">
-<svg class="h-4 w-4" fill="currentColor" height="24" stroke="none" viewbox="0 96 960 960" width="24" xmlns="http://www.w3.org/2000/svg">
-<path d="M480 632 284 828q-11 11-28 11t-28-11q-11-11-11-28t11-28l196-196-196-196q-11-11-11-28t11-28q11-11 28-11t28 11l196 196 196-196q11-11 28-11t28 11q11 11 11 28t-11 28L536 576l196 196q11 11 11 28t-11 28q-11 11-28 11t-28-11L480 632Z"></path>
-</svg>
-</button>
-</aside>
-<main class="relative py-6 lg:gap-10 lg:py-8 xl:grid xl:grid-cols-[1fr_300px]">
-<div class="w-full min-w-0 mx-auto">
-<nav aria-label="breadcrumbs" class="flex items-center mb-4 space-x-1 text-sm text-muted-foreground">
-<a class="overflow-hidden text-ellipsis whitespace-nowrap hover:text-foreground" href="index.html">
-<span class="hidden md:inline">Implicit_Solvent_DDM  documentation</span>
-<svg aria-label="Home" class="md:hidden" fill="currentColor" height="18" stroke="none" viewbox="0 96 960 960" width="18" xmlns="http://www.w3.org/2000/svg">
-<path d="M240 856h120V616h240v240h120V496L480 316 240 496v360Zm-80 80V456l320-240 320 240v480H520V696h-80v240H160Zm320-350Z"></path>
-</svg>
-</a>
-<div class="mr-1">/</div><span aria-current="page" class="font-medium text-foreground overflow-hidden text-ellipsis whitespace-nowrap">Updates and Changelog</span>
-</nav>
-<div id="content" role="main">
-<section id="updates-and-changelog">
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/blob/main/docs/Updates.rst?plain=true" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div><div class="edit-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/edit/main/docs/Updates.rst" rel="edit" title="Edit this page">
+    <svg><use href="#svg-pencil"></use></svg>
+    <span class="visually-hidden">Edit this page</span>
+  </a>
+</div>
+
+<div class="edit-this-page github-repo-link">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/" title="GitHub repository">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+    </svg>
+    <span class="visually-hidden">GitHub repository</span>
+  </a>
+</div><div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon no-toc" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="updates-and-changelog">
 <span id="updates-label"></span><h1>Updates and Changelog<a class="headerlink" href="#updates-and-changelog" title="Link to this heading">¶</a></h1>
 <p>This section documents the major updates and changes made to the Implicit Solvent DDM package across different versions.</p>
+</section>
+<section id="version-2-0-0-in-solvent-protocol-and-post-production-als">
+<h1>Version 2.0.0 - In-Solvent Protocol and Post-Production ALS<a class="headerlink" href="#version-2-0-0-in-solvent-protocol-and-post-production-als" title="Link to this heading">¶</a></h1>
+<p><strong>Release Date</strong>: November 2026
+<strong>Status</strong>: Latest Release</p>
+<p>Version 2.0.0 brings the in-solvent protocol used in the paper, adaptive lambda scheduling (ALS)
+after production, block-MBAR and GPU window packing, plus new restraint options for
+protein-ligand systems. It also fixes a bug, present since 1.1.1, that handed the receptor
+end-state scoring the ligand trajectory.</p>
+<p>Some defaults changed, and they change the computed ΔG. Output directories written by older
+versions cannot be re-analysed with 2.0.0, so read <a class="reference internal" href="#v2-breaking-changes"><span class="std std-ref">Breaking Changes</span></a> before you upgrade.
+The complete list, with commit references, is in <code class="docutils literal notranslate"><span class="pre">CHANGELOG.md</span></code> and <code class="docutils literal notranslate"><span class="pre">RELEASE_NOTES_v2.0.0.md</span></code>
+in the repository.</p>
+<p>The new methods stay off unless you turn them on:</p>
+<div class="table-wrapper colwidths-given docutils container">
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 38.0%" />
+<col style="width: 37.0%" />
+<col style="width: 25.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Feature</p></th>
+<th class="head"><p>Switch</p></th>
+<th class="head"><p>Default</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>In-solvent decoupling cycle</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">decouple_in_solvent</span></code></p></td>
+<td><p>off (gas-phase cycle)</p></td>
+</tr>
+<tr class="row-odd"><td><p>Post-production ALS</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">workflow_jobs.adaptive_lambda</span></code></p></td>
+<td><p>off (fixed windows)</p></td>
+</tr>
+<tr class="row-even"><td><p>Block-MBAR</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">post_analysis_block_size</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">None</span></code> (full MBAR)</p></td>
+</tr>
+<tr class="row-odd"><td><p>GPU window packing</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">windows_per_gpu</span></code></p></td>
+<td><p>1 (no packing)</p></td>
+</tr>
+<tr class="row-even"><td><p>RMSD restraints (experimental)</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">rmsd_tolerance_windows</span></code></p></td>
+<td><p>empty (pairwise network)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<section id="major-features">
+<h2>Major Features<a class="headerlink" href="#major-features" title="Link to this heading">¶</a></h2>
+<section id="in-solvent-decoupling-cycle">
+<h3>In-Solvent Decoupling Cycle<a class="headerlink" href="#in-solvent-decoupling-cycle" title="Link to this heading">¶</a></h3>
+<p>With <code class="docutils literal notranslate"><span class="pre">decouple_in_solvent:</span> <span class="pre">True</span></code> the ligand is decoupled while it sits in GB water, rather than
+after a move to the gas phase. On the complex leg its charges go first, then its GB <code class="docutils literal notranslate"><span class="pre">SCREEN</span></code>,
+then its LJ interactions with the receptor. The cycle has no gas state and no GB-dielectric band,
+so every complex and receptor window can run on <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code>. Its end states are those of the
+gas-phase cycle, which means the answer is still an absolute binding free energy.</p>
+<p><code class="docutils literal notranslate"><span class="pre">script_examples/config_files/in_solvent_paper.yaml</span></code> is a complete config for this cycle, and
+<a class="reference internal" href="in_solvent_protocol.html"><span class="doc">Running the in-solvent (paper) protocol</span></a> walks through a run.</p>
+</section>
+<section id="post-production-als">
+<h3>Post-Production ALS<a class="headerlink" href="#post-production-als" title="Link to this heading">¶</a></h3>
+<p>Set <code class="docutils literal notranslate"><span class="pre">workflow_jobs.adaptive_lambda:</span> <span class="pre">True</span></code> and the run first finishes on the windows in your
+config. ALS then computes the two-state MBAR overlap of every pair of neighbouring windows in each
+leg, and wherever it falls below <code class="docutils literal notranslate"><span class="pre">min_degree_overlap</span></code> (0.04) a new full-length window goes into
+the gap. Only the new windows and the energies they add get computed. The loop ends when no weak
+gap is left or after <code class="docutils literal notranslate"><span class="pre">als_max_rounds</span></code> rounds (3 by default), and each round is logged in
+<code class="docutils literal notranslate"><span class="pre">.cache/&lt;complex&gt;/als/</span></code>. This replaces the 50 ps pilot that <code class="docutils literal notranslate"><span class="pre">adaptive_lambda</span></code> ran on <code class="docutils literal notranslate"><span class="pre">main</span></code>
+after 1.1.3. <a class="reference internal" href="DDM_Workflow.html"><span class="doc">DDM Workflow Structure</span></a> shows where the rounds sit in a run.</p>
+</section>
+<section id="block-mbar">
+<h3>Block-MBAR<a class="headerlink" href="#block-mbar" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">post_analysis_block_size:</span> <span class="pre">K</span></code> solves each leg as a chain of K-state MBAR blocks and runs only the
+<code class="docutils literal notranslate"><span class="pre">sander</span> <span class="pre">imin=5</span></code> energy evaluations those blocks need. For K = 2, the BAR chain between
+neighbouring windows, that is 3N - 2 evaluations instead of N². See <a class="reference internal" href="config.html#block-mbar"><span class="std std-ref">Block-chained post-analysis</span></a>.</p>
+</section>
+<section id="gpu-window-packing">
+<h3>GPU Window Packing<a class="headerlink" href="#gpu-window-packing" title="Link to this heading">¶</a></h3>
+<p><code class="docutils literal notranslate"><span class="pre">hardware_parameters.windows_per_gpu</span></code> puts several <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> windows on each GPU at once.
+It only pays off when the CUDA MPS daemon is started before the workflow. On an RTX 5000 Ada, four
+windows per GPU gave about 1.9 times the throughput of one. The Slurm script and the full
+benchmark are in <a class="reference internal" href="gpu_packing.html"><span class="doc">Running on GPUs with window packing</span></a>.</p>
+<p>Other GPU changes:</p>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">remd_accelerators</span></code> lets the complex and receptor REMD jobs reserve GPUs. <code class="docutils literal notranslate"><span class="pre">remd_executable</span></code>
+sets a separate AMBER binary for them, for example a CPU build when your AMBER has no
+<code class="docutils literal notranslate"><span class="pre">pmemd.cuda.MPI</span></code>.</p></li>
+<li><p>MBAR jobs no longer hold a GPU while pymbar runs on the CPU (<code class="docutils literal notranslate"><span class="pre">mbar_accelerators</span></code> defaults
+to 0).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gb_dielectric_cpu_cores</span></code> runs the GB-dielectric windows of the gas-phase cycle on CPU
+<code class="docutils literal notranslate"><span class="pre">pmemd.MPI</span></code>. <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> ignores <code class="docutils literal notranslate"><span class="pre">extdiel</span></code> in GB MD, so on the GPU those windows would
+sample full water.</p></li>
+</ul>
+</section>
+<section id="running-and-re-running">
+<h3>Running and Re-running<a class="headerlink" href="#running-and-re-running" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p>A window is scored as soon as its own MD ends, so CPU scoring overlaps with the GPU MD instead
+of waiting for all of it.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">workflow_jobs.md_only:</span> <span class="pre">True</span></code> runs the MD and stops. Run again without it, against the same
+<code class="docutils literal notranslate"><span class="pre">output_directory_name</span></code>, to score the windows without repeating the MD.</p></li>
+<li><p>With <code class="docutils literal notranslate"><span class="pre">workflow_jobs.run_endstate_method:</span> <span class="pre">False</span></code> a run takes the end-state trajectories of a
+finished run instead of running REMD again.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">hardware_parameters.export_intermediate_files:</span> <span class="pre">False</span></code> keeps intermediate files in the Toil job
+store and out of the output directory.</p></li>
+<li><p>Phase 7 writes the MBAR overlap matrix of every leg (<code class="docutils literal notranslate"><span class="pre">*_O_MBAR.h5</span></code>), not only the complex one.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">[TIMING]</span></code> lines in the Toil log feed <code class="docutils literal notranslate"><span class="pre">scripts/timing_report.py</span></code>, which breaks a run down by
+phase into wall-clock time and CPU and GPU hours.</p></li>
+</ul>
+</section>
+<section id="restraint-options">
+<h3>Restraint Options<a class="headerlink" href="#restraint-options" title="Link to this heading">¶</a></h3>
+<ul class="simple">
+<li><p><code class="docutils literal notranslate"><span class="pre">restraint_reference</span></code> picks the frame the restraints are built from: the last end-state frame
+(<code class="docutils literal notranslate"><span class="pre">lastframe</span></code>, the default), the medoid of the main ligand pose cluster (<code class="docutils literal notranslate"><span class="pre">pose_medoid</span></code>), or a
+coordinate file you supply.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">boresch_anchors</span></code> takes the receptor anchor atoms from the pocket backbone
+(<code class="docutils literal notranslate"><span class="pre">pocket_backbone</span></code>, the new default) or keeps the old rule (<code class="docutils literal notranslate"><span class="pre">legacy</span></code>).</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">unrestrained_receptor_mask</span></code> leaves receptor atoms out of the conformational restraint network;
+<code class="docutils literal notranslate"><span class="pre">receptor_ramp_mask</span></code> ramps their restraints in along the ladder instead.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">lj_scale_windows</span></code> adds ligand-receptor LJ windows to the complex leg, in either cycle.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">exponent_boresch_distance_forces</span></code> gives the Boresch distance term a ladder of its own.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rmsd_tolerance_windows</span></code> replaces the pairwise network with an RMSD restraint. It is
+experimental and not validated for production.</p></li>
+</ul>
+</section>
+</section>
+<section id="example-configuration">
+<h2>Example Configuration<a class="headerlink" href="#example-configuration" title="Link to this heading">¶</a></h2>
+<p>The 2.0 keys in place, for an in-solvent run with GPU packing, ALS and block-MBAR switched on:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">hardware_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pmemd.cuda</span>
+<span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span>
+<span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span>
+<span class="w">  </span><span class="nt">windows_per_gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">              </span><span class="c1"># needs CUDA MPS</span>
+<span class="w">  </span><span class="nt">remd_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+
+<span class="nt">workflow_jobs</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">adaptive_lambda</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span><span class="w">           </span><span class="c1"># post-production ALS</span>
+
+<span class="nt">workflow</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">intermediate_states_arguments</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">decouple_in_solvent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span>
+<span class="w">    </span><span class="nt">gb_extdiel_windows</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span><span class="w">        </span><span class="c1"># must be empty in the in-solvent cycle</span>
+<span class="w">    </span><span class="nt">charges_lambda_window</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">0.5</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">screening_windows</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">0.5</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">lj_scale_windows</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">0.2</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">post_analysis_block_size</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span><span class="w">   </span><span class="c1"># block-MBAR</span>
+<span class="w">    </span><span class="nt">min_degree_overlap</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0.04</span><span class="w">      </span><span class="c1"># ALS threshold</span>
+<span class="w">    </span><span class="nt">als_max_rounds</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">3</span>
+</pre></div>
+</div>
+</section>
+<section id="breaking-changes">
+<span id="v2-breaking-changes"></span><h2>Breaking Changes<a class="headerlink" href="#breaking-changes" title="Link to this heading">¶</a></h2>
+<p>A 1.1.x config that sets none of the keys below still loads, but its result can differ.</p>
+<ol class="arabic simple">
+<li><p>The flat-bottom term is no longer added to the total ΔG. The complex leg already ends at the
+flat-bottom-restrained end state, so adding it counted the confinement twice. It is still
+written out as <code class="docutils literal notranslate"><span class="pre">flat_bottom_contribution</span></code>.</p></li>
+<li><p>When <code class="docutils literal notranslate"><span class="pre">restrained_receptor_atoms</span></code> is not set, the flat-bottom receptor group is now the
+binding site: the CA atoms of residues within <code class="docutils literal notranslate"><span class="pre">pocket_radius</span></code> (8 Å) of the ligand, or the
+host heavy atoms within that distance for a host-guest system. In 1.1.x it was every receptor
+CA atom, or every host heavy atom.</p></li>
+<li><p>Boresch anchors come from the pocket backbone by default. For a protein, the receptor has to
+come before the ligand in the complex topology, or the Boresch job raises <code class="docutils literal notranslate"><span class="pre">ValueError</span></code>. The
+three dihedral restraints are now bounded at their target ± 180° instead of 0° to 360°.</p></li>
+<li><p>The receptor leg’s lowest restraint window runs for 10 ns (<code class="docutils literal notranslate"><span class="pre">long_restraint_window_ns:</span> <span class="pre">10.0</span></code>).</p></li>
+<li><p>The GB-dielectric band runs and is scored with <code class="docutils literal notranslate"><span class="pre">saltcon=0</span></code>, so it reaches vacuum at ε = 1.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">gb_extdiel_windows</span></code> takes dielectric constants, not fractions of 78.5. An old fractional
+list still loads but collapses, with a warning, to a single ε = 1.0 window.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">adaptive_lambda</span></code> now means post-production ALS, and the pilot keys from <code class="docutils literal notranslate"><span class="pre">main</span></code> are dropped
+with a warning.</p></li>
+<li><p>End-state labels name their method (<code class="docutils literal notranslate"><span class="pre">remd_endstate</span></code>, <code class="docutils literal notranslate"><span class="pre">vanillaMD_endstate</span></code> or
+<code class="docutils literal notranslate"><span class="pre">user_provided_endstate</span></code>) instead of plain <code class="docutils literal notranslate"><span class="pre">endstate</span></code>. Re-analysing an older output tree
+raises <code class="docutils literal notranslate"><span class="pre">KeyError</span></code>.</p></li>
+<li><p>The tests are split into tiers by pytest markers; see <a class="reference internal" href="testing.html"><span class="doc">Tests and continuous integration</span></a>.</p></li>
+<li><p>Python 3.10 or newer is required.</p></li>
+</ol>
+</section>
+<section id="migration-guide">
+<h2>Migration Guide<a class="headerlink" href="#migration-guide" title="Link to this heading">¶</a></h2>
+<ul>
+<li><p>Start every 2.0.0 run in a new output directory, and analyse old output with the version that
+wrote it.</p></li>
+<li><p>Convert <code class="docutils literal notranslate"><span class="pre">gb_extdiel_windows</span></code> to dielectric constants: multiply the old values by 78.5 and drop
+any 0 or 1 entries, so <code class="docutils literal notranslate"><span class="pre">[0.25,</span> <span class="pre">0.5,</span> <span class="pre">0.75]</span></code> becomes <code class="docutils literal notranslate"><span class="pre">[19.625,</span> <span class="pre">39.25,</span> <span class="pre">58.875]</span></code>. The in-solvent
+cycle needs the list empty.</p></li>
+<li><p>Remove the pilot keys <code class="docutils literal notranslate"><span class="pre">pilot_ps</span></code>, <code class="docutils literal notranslate"><span class="pre">pilot_frames</span></code>, <code class="docutils literal notranslate"><span class="pre">pilot_nstlim</span></code>,
+<code class="docutils literal notranslate"><span class="pre">max_adaptive_iterations</span></code>, <code class="docutils literal notranslate"><span class="pre">candidate_pool_step</span></code> and <code class="docutils literal notranslate"><span class="pre">redistribution_mode</span></code>.
+<code class="docutils literal notranslate"><span class="pre">als_max_rounds</span></code> takes over from <code class="docutils literal notranslate"><span class="pre">max_adaptive_iterations</span></code>.</p></li>
+<li><p>To compare an older total ΔG with a 2.0.0 one, subtract the <code class="docutils literal notranslate"><span class="pre">flat_bottom_contribution</span></code> stored
+with the older result from its total.</p></li>
+<li><p>To keep the old behaviour where you need it:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">workflow</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">restraints</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">restrained_receptor_atoms</span><span class="p">:</span><span class="w"> </span><span class="s">":REC</span><span class="nv"> </span><span class="s">&amp;</span><span class="nv"> </span><span class="s">@CA"</span><span class="w">       </span><span class="c1"># protein: every receptor CA atom</span>
+<span class="w">    </span><span class="c1"># restrained_receptor_atoms: ":REC &amp; !@H*"    # host: every host heavy atom</span>
+<span class="w">  </span><span class="nt">intermediate_states_arguments</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">boresch_anchors</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">legacy</span><span class="w">                       </span><span class="c1"># old anchor choice</span>
+<span class="w">    </span><span class="nt">long_restraint_window_ns</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">null</span><span class="w">                </span><span class="c1"># every window at the template length</span>
+</pre></div>
+</div>
+<p>Replace <code class="docutils literal notranslate"><span class="pre">:REC</span></code> with your <code class="docutils literal notranslate"><span class="pre">receptor_mask</span></code>.</p>
+</li>
+<li><p>For a gas-phase run on GPUs, set <code class="docutils literal notranslate"><span class="pre">gb_dielectric_cpu_cores</span></code> so the GB-dielectric windows run on
+the CPU.</p></li>
+</ul>
+</section>
+<section id="installation">
+<h2>Installation<a class="headerlink" href="#installation" title="Link to this heading">¶</a></h2>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/LuchkoLab/Implicit-Solvent-DDM.git
+<span class="nb">cd</span><span class="w"> </span>Implicit-Solvent-DDM
+git<span class="w"> </span>checkout<span class="w"> </span><span class="m">2</span>.0.0
+micromamba<span class="w"> </span>create<span class="w"> </span>-n<span class="w"> </span>isddm_env<span class="w"> </span>-f<span class="w"> </span>devtools/conda-envs/test_env.conda-lock.yml
+micromamba<span class="w"> </span>activate<span class="w"> </span>isddm_env
+pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span>.
+</pre></div>
+</div>
+<p>The lock file installs in about 30 s, with no solve. <code class="docutils literal notranslate"><span class="pre">pmemd</span></code>, <code class="docutils literal notranslate"><span class="pre">pmemd.MPI</span></code> and <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code>
+are not in the conda env and come from your own AMBER install. See
+<a class="reference internal" href="Installation.html#installation-label"><span class="std std-ref">Installation</span></a>.</p>
+</section>
+<section id="fixes">
+<h2>Fixes<a class="headerlink" href="#fixes" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p>Since 1.1.1 the receptor end-state scoring had been given the ligand trajectory, so the receptor
+end state had no valid frames. Flexible protein receptors are hit hardest.</p></li>
+<li><p>When one receptor REMD run is reused across ligands, the receptor post-processing leg now gets a
+single-frame starting coordinate of its own.</p></li>
+<li><p>A failed AMBER run raises an error that shows the command and AMBER’s stderr. Single-replica GPU
+jobs run the serial build without <code class="docutils literal notranslate"><span class="pre">mpirun</span></code>, and the ligand REMD leg stays on the CPU.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">rem.log</span></code> is kept outside debug mode, so REMD mixing can be checked after a run.</p></li>
+<li><p>Basic-MD end states on the GPU no longer fail under Toil <code class="docutils literal notranslate"><span class="pre">single_machine</span></code> when
+<code class="docutils literal notranslate"><span class="pre">CUDA_VISIBLE_DEVICES</span></code> is left empty.</p></li>
+<li><p>The example configs <code class="docutils literal notranslate"><span class="pre">remd_config.yaml</span></code> and <code class="docutils literal notranslate"><span class="pre">user_defined_endstate.yaml</span></code> load again.</p></li>
+</ul>
+</section>
+<section id="known-issues-and-limitations">
+<h2>Known Issues and Limitations<a class="headerlink" href="#known-issues-and-limitations" title="Link to this heading">¶</a></h2>
+<ul class="simple">
+<li><p>Nothing stops a gas-phase run from putting its <code class="docutils literal notranslate"><span class="pre">gb_extdiel_windows</span></code> windows on
+<code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code>, where they sample full water. On GPUs, set <code class="docutils literal notranslate"><span class="pre">gb_dielectric_cpu_cores</span></code> or use the
+in-solvent cycle.</p></li>
+<li><p>In the API reference, the <code class="docutils literal notranslate"><span class="pre">IntermediateStateArgs</span></code> docstring is out of date for
+<code class="docutils literal notranslate"><span class="pre">gb_extdiel_windows</span></code> (it takes dielectric constants) and <code class="docutils literal notranslate"><span class="pre">min_degree_overlap</span></code> (the ALS
+threshold, default 0.04). <a class="reference internal" href="config.html"><span class="doc">YAML Config Syntax</span></a> has the correct descriptions.</p></li>
+<li><p><code class="docutils literal notranslate"><span class="pre">scripts/als_census.py</span></code> and <code class="docutils literal notranslate"><span class="pre">scripts/prepare_refine.py</span></code>, which apply ALS to finished runs,
+assume the directory layout of the lab’s host-guest campaign.</p></li>
+<li><p>The RMSD restraints are experimental.</p></li>
+</ul>
+</section>
 </section>
 <section id="version-1-1-1-gpu-acceleration-support">
 <h1>Version 1.1.1 - GPU Acceleration Support<a class="headerlink" href="#version-1-1-1-gpu-acceleration-support" title="Link to this heading">¶</a></h1>
 <p><strong>Release Date</strong>: October 2025
-<strong>Status</strong>: Latest Development Release</p>
-<section id="major-features">
-<h2>Major Features<a class="headerlink" href="#major-features" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#major-features'">¶</a></h2>
+<strong>Status</strong>: Superseded</p>
+<section id="id1">
+<h2>Major Features<a class="headerlink" href="#id1" title="Link to this heading">¶</a></h2>
 <section id="gpu-acceleration-support">
-<h3>GPU Acceleration Support<a class="headerlink" href="#gpu-acceleration-support" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#gpu-acceleration-support'">¶</a></h3>
+<h3>GPU Acceleration Support<a class="headerlink" href="#gpu-acceleration-support" title="Link to this heading">¶</a></h3>
 <p>The package now includes comprehensive GPU acceleration support for molecular dynamics simulations using CUDA-enabled AMBER executables.</p>
 <p><strong>Key Features:</strong>
 - <strong>Automatic GPU Detection</strong>: The system automatically detects available GPUs when <code class="docutils literal notranslate"><span class="pre">CUDA:</span> <span class="pre">True</span></code> is set
@@ -153,7 +581,7 @@
 - Custom CUDA-enabled AMBER executables</p>
 </section>
 <section id="configuration-changes">
-<h3>Configuration Changes<a class="headerlink" href="#configuration-changes" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#configuration-changes'">¶</a></h3>
+<h3>Configuration Changes<a class="headerlink" href="#configuration-changes" title="Link to this heading">¶</a></h3>
 <section id="new-configuration-parameters">
 <h4>New Configuration Parameters<a class="headerlink" href="#new-configuration-parameters" title="Link to this heading">¶</a></h4>
 <p>The following new parameters have been added to the configuration system:</p>
@@ -161,55 +589,55 @@
 - <code class="docutils literal notranslate"><span class="pre">CUDA</span></code> (bool): Enable/disable GPU acceleration (default: <code class="docutils literal notranslate"><span class="pre">False</span></code>)
 - <code class="docutils literal notranslate"><span class="pre">num_accelerators</span></code> (int): Number of GPUs to request (default: <code class="docutils literal notranslate"><span class="pre">0</span></code> - auto-detect)</p>
 <p><strong>Example Configuration:</strong></p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="nt">system_parameters</span><span class="p">:</span>
-</span><span id="line-2"><span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span><span class="w">  </span><span class="c1"># GPU-enabled executable</span>
-</span><span id="line-3"><span class="w">  </span><span class="nt">mpi_command</span><span class="p">:</span><span class="w"> </span><span class="s">"srun"</span><span class="w">       </span><span class="c1"># or "mpirun"/"mpiexec"</span>
-</span><span id="line-4"><span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span><span class="w">                </span><span class="c1"># Enable GPU acceleration</span>
-</span><span id="line-5"><span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># Number of GPUs (0 = auto-detect)</span>
-</span><span id="line-6"><span class="w">  </span><span class="nt">output_directory_name</span><span class="p">:</span><span class="w"> </span><span class="s">"gpu_simulation"</span>
-</span></code></pre></div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">system_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span><span class="w">  </span><span class="c1"># GPU-enabled executable</span>
+<span class="w">  </span><span class="nt">mpi_command</span><span class="p">:</span><span class="w"> </span><span class="s">"srun"</span><span class="w">       </span><span class="c1"># or "mpirun"/"mpiexec"</span>
+<span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span><span class="w">                </span><span class="c1"># Enable GPU acceleration</span>
+<span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># Number of GPUs (0 = auto-detect)</span>
+<span class="w">  </span><span class="nt">output_directory_name</span><span class="p">:</span><span class="w"> </span><span class="s">"gpu_simulation"</span>
+</pre></div>
 </div>
 <p><strong>Complete CUDA Configuration Example:</strong></p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="c1"># CUDA-enabled configuration example</span>
-</span><span id="line-2"><span class="nt">system_parameters</span><span class="p">:</span>
-</span><span id="line-3"><span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span>
-</span><span id="line-4"><span class="w">  </span><span class="nt">mpi_command</span><span class="p">:</span><span class="w"> </span><span class="s">"srun"</span>
-</span><span id="line-5"><span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span>
-</span><span id="line-6"><span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># Use 2 GPUs</span>
-</span><span id="line-7"><span class="w">  </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="s">"10G"</span><span class="w">            </span><span class="c1"># Increased memory for GPU jobs</span>
-</span><span id="line-8"><span class="w">  </span><span class="nt">disk</span><span class="p">:</span><span class="w"> </span><span class="s">"20G"</span><span class="w">              </span><span class="c1"># Increased disk space</span>
-</span><span id="line-9"><span class="w">  </span><span class="nt">output_directory_name</span><span class="p">:</span><span class="w"> </span><span class="s">"cuda_ddm_run"</span>
-</span><span id="line-10">
-</span><span id="line-11"><span class="nt">endstate_parameter_files</span><span class="p">:</span>
-</span><span id="line-12"><span class="w">  </span><span class="nt">complex_parameter_filename</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/complex.parm7"</span>
-</span><span id="line-13"><span class="w">  </span><span class="nt">complex_coordinate_filename</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/complex.rst7"</span>
-</span><span id="line-14">
-</span><span id="line-15"><span class="nt">number_of_cores_per_system</span><span class="p">:</span>
-</span><span id="line-16"><span class="w">  </span><span class="nt">complex_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">        </span><span class="c1"># CPU cores for complex simulation</span>
-</span><span id="line-17"><span class="w">  </span><span class="nt">ligand_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">         </span><span class="c1"># CPU cores for ligand simulation</span>
-</span><span id="line-18"><span class="w">  </span><span class="nt">receptor_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">       </span><span class="c1"># CPU cores for receptor simulation</span>
-</span><span id="line-19">
-</span><span id="line-20"><span class="nt">AMBER_masks</span><span class="p">:</span>
-</span><span id="line-21"><span class="w">  </span><span class="nt">receptor_mask</span><span class="p">:</span><span class="w"> </span><span class="s">":RECEPTOR"</span>
-</span><span id="line-22"><span class="w">  </span><span class="nt">ligand_mask</span><span class="p">:</span><span class="w"> </span><span class="s">":LIGAND"</span>
-</span><span id="line-23">
-</span><span id="line-24"><span class="nt">workflow</span><span class="p">:</span>
-</span><span id="line-25"><span class="w">  </span><span class="nt">endstate_method</span><span class="p">:</span><span class="w"> </span><span class="s">"basic_md"</span>
-</span><span id="line-26"><span class="w">  </span><span class="nt">endstate_arguments</span><span class="p">:</span>
-</span><span id="line-27"><span class="w">    </span><span class="nt">md_template_mdin</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/template.mdin"</span>
-</span><span id="line-28"><span class="w">  </span><span class="nt">intermediate_states_arguments</span><span class="p">:</span>
-</span><span id="line-29"><span class="w">    </span><span class="nt">mdin_intermediate_file</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/intermediate.mdin"</span>
-</span><span id="line-30"><span class="w">    </span><span class="nt">igb_solvent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span><span id="line-31"><span class="w">    </span><span class="nt">temperature</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">300</span>
-</span><span id="line-32"><span class="w">    </span><span class="nt">exponent_conformational_forces</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">-8</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-7</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-6</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-5</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">]</span>
-</span><span id="line-33"><span class="w">    </span><span class="nt">exponent_orientational_forces</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">-4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">5</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">6</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">7</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">8</span><span class="p p-Indicator">]</span>
-</span><span id="line-34"><span class="w">    </span><span class="nt">restraint_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
-</span></code></pre></div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="c1"># CUDA-enabled configuration example</span>
+<span class="nt">system_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span>
+<span class="w">  </span><span class="nt">mpi_command</span><span class="p">:</span><span class="w"> </span><span class="s">"srun"</span>
+<span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span>
+<span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># Use 2 GPUs</span>
+<span class="w">  </span><span class="nt">memory</span><span class="p">:</span><span class="w"> </span><span class="s">"10G"</span><span class="w">            </span><span class="c1"># Increased memory for GPU jobs</span>
+<span class="w">  </span><span class="nt">disk</span><span class="p">:</span><span class="w"> </span><span class="s">"20G"</span><span class="w">              </span><span class="c1"># Increased disk space</span>
+<span class="w">  </span><span class="nt">output_directory_name</span><span class="p">:</span><span class="w"> </span><span class="s">"cuda_ddm_run"</span>
+
+<span class="nt">endstate_parameter_files</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">complex_parameter_filename</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/complex.parm7"</span>
+<span class="w">  </span><span class="nt">complex_coordinate_filename</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/complex.rst7"</span>
+
+<span class="nt">number_of_cores_per_system</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">complex_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8</span><span class="w">        </span><span class="c1"># CPU cores for complex simulation</span>
+<span class="w">  </span><span class="nt">ligand_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">         </span><span class="c1"># CPU cores for ligand simulation</span>
+<span class="w">  </span><span class="nt">receptor_ncores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">       </span><span class="c1"># CPU cores for receptor simulation</span>
+
+<span class="nt">AMBER_masks</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">receptor_mask</span><span class="p">:</span><span class="w"> </span><span class="s">":RECEPTOR"</span>
+<span class="w">  </span><span class="nt">ligand_mask</span><span class="p">:</span><span class="w"> </span><span class="s">":LIGAND"</span>
+
+<span class="nt">workflow</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">endstate_method</span><span class="p">:</span><span class="w"> </span><span class="s">"basic_md"</span>
+<span class="w">  </span><span class="nt">endstate_arguments</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">md_template_mdin</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/template.mdin"</span>
+<span class="w">  </span><span class="nt">intermediate_states_arguments</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">mdin_intermediate_file</span><span class="p">:</span><span class="w"> </span><span class="s">"path/to/intermediate.mdin"</span>
+<span class="w">    </span><span class="nt">igb_solvent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+<span class="w">    </span><span class="nt">temperature</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">300</span>
+<span class="w">    </span><span class="nt">exponent_conformational_forces</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">-8</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-7</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-6</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-5</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">exponent_orientational_forces</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">-4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">-1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">0</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">1</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">2</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">3</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">4</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">5</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">6</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">7</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="nv">8</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">restraint_type</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span>
+</pre></div>
 </div>
 </section>
 </section>
 <section id="implementation-details">
-<h3>Implementation Details<a class="headerlink" href="#implementation-details" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#implementation-details'">¶</a></h3>
+<h3>Implementation Details<a class="headerlink" href="#implementation-details" title="Link to this heading">¶</a></h3>
 <p><strong>SystemSettings Class Updates:</strong>
 - Added <code class="docutils literal notranslate"><span class="pre">CUDA</span></code> boolean field with automatic GPU detection
 - Added <code class="docutils literal notranslate"><span class="pre">num_accelerators</span></code> field with intelligent defaults
@@ -224,30 +652,30 @@
 - Enhanced error handling for GPU resource conflicts</p>
 <p><strong>Key Code Changes:</strong></p>
 <p>In <code class="docutils literal notranslate"><span class="pre">config.py</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="nd">@dataclass</span>
-</span><span id="line-2"><span class="k">class</span><span class="w"> </span><span class="nc">SystemSettings</span><span class="p">:</span>
-</span><span id="line-3">    <span class="n">CUDA</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-</span><span id="line-4">    <span class="n">num_accelerators</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
-</span><span id="line-5">
-</span><span id="line-6">    <span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="line-7">        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">CUDA</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_accelerators</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-</span><span id="line-8">            <span class="k">try</span><span class="p">:</span>
-</span><span id="line-9">                <span class="kn">from</span><span class="w"> </span><span class="nn">numba</span><span class="w"> </span><span class="kn">import</span> <span class="n">cuda</span>
-</span><span id="line-10">                <span class="bp">self</span><span class="o">.</span><span class="n">num_accelerators</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">cuda</span><span class="o">.</span><span class="n">gpus</span><span class="p">)</span>
-</span><span id="line-11">            <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
-</span><span id="line-12">                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"CUDA requested but 'cuda' module not available."</span><span class="p">)</span>
-</span></code></pre></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@dataclass</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">SystemSettings</span><span class="p">:</span>
+    <span class="n">CUDA</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="n">num_accelerators</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">__post_init__</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+        <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">CUDA</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">num_accelerators</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="k">try</span><span class="p">:</span>
+                <span class="kn">from</span><span class="w"> </span><span class="nn">numba</span><span class="w"> </span><span class="kn">import</span> <span class="n">cuda</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">num_accelerators</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">cuda</span><span class="o">.</span><span class="n">gpus</span><span class="p">)</span>
+            <span class="k">except</span> <span class="ne">ImportError</span><span class="p">:</span>
+                <span class="k">raise</span> <span class="ne">RuntimeError</span><span class="p">(</span><span class="s2">"CUDA requested but 'cuda' module not available."</span><span class="p">)</span>
+</pre></div>
 </div>
 <p>In <code class="docutils literal notranslate"><span class="pre">simulations.py</span></code>:</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="k">def</span><span class="w"> </span><span class="nf">setup</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
-</span><span id="line-2">    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">CUDA</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">system_type</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"complex"</span><span class="p">,</span> <span class="s2">"receptor"</span><span class="p">]:</span>
-</span><span id="line-3">        <span class="bp">self</span><span class="o">.</span><span class="n">exec_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">executable</span><span class="p">)</span>
-</span><span id="line-4">    <span class="c1"># ... rest of setup logic</span>
-</span></code></pre></div>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">setup</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">CUDA</span> <span class="ow">and</span> <span class="bp">self</span><span class="o">.</span><span class="n">system_type</span> <span class="ow">in</span> <span class="p">[</span><span class="s2">"complex"</span><span class="p">,</span> <span class="s2">"receptor"</span><span class="p">]:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">exec_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">executable</span><span class="p">)</span>
+    <span class="c1"># ... rest of setup logic</span>
+</pre></div>
 </div>
 </section>
 <section id="performance-improvements">
-<h3>Performance Improvements<a class="headerlink" href="#performance-improvements" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#performance-improvements'">¶</a></h3>
+<h3>Performance Improvements<a class="headerlink" href="#performance-improvements" title="Link to this heading">¶</a></h3>
 <ul class="simple">
 <li><p><strong>GPU Acceleration</strong>: Significant speedup for large system simulations</p></li>
 <li><p><strong>Resource Optimization</strong>: Better utilization of available computational resources</p></li>
@@ -256,7 +684,7 @@
 </ul>
 </section>
 <section id="backward-compatibility">
-<h3>Backward Compatibility<a class="headerlink" href="#backward-compatibility" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#backward-compatibility'">¶</a></h3>
+<h3>Backward Compatibility<a class="headerlink" href="#backward-compatibility" title="Link to this heading">¶</a></h3>
 <ul class="simple">
 <li><p>All existing CPU-only configurations remain fully functional</p></li>
 <li><p>Default behavior unchanged (CPU execution)</p></li>
@@ -264,15 +692,15 @@
 <li><p>Seamless upgrade path from previous versions</p></li>
 </ul>
 </section>
-<section id="migration-guide">
-<h3>Migration Guide<a class="headerlink" href="#migration-guide" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#migration-guide'">¶</a></h3>
+<section id="id2">
+<h3>Migration Guide<a class="headerlink" href="#id2" title="Link to this heading">¶</a></h3>
 <p><strong>For Existing Users:</strong></p>
 <p>To enable GPU acceleration, simply add the following to your configuration:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="nt">system_parameters</span><span class="p">:</span>
-</span><span id="line-2"><span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span><span class="w">  </span><span class="c1"># Change from "pmemd.MPI" to "pmemd.cuda"</span>
-</span><span id="line-3"><span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span><span class="w">                </span><span class="c1"># Add this line</span>
-</span><span id="line-4"><span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">       </span><span class="c1"># Optional: specify number of GPUs</span>
-</span></code></pre></div>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">system_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="s">"pmemd.cuda"</span><span class="w">  </span><span class="c1"># Change from "pmemd.MPI" to "pmemd.cuda"</span>
+<span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span><span class="w">                </span><span class="c1"># Add this line</span>
+<span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">       </span><span class="c1"># Optional: specify number of GPUs</span>
+</pre></div>
 </div>
 <p><strong>Hardware Requirements:</strong>
 - CUDA-enabled GPU with sufficient memory
@@ -284,18 +712,18 @@
 - Python packages: numba (for GPU detection)</p>
 </section>
 <section id="gpu-enabled-pymbar-analysis">
-<h3>GPU-Enabled PyMBAR Analysis<a class="headerlink" href="#gpu-enabled-pymbar-analysis" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#gpu-enabled-pymbar-analysis'">¶</a></h3>
+<h3>GPU-Enabled PyMBAR Analysis<a class="headerlink" href="#gpu-enabled-pymbar-analysis" title="Link to this heading">¶</a></h3>
 <p>For GPU-accelerated free energy analysis using PyMBAR, you can enable JAX CUDA support to leverage GPU computing for MBAR calculations.</p>
 <p><strong>Installation Requirements:</strong></p>
 <p>Follow the JAX installation guide for NVIDIA GPU support with CUDA 12:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><code><span id="line-1"><span class="c1"># Install JAX with CUDA 12 support</span>
-</span><span id="line-2">pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span><span class="s2">"jax[cuda12]"</span>
-</span></code></pre></div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Install JAX with CUDA 12 support</span>
+pip<span class="w"> </span>install<span class="w"> </span>-U<span class="w"> </span><span class="s2">"jax[cuda12]"</span>
+</pre></div>
 </div>
 <p><strong>Verification:</strong></p>
 <p>Check your CUDA version:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><code><span id="line-1">nvcc<span class="w"> </span>--version
-</span></code></pre></div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>nvcc<span class="w"> </span>--version
+</pre></div>
 </div>
 <p><strong>Configuration:</strong></p>
 <p>Once JAX with CUDA support is installed, PyMBAR will automatically detect and use GPU acceleration when available. The analysis will be performed using JAX’s GPU-accelerated operations, significantly speeding up MBAR calculations for large datasets.</p>
@@ -310,8 +738,8 @@
 - <a class="reference external" href="https://docs.jax.dev/en/latest/installation.html">JAX Installation Guide</a>
 - <a class="reference external" href="https://docs.jax.dev/en/latest/installation.html#nvidia-gpu">JAX CUDA Support</a></p>
 </section>
-<section id="known-issues-and-limitations">
-<h3>Known Issues and Limitations<a class="headerlink" href="#known-issues-and-limitations" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#known-issues-and-limitations'">¶</a></h3>
+<section id="id3">
+<h3>Known Issues and Limitations<a class="headerlink" href="#id3" title="Link to this heading">¶</a></h3>
 <ul class="simple">
 <li><p>GPU memory requirements may be higher than CPU simulations</p></li>
 <li><p>Some small systems may not benefit significantly from GPU acceleration</p></li>
@@ -333,58 +761,73 @@
 - Automated restraint generation
 - Temperature replica exchange (TREMD)
 - Integrated MBAR analysis</p>
-<p>For detailed information about v1.0.0 features, see <span class="xref std std-ref">Installation</span> and <a class="reference internal" href="Implementation.html#ddm-cycle-label"><span class="std std-ref">Implementation Details</span></a>.</p>
+<p>For detailed information about v1.0.0 features, see <a class="reference internal" href="Installation.html#installation-label"><span class="std std-ref">Installation</span></a> and <a class="reference internal" href="Implementation.html#ddm-cycle-label"><span class="std std-ref">Implementation Details</span></a>.</p>
 <section id="related-documentation">
-<h2>Related Documentation<a class="headerlink" href="#related-documentation" title="Link to this heading" x-intersect.margin.0%.0%.-70%.0%="activeSection = '#related-documentation'">¶</a></h2>
+<h2>Related Documentation<a class="headerlink" href="#related-documentation" title="Link to this heading">¶</a></h2>
 <ul class="simple">
-<li><p><span class="xref std std-ref">Installation</span> - Setup instructions including GPU requirements</p></li>
+<li><p><a class="reference internal" href="Installation.html#installation-label"><span class="std std-ref">Installation</span></a> - Setup instructions including GPU requirements</p></li>
 <li><p><span class="xref std std-ref">Configuration</span> - Complete configuration reference</p></li>
 <li><p><span class="xref std std-ref">Examples</span> - Usage examples including GPU configurations</p></li>
 <li><p><span class="xref std std-ref">API Documentation</span> - Technical API reference</p></li>
 </ul>
 </section>
 </section>
-</div></div><aside class="hidden text-sm xl:block" id="right-sidebar">
-<div class="sticky top-16 -mt-10 max-h-[calc(100vh-5rem)] overflow-y-auto pt-6 space-y-2"><p class="font-medium">On this page</p>
-<ul>
-<li></li>
-<li><a :data-current="activeSection === '#version-1-1-1-gpu-acceleration-support'" class="reference internal" href="#version-1-1-1-gpu-acceleration-support">Version 1.1.1 - GPU Acceleration Support</a><ul>
-<li><a :data-current="activeSection === '#major-features'" class="reference internal" href="#major-features">Major Features</a><ul>
-<li><a :data-current="activeSection === '#gpu-acceleration-support'" class="reference internal" href="#gpu-acceleration-support">GPU Acceleration Support</a></li>
-<li><a :data-current="activeSection === '#configuration-changes'" class="reference internal" href="#configuration-changes">Configuration Changes</a><ul>
-<li><a :data-current="activeSection === '#new-configuration-parameters'" class="reference internal" href="#new-configuration-parameters">New Configuration Parameters</a></li>
-</ul>
-</li>
-<li><a :data-current="activeSection === '#implementation-details'" class="reference internal" href="#implementation-details">Implementation Details</a></li>
-<li><a :data-current="activeSection === '#performance-improvements'" class="reference internal" href="#performance-improvements">Performance Improvements</a></li>
-<li><a :data-current="activeSection === '#backward-compatibility'" class="reference internal" href="#backward-compatibility">Backward Compatibility</a></li>
-<li><a :data-current="activeSection === '#migration-guide'" class="reference internal" href="#migration-guide">Migration Guide</a></li>
-<li><a :data-current="activeSection === '#gpu-enabled-pymbar-analysis'" class="reference internal" href="#gpu-enabled-pymbar-analysis">GPU-Enabled PyMBAR Analysis</a></li>
-<li><a :data-current="activeSection === '#known-issues-and-limitations'" class="reference internal" href="#known-issues-and-limitations">Known Issues and Limitations</a></li>
-</ul>
-</li>
-</ul>
-</li>
-<li><a :data-current="activeSection === '#version-1-0-0-initial-stable-release'" class="reference internal" href="#version-1-0-0-initial-stable-release">Version 1.0.0 - Initial Stable Release</a><ul>
-<li><a :data-current="activeSection === '#related-documentation'" class="reference internal" href="#related-documentation">Related Documentation</a></li>
-</ul>
-</li>
-</ul>
-</div>
-</aside>
-</main>
-</div>
-</div><footer class="py-6 border-t border-border md:py-0">
-<div class="container flex flex-col items-center justify-between gap-4 md:h-24 md:flex-row">
-<div class="flex flex-col items-center gap-4 px-8 md:flex-row md:gap-2 md:px-0">
-<p class="text-sm leading-loose text-center text-muted-foreground md:text-left">© 2025, LuckoLab. Project structure based on the Computational Molecular Science Python Cookiecutter version 1.5 Built with <a class="font-medium underline underline-offset-4" href="https://www.sphinx-doc.org" rel="noreferrer">Sphinx 8.1.3</a></p>
-</div>
-</div>
-</footer>
-</div>
-<script src="_static/documentation_options.js?v=5929fcd5"></script>
-<script src="_static/doctools.js?v=9bcbadda"></script>
-<script src="_static/sphinx_highlight.js?v=dc90522c"></script>
-<script defer="defer" src="_static/theme.js?v=073f68d9"></script>
-</body>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="about.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">About this package</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="testing.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Tests and continuous integration</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025-2026, LuchkoLab. Project structure based on the Computational Molecular Science Python Cookiecutter version 1.5
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer no-toc">
+      
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=8a448e45"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=2871b0cb"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    </body>
 </html>

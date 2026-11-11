@@ -1,0 +1,614 @@
+<!doctype html>
+<html class="no-js" lang="en" data-content_root="./">
+  <head><meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="color-scheme" content="light dark"><meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="author" title="About these documents" href="about.html"><link rel="index" title="Index" href="genindex.html"><link rel="search" title="Search" href="search.html"><link rel="next" title="Running Basic MD at the endstate simulation" href="examples/basic_md_example.html"><link rel="prev" title="Running the in-solvent (paper) protocol" href="in_solvent_protocol.html">
+
+    <!-- Generated with Sphinx 8.1.3 and Furo 2025.12.19 -->
+        <title>Running on GPUs with window packing - Implicit Solvent DDM</title>
+      <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=d111a655" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo.css?v=7bdb33bb" />
+    <link rel="stylesheet" type="text/css" href="_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/styles/furo-extensions.css?v=8dab3a3b" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=8d3cf25f" />
+    
+    
+
+
+<style>
+  body {
+    --color-code-background: #f2f2f2;
+  --color-code-foreground: #1e1e1e;
+  --color-brand-primary: #1d6f8a;
+  --color-brand-content: #1d6f8a;
+  
+  }
+  @media not print {
+    body[data-theme="dark"] {
+      --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
+    }
+    @media (prefers-color-scheme: dark) {
+      body:not([data-theme="light"]) {
+        --color-code-background: #202020;
+  --color-code-foreground: #d0d0d0;
+  --color-brand-primary: #5bb4d3;
+  --color-brand-content: #5bb4d3;
+  
+      }
+    }
+  }
+</style></head>
+  <body>
+    
+    <script>
+      document.body.dataset.theme = localStorage.getItem("theme") || "auto";
+    </script>
+    
+
+<svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+  <symbol id="svg-toc" viewBox="0 0 24 24">
+    <title>Contents</title>
+    <svg stroke="currentColor" fill="currentColor" stroke-width="0" viewBox="0 0 1024 1024">
+      <path d="M408 442h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8zm-8 204c0 4.4 3.6 8 8 8h480c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8H408c-4.4 0-8 3.6-8 8v56zm504-486H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zm0 632H120c-4.4 0-8 3.6-8 8v56c0 4.4 3.6 8 8 8h784c4.4 0 8-3.6 8-8v-56c0-4.4-3.6-8-8-8zM115.4 518.9L271.7 642c5.8 4.6 14.4.5 14.4-6.9V388.9c0-7.4-8.5-11.5-14.4-6.9L115.4 505.1a8.74 8.74 0 0 0 0 13.8z"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-menu" viewBox="0 0 24 24">
+    <title>Menu</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-menu">
+      <line x1="3" y1="12" x2="21" y2="12"></line>
+      <line x1="3" y1="6" x2="21" y2="6"></line>
+      <line x1="3" y1="18" x2="21" y2="18"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-arrow-right" viewBox="0 0 24 24">
+    <title>Expand</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather-chevron-right">
+      <polyline points="9 18 15 12 9 6"></polyline>
+    </svg>
+  </symbol>
+  <symbol id="svg-sun" viewBox="0 0 24 24">
+    <title>Light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="feather-sun">
+      <circle cx="12" cy="12" r="5"></circle>
+      <line x1="12" y1="1" x2="12" y2="3"></line>
+      <line x1="12" y1="21" x2="12" y2="23"></line>
+      <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line>
+      <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line>
+      <line x1="1" y1="12" x2="3" y2="12"></line>
+      <line x1="21" y1="12" x2="23" y2="12"></line>
+      <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
+      <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon" viewBox="0 0 24 24">
+    <title>Dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-moon">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />
+    </svg>
+  </symbol>
+  <symbol id="svg-sun-with-moon" viewBox="0 0 24 24">
+    <title>Auto light/dark, in light mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path style="opacity: 50%" d="M 5.411 14.504 C 5.471 14.504 5.532 14.504 5.591 14.504 C 3.639 16.319 4.383 19.569 6.931 20.352 C 7.693 20.586 8.512 20.551 9.25 20.252 C 8.023 23.207 4.056 23.725 2.11 21.184 C 0.166 18.642 1.702 14.949 4.874 14.536 C 5.051 14.512 5.231 14.5 5.411 14.5 L 5.411 14.504 Z"/>
+      <line x1="14.5" y1="3.25" x2="14.5" y2="1.25"/>
+      <line x1="14.5" y1="15.85" x2="14.5" y2="17.85"/>
+      <line x1="10.044" y1="5.094" x2="8.63" y2="3.68"/>
+      <line x1="19" y1="14.05" x2="20.414" y2="15.464"/>
+      <line x1="8.2" y1="9.55" x2="6.2" y2="9.55"/>
+      <line x1="20.8" y1="9.55" x2="22.8" y2="9.55"/>
+      <line x1="10.044" y1="14.006" x2="8.63" y2="15.42"/>
+      <line x1="19" y1="5.05" x2="20.414" y2="3.636"/>
+      <circle cx="14.5" cy="9.55" r="3.6"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-moon-with-sun" viewBox="0 0 24 24">
+    <title>Auto light/dark, in dark mode</title>
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round"
+      class="icon-custom-derived-from-feather-sun-and-tabler-moon">
+      <path d="M 8.282 7.007 C 8.385 7.007 8.494 7.007 8.595 7.007 C 5.18 10.184 6.481 15.869 10.942 17.24 C 12.275 17.648 13.706 17.589 15 17.066 C 12.851 22.236 5.91 23.143 2.505 18.696 C -0.897 14.249 1.791 7.786 7.342 7.063 C 7.652 7.021 7.965 7 8.282 7 L 8.282 7.007 Z"/>
+      <line style="opacity: 50%" x1="18" y1="3.705" x2="18" y2="2.5"/>
+      <line style="opacity: 50%" x1="18" y1="11.295" x2="18" y2="12.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="4.816" x2="14.464" y2="3.964"/>
+      <line style="opacity: 50%" x1="20.711" y1="10.212" x2="21.563" y2="11.063"/>
+      <line style="opacity: 50%" x1="14.205" y1="7.5" x2="13.001" y2="7.5"/>
+      <line style="opacity: 50%" x1="21.795" y1="7.5" x2="23" y2="7.5"/>
+      <line style="opacity: 50%" x1="15.316" y1="10.184" x2="14.464" y2="11.036"/>
+      <line style="opacity: 50%" x1="20.711" y1="4.789" x2="21.563" y2="3.937"/>
+      <circle style="opacity: 50%" cx="18" cy="7.5" r="2.169"/>
+    </svg>
+  </symbol>
+  <symbol id="svg-pencil" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-pencil-code">
+      <path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" />
+      <path d="M13.5 6.5l4 4" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+  <symbol id="svg-eye" viewBox="0 0 24 24">
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="1" stroke-linecap="round" stroke-linejoin="round" class="icon-tabler-eye-code">
+      <path stroke="none" d="M0 0h24v24H0z" fill="none" />
+      <path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" />
+      <path
+        d="M11.11 17.958c-3.209 -.307 -5.91 -2.293 -8.11 -5.958c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6c-.21 .352 -.427 .688 -.647 1.008" />
+      <path d="M20 21l2 -2l-2 -2" />
+      <path d="M17 17l-2 2l2 2" />
+    </svg>
+  </symbol>
+</svg>
+
+<input type="checkbox" class="sidebar-toggle" name="__navigation" id="__navigation" aria-label="Toggle site navigation sidebar">
+<input type="checkbox" class="sidebar-toggle" name="__toc" id="__toc" aria-label="Toggle table of contents sidebar">
+<label class="overlay sidebar-overlay" for="__navigation"></label>
+<label class="overlay toc-overlay" for="__toc"></label>
+
+<a class="skip-to-content muted-link" href="#furo-main-content">Skip to content</a>
+
+
+
+<div class="page">
+  <header class="mobile-header">
+    <div class="header-left">
+      <label class="nav-overlay-icon" for="__navigation">
+        <span class="icon"><svg><use href="#svg-menu"></use></svg></span>
+      </label>
+    </div>
+    <div class="header-center">
+      <a href="index.html"><div class="brand">Implicit Solvent DDM</div></a>
+    </div>
+    <div class="header-right">
+      <div class="theme-toggle-container theme-toggle-header">
+        <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+          <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+          <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+          <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+          <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+        </button>
+      </div>
+      <label class="toc-overlay-icon toc-header-icon" for="__toc">
+        <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+      </label>
+    </div>
+  </header>
+  <aside class="sidebar-drawer">
+    <div class="sidebar-container">
+      
+      <div class="sidebar-sticky"><a class="sidebar-brand" href="index.html">
+  
+  <span class="sidebar-brand-text">Implicit Solvent DDM</span>
+  
+</a><form class="sidebar-search-container" method="get" action="search.html" role="search">
+  <input class="sidebar-search" placeholder="Search" name="q" aria-label="Search">
+  <input type="hidden" name="check_keywords" value="yes">
+  <input type="hidden" name="area" value="default">
+</form>
+<div id="searchbox"></div><div class="sidebar-scroll"><div class="sidebar-tree">
+  <p class="caption" role="heading"><span class="caption-text">Get started</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="Installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="config.html">YAML Config Syntax</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Method</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="Implementation.html">Implementation Details</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Implementation.html#conformationally-restrained-alchemical-pathway">Conformationally restrained Alchemical-Pathway</a></li>
+<li class="toctree-l1"><a class="reference internal" href="DDM_Workflow.html">DDM Workflow Structure</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Run</span></p>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="in_solvent_protocol.html">Running the in-solvent (paper) protocol</a></li>
+<li class="toctree-l1 current current-page"><a class="current reference internal" href="#">Running on GPUs with window packing</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Examples</span></p>
+<ul>
+<li class="toctree-l1"><a class="reference internal" href="examples/basic_md_example.html">Running Basic MD at the endstate simulation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/remd_example.html">Running REMD at the endstate simulation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="examples/user_defined_example.html">User Provided Endstate Simulation</a></li>
+</ul>
+<p class="caption" role="heading"><span class="caption-text">Reference</span></p>
+<ul>
+<li class="toctree-l1 has-children"><a class="reference internal" href="api.html">API Documentation</a><input aria-label="Toggle navigation of API Documentation" class="toctree-checkbox" id="toctree-checkbox-1" name="toctree-checkbox-1" role="switch" type="checkbox"/><label for="toctree-checkbox-1"><span class="icon"><svg><use href="#svg-arrow-right"></use></svg></span></label><ul>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.implicit_ddm_workflow.html">implicit_solvent_ddm.implicit_ddm_workflow</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.workflow_phases.html">implicit_solvent_ddm.workflow_phases</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.setup_simulations.html">implicit_solvent_ddm.setup_simulations</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.als_refine.html">implicit_solvent_ddm.als_refine</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.runner.IntermidateRunner.html">implicit_solvent_ddm.runner.IntermidateRunner</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.run_endstate.html">implicit_solvent_ddm.run_endstate</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.config.html">implicit_solvent_ddm.config</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.matrix_order.CycleSteps.html">implicit_solvent_ddm.matrix_order.CycleSteps</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.adaptive_restraints.html">implicit_solvent_ddm.adaptive_restraints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.alchemical.html">implicit_solvent_ddm.alchemical</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdin.html">implicit_solvent_ddm.mdin</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.mdout.html">implicit_solvent_ddm.mdout</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pandasmbar.html">implicit_solvent_ddm.pandasmbar</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.block_mbar.html">implicit_solvent_ddm.block_mbar</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.postTreatment.html">implicit_solvent_ddm.postTreatment</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraint_helper.html">implicit_solvent_ddm.restraint_helper</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.restraints.html">implicit_solvent_ddm.restraints</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.pose_clusters.html">implicit_solvent_ddm.pose_clusters</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.nfe_energy.html">implicit_solvent_ddm.nfe_energy</a></li>
+<li class="toctree-l2"><a class="reference internal" href="autosummary/implicit_solvent_ddm.simulations.html">implicit_solvent_ddm.simulations</a></li>
+</ul>
+</li>
+<li class="toctree-l1"><a class="reference internal" href="testing.html">Tests and continuous integration</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Updates.html">Updates and Changelog</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Updates.html#version-2-0-0-in-solvent-protocol-and-post-production-als">Version 2.0.0 - In-Solvent Protocol and Post-Production ALS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Updates.html#version-1-1-1-gpu-acceleration-support">Version 1.1.1 - GPU Acceleration Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="Updates.html#version-1-0-0-initial-stable-release">Version 1.0.0 - Initial Stable Release</a></li>
+<li class="toctree-l1"><a class="reference internal" href="about.html">About this package</a></li>
+</ul>
+
+</div>
+</div>
+
+      </div>
+      
+    </div>
+  </aside>
+  <div class="main">
+    <div class="content">
+      <div class="article-container">
+        <a href="#" class="back-to-top muted-link">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8v12z"></path>
+          </svg>
+          <span>Back to top</span>
+        </a>
+        <div class="content-icon-container">
+          <div class="view-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/blob/main/docs/gpu_packing.rst?plain=true" title="View this page">
+    <svg><use href="#svg-eye"></use></svg>
+    <span class="visually-hidden">View this page</span>
+  </a>
+</div><div class="edit-this-page">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/edit/main/docs/gpu_packing.rst" rel="edit" title="Edit this page">
+    <svg><use href="#svg-pencil"></use></svg>
+    <span class="visually-hidden">Edit this page</span>
+  </a>
+</div>
+
+<div class="edit-this-page github-repo-link">
+  <a class="muted-link" href="https://github.com/LuchkoLab/Implicit-Solvent-DDM/" title="GitHub repository">
+    <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+    </svg>
+    <span class="visually-hidden">GitHub repository</span>
+  </a>
+</div><div class="theme-toggle-container theme-toggle-content">
+            <button class="theme-toggle" aria-label="Toggle Light / Dark / Auto color theme">
+              <svg class="theme-icon-when-auto-light"><use href="#svg-sun-with-moon"></use></svg>
+              <svg class="theme-icon-when-auto-dark"><use href="#svg-moon-with-sun"></use></svg>
+              <svg class="theme-icon-when-dark"><use href="#svg-moon"></use></svg>
+              <svg class="theme-icon-when-light"><use href="#svg-sun"></use></svg>
+            </button>
+          </div>
+          <label class="toc-overlay-icon toc-content-icon" for="__toc">
+            <span class="icon"><svg><use href="#svg-toc"></use></svg></span>
+          </label>
+        </div>
+        <article role="main" id="furo-main-content">
+          <section id="running-on-gpus-with-window-packing">
+<span id="gpu-packing"></span><h1>Running on GPUs with window packing<a class="headerlink" href="#running-on-gpus-with-window-packing" title="Link to this heading">¶</a></h1>
+<p>A single GB window of a small system does not keep a modern GPU busy. One MCL-1 window
+(2,471 atoms) on an RTX 5000 Ada uses about half the card. Window packing runs several
+<code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> windows on the same GPU at once, and CUDA MPS (Multi-Process Service) lets them
+share the card at the same time instead of taking turns. On that window, four per GPU nearly
+doubles the throughput.</p>
+<section id="when-to-use-it">
+<h2>When to use it<a class="headerlink" href="#when-to-use-it" title="Link to this heading">¶</a></h2>
+<p>Use packing with the in-solvent cycle (<a class="reference internal" href="in_solvent_protocol.html"><span class="doc">Running the in-solvent (paper) protocol</span></a>). Every complex and receptor
+window in that cycle can run on <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code>.</p>
+<p>Do not put a gas-phase cycle with <code class="docutils literal notranslate"><span class="pre">gb_extdiel_windows</span></code> on the GPU. <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> ignores
+<code class="docutils literal notranslate"><span class="pre">extdiel</span></code> in GB MD, so those windows sample water and give a wrong answer. Nothing in the
+code catches this yet.</p>
+</section>
+<section id="start-cuda-mps-first">
+<span id="gpu-mps"></span><h2>Start CUDA MPS first<a class="headerlink" href="#start-cuda-mps-first" title="Link to this heading">¶</a></h2>
+<div class="admonition important">
+<p class="admonition-title">Important</p>
+<p>Packing only pays off when the CUDA MPS daemon is running in the job <strong>before</strong>
+<code class="docutils literal notranslate"><span class="pre">run_implicit_ddm.py</span></code> starts. Without MPS the packed windows take turns on the GPU instead of
+running together: each one runs about <code class="docutils literal notranslate"><span class="pre">windows_per_gpu</span></code> times slower and the total stays at
+the single-window rate (about 1,400 to 1,750 ns/day in the benchmark below, against 3,327 with
+MPS at four windows per GPU). The workflow still runs, it only prints a warning.</p>
+</div>
+<p>Put these lines in the Slurm script, before the workflow command:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Stop early if pmemd.cuda or the MPS control program is missing.</span>
+<span class="k">for</span><span class="w"> </span>exe<span class="w"> </span><span class="k">in</span><span class="w"> </span>pmemd.cuda<span class="w"> </span>nvidia-cuda-mps-control<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span><span class="s2">"</span><span class="nv">$exe</span><span class="s2">"</span><span class="w"> </span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"ERROR: </span><span class="nv">$exe</span><span class="s2"> not on PATH"</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="k">done</span>
+
+<span class="c1"># Start a private MPS daemon for this job and shut it down when the job ends.</span>
+mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_MPS_PIPE_DIRECTORY</span><span class="o">=</span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>/mps_pipe
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_MPS_LOG_DIRECTORY</span><span class="o">=</span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>/mps_log
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="s2">"</span><span class="nv">$CUDA_MPS_PIPE_DIRECTORY</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CUDA_MPS_LOG_DIRECTORY</span><span class="s2">"</span>
+nvidia-cuda-mps-control<span class="w"> </span>-d<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"ERROR: could not start MPS"</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="nb">trap</span><span class="w"> </span><span class="s1">'echo quit | nvidia-cuda-mps-control'</span><span class="w"> </span>EXIT
+</pre></div>
+</div>
+<p>The loop checks both programs up front, so a missing AMBER module or CUDA install fails in the
+first second of the job instead of after the end states have run. <code class="docutils literal notranslate"><span class="pre">nvidia-cuda-mps-control</span></code> comes
+with the NVIDIA driver; if it is not on <code class="docutils literal notranslate"><span class="pre">PATH</span></code>, load your cluster’s CUDA module or ask the
+admins where it lives. Setting the two <code class="docutils literal notranslate"><span class="pre">CUDA_MPS_*</span></code> directories per job gives each job its own
+daemon, so two jobs on the same node do not share one, and the Toil workers find it through the
+same environment variables. The full script is in the next section.</p>
+</section>
+<section id="config">
+<h2>Config<a class="headerlink" href="#config" title="Link to this heading">¶</a></h2>
+<p>All of this goes under <code class="docutils literal notranslate"><span class="pre">hardware_parameters</span></code>:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">hardware_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">executable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pmemd.cuda</span><span class="w">     </span><span class="c1"># the windows run serial pmemd.cuda</span>
+<span class="w">  </span><span class="nt">CUDA</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">True</span>
+<span class="w">  </span><span class="nt">num_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1</span><span class="w">        </span><span class="c1"># GPUs per window; anything above 1 is clamped to 1</span>
+<span class="w">  </span><span class="nt">windows_per_gpu</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">         </span><span class="c1"># windows sharing each GPU (default 1 = no packing)</span>
+<span class="w">  </span><span class="nt">remd_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">2</span><span class="w">       </span><span class="c1"># GPUs per REMD job; the replicas share them under MPS</span>
+<span class="w">  </span><span class="nt">mpi_command</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mpirun</span>
+</pre></div>
+</div>
+<p>The REMD end states then run on <code class="docutils literal notranslate"><span class="pre">pmemd.cuda.MPI</span></code>, which the workflow derives from
+<code class="docutils literal notranslate"><span class="pre">executable</span></code>. If your AMBER build has no <code class="docutils literal notranslate"><span class="pre">pmemd.cuda.MPI</span></code>, or you would rather keep the
+replica ladder on CPU, run it there and leave the windows on the GPU:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">hardware_parameters</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">remd_executable</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">pmemd.MPI</span>
+<span class="w">  </span><span class="nt">remd_accelerators</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">0</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">windows_per_gpu</span></code> only works when the whole workflow runs inside one Slurm job, which is Toil’s
+<code class="docutils literal notranslate"><span class="pre">single_machine</span></code> batch system and the normal way to start a run. With any other batch system it
+is reset to 1.</p>
+</section>
+<section id="the-slurm-job">
+<h2>The Slurm job<a class="headerlink" href="#the-slurm-job" title="Link to this heading">¶</a></h2>
+<p>Three things have to be right in the job script: ask Slurm for the GPUs, start an MPS daemon
+before the workflow, and ask for enough CPU cores. This is the script the MCL-1 production runs
+used, with the site-specific parts made generic:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="ch">#!/bin/bash</span>
+<span class="c1">#SBATCH --partition=gpu</span>
+<span class="c1">#SBATCH --gres=gpu:2</span>
+<span class="c1">#SBATCH --nodes=1</span>
+<span class="c1">#SBATCH --ntasks=1</span>
+<span class="c1">#SBATCH --cpus-per-task=90</span>
+<span class="c1">#SBATCH --mem=128G</span>
+<span class="c1">#SBATCH --time=48:00:00</span>
+
+conda<span class="w"> </span>activate<span class="w"> </span>isddm_env
+<span class="c1"># Some AMBER modules set PYTHONPATH, which can hide the env's pytraj. Keep the old value.</span>
+<span class="nv">_PP_BEFORE</span><span class="o">=</span><span class="si">${</span><span class="nv">PYTHONPATH</span><span class="p">-</span><span class="si">}</span>
+module<span class="w"> </span>load<span class="w"> </span>amber<span class="w">            </span><span class="c1"># must provide pmemd.cuda (and pmemd.cuda.MPI for GPU REMD)</span>
+<span class="k">if</span><span class="w"> </span><span class="o">[</span><span class="w"> </span>-n<span class="w"> </span><span class="s2">"</span><span class="nv">$_PP_BEFORE</span><span class="s2">"</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">then</span><span class="w"> </span><span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span><span class="s2">"</span><span class="nv">$_PP_BEFORE</span><span class="s2">"</span><span class="p">;</span><span class="w"> </span><span class="k">else</span><span class="w"> </span><span class="nb">unset</span><span class="w"> </span>PYTHONPATH<span class="p">;</span><span class="w"> </span><span class="k">fi</span>
+
+<span class="c1"># Stop early if pmemd.cuda or the MPS control program is missing.</span>
+<span class="k">for</span><span class="w"> </span>exe<span class="w"> </span><span class="k">in</span><span class="w"> </span>pmemd.cuda<span class="w"> </span>nvidia-cuda-mps-control<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+<span class="w">    </span><span class="nb">command</span><span class="w"> </span>-v<span class="w"> </span><span class="s2">"</span><span class="nv">$exe</span><span class="s2">"</span><span class="w"> </span>&gt;/dev/null<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"ERROR: </span><span class="nv">$exe</span><span class="s2"> not on PATH"</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="k">done</span>
+
+<span class="c1"># Required for packing: a private MPS daemon for this job, started before the workflow.</span>
+<span class="c1"># Toil's workers inherit the pipe directory from the environment.</span>
+mkdir<span class="w"> </span>-p<span class="w"> </span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_MPS_PIPE_DIRECTORY</span><span class="o">=</span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>/mps_pipe
+<span class="nb">export</span><span class="w"> </span><span class="nv">CUDA_MPS_LOG_DIRECTORY</span><span class="o">=</span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>/mps_log
+mkdir<span class="w"> </span>-p<span class="w"> </span><span class="s2">"</span><span class="nv">$CUDA_MPS_PIPE_DIRECTORY</span><span class="s2">"</span><span class="w"> </span><span class="s2">"</span><span class="nv">$CUDA_MPS_LOG_DIRECTORY</span><span class="s2">"</span>
+nvidia-cuda-mps-control<span class="w"> </span>-d<span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="o">{</span><span class="w"> </span><span class="nb">echo</span><span class="w"> </span><span class="s2">"ERROR: could not start MPS"</span><span class="p">;</span><span class="w"> </span><span class="nb">exit</span><span class="w"> </span><span class="m">1</span><span class="p">;</span><span class="w"> </span><span class="o">}</span>
+<span class="nb">trap</span><span class="w"> </span><span class="s1">'echo quit | nvidia-cuda-mps-control'</span><span class="w"> </span>EXIT
+
+run_implicit_ddm.py<span class="w"> </span><span class="s2">"file:/tmp/slurm.</span><span class="nv">$SLURM_JOB_ID</span><span class="s2">/jobstore"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--config_file<span class="w"> </span>my_config.yaml<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--workDir<span class="w"> </span>/tmp/slurm.<span class="nv">$SLURM_JOB_ID</span>/<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>--maxCores<span class="w"> </span><span class="m">90</span>
+</pre></div>
+</div>
+<p>Start the script from the directory your config’s relative paths assume (the repository root
+for the shipped examples). The <code class="docutils literal notranslate"><span class="pre">trap</span></code> line shuts the daemon down when the job ends, even if the
+workflow fails.</p>
+<p>The job store above sits on the node’s local <code class="docutils literal notranslate"><span class="pre">/tmp</span></code>, which is fast but disappears with the job.
+If you want to continue a failed run with <code class="docutils literal notranslate"><span class="pre">--restart</span></code>, put the job store on shared storage
+instead.</p>
+</section>
+<section id="cpu-cores">
+<h2>CPU cores<a class="headerlink" href="#cpu-cores" title="Link to this heading">¶</a></h2>
+<p>Each packed window keeps one CPU core busy: the <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> host thread launches kernels and
+waits on the GPU. The workflow sets those cores aside so that CPU work, such as the ligand leg
+and the energy re-scoring, does not land on them. It takes <code class="docutils literal notranslate"><span class="pre">GPUs</span> <span class="pre">x</span> <span class="pre">windows_per_gpu</span></code> cores off
+<code class="docutils literal notranslate"><span class="pre">--maxCores</span></code>. If <code class="docutils literal notranslate"><span class="pre">--maxCores</span></code> is not given, it starts from <code class="docutils literal notranslate"><span class="pre">SLURM_CPUS_PER_TASK</span></code>, or from
+the CPUs the process is allowed to use.</p>
+<p>With 2 GPUs and <code class="docutils literal notranslate"><span class="pre">windows_per_gpu:</span> <span class="pre">4</span></code>, 8 cores are held for the GPU windows and the other 82 of
+the 90 do the CPU work. If there are fewer cores than window slots, the run stops at the start
+with:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[GPU] 8 GPU window slots need one core each, but only 4 core(s) are available;
+lower windows_per_gpu or request more CPUs.
+</pre></div>
+</div>
+<p>REMD asks for <code class="docutils literal notranslate"><span class="pre">remd_accelerators</span> <span class="pre">x</span> <span class="pre">windows_per_gpu</span></code> slots, so a REMD job still gets whole
+GPUs to itself and its replicas share them under MPS.</p>
+</section>
+<section id="checking-that-it-works">
+<h2>Checking that it works<a class="headerlink" href="#checking-that-it-works" title="Link to this heading">¶</a></h2>
+<p>The job’s <code class="docutils literal notranslate"><span class="pre">.out</span></code> file shows what the workflow found. A good start looks like this:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>[GPU] allocation detect: ... -&gt; allocated_gpus=['0', '1'] (via ...)
+[GPU] maxCores lowered to 82 for 8 GPU slot(s)
+</pre></div>
+</div>
+<p>Two lines mean something is wrong:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">[GPU]</span> <span class="pre">WARNING:</span> <span class="pre">no</span> <span class="pre">GPUs</span> <span class="pre">detected</span> <span class="pre">-&gt;</span> <span class="pre">single_machine</span> <span class="pre">GPU</span> <span class="pre">pinning</span> <span class="pre">DISABLED</span></code></dt><dd><p>Slurm gave the job no GPU. Check <code class="docutils literal notranslate"><span class="pre">#SBATCH</span> <span class="pre">--gres=gpu:N</span></code>.</p>
+</dd>
+<dt><code class="docutils literal notranslate"><span class="pre">[GPU]</span> <span class="pre">WARNING:</span> <span class="pre">CUDA</span> <span class="pre">MPS</span> <span class="pre">daemon</span> <span class="pre">not</span> <span class="pre">found.</span></code></dt><dd><p>The windows will take turns on the GPU and run about <code class="docutils literal notranslate"><span class="pre">windows_per_gpu</span></code> times slower each,
+with no gain overall. Check that <code class="docutils literal notranslate"><span class="pre">nvidia-cuda-mps-control</span> <span class="pre">-d</span></code> ran in the job script.</p>
+</dd>
+</dl>
+<p>While the windows run, <code class="docutils literal notranslate"><span class="pre">nvidia-smi</span></code> on the node should list several <code class="docutils literal notranslate"><span class="pre">pmemd.cuda</span></code> processes
+on each GPU.</p>
+</section>
+<section id="benchmark">
+<h2>Benchmark<a class="headerlink" href="#benchmark" title="Link to this heading">¶</a></h2>
+<p>Measured with <code class="docutils literal notranslate"><span class="pre">scripts/gpu_packing_benchmark.py</span></code> on one MCL-1 ligand-17 window (2,471 atoms)
+on an NVIDIA RTX 5000 Ada, with MPS on. Every copy ran the same input, and the energies of all
+copies were identical (largest difference in EPtot: 0).</p>
+<div class="table-wrapper colwidths-given docutils container">
+<table class="docutils align-default">
+<colgroup>
+<col style="width: 18.0%" />
+<col style="width: 22.0%" />
+<col style="width: 18.0%" />
+<col style="width: 16.0%" />
+<col style="width: 26.0%" />
+</colgroup>
+<thead>
+<tr class="row-odd"><th class="head"><p>Windows per GPU</p></th>
+<th class="head"><p>ns/day per window</p></th>
+<th class="head"><p>Total ns/day</p></th>
+<th class="head"><p>vs 1 window</p></th>
+<th class="head"><p>GPU memory peak (MiB)</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>1</p></td>
+<td><p>1,735</p></td>
+<td><p>1,735</p></td>
+<td><p>1.00x</p></td>
+<td><p>436</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>1,363</p></td>
+<td><p>2,726</p></td>
+<td><p>1.57x</p></td>
+<td><p>835</p></td>
+</tr>
+<tr class="row-even"><td><p>4</p></td>
+<td><p>832</p></td>
+<td><p>3,327</p></td>
+<td><p>1.92x</p></td>
+<td><p>1,632</p></td>
+</tr>
+<tr class="row-odd"><td><p>8</p></td>
+<td><p>435</p></td>
+<td><p>3,480</p></td>
+<td><p>2.01x</p></td>
+<td><p>3,227</p></td>
+</tr>
+<tr class="row-even"><td><p>12</p></td>
+<td><p>290</p></td>
+<td><p>3,480</p></td>
+<td><p>2.01x</p></td>
+<td><p>4,823</p></td>
+</tr>
+<tr class="row-odd"><td><p>16</p></td>
+<td><p>218</p></td>
+<td><p>3,489</p></td>
+<td><p>2.01x</p></td>
+<td><p>6,418</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Throughput levels off at about twice the single-window rate. Four windows per GPU already get
+about 95% of that, which is why the production runs use <code class="docutils literal notranslate"><span class="pre">windows_per_gpu:</span> <span class="pre">4</span></code>; more copies only
+make each window slower. Without MPS the total stays around 1,400 to 1,750 ns/day however many
+windows you pack.</p>
+<p>The production runs held up the same way. MCL-1 ligand 4 with 10 ns windows ran 124 GPU windows
+on 2 GPUs in 4.42 hours of MD, about 3,450 ns/day per GPU, close to twice the rate with one window
+per GPU. Packing did not change the physics either: the MD-averaged energies of every window in
+packed and unpacked runs agree within the scatter between replicates.</p>
+</section>
+</section>
+
+        </article>
+      </div>
+      <footer>
+        
+        <div class="related-pages">
+          <a class="next-page" href="examples/basic_md_example.html">
+              <div class="page-info">
+                <div class="context">
+                  <span>Next</span>
+                </div>
+                <div class="title">Running Basic MD at the endstate simulation</div>
+              </div>
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+            </a>
+          <a class="prev-page" href="in_solvent_protocol.html">
+              <svg class="furo-related-icon"><use href="#svg-arrow-right"></use></svg>
+              <div class="page-info">
+                <div class="context">
+                  <span>Previous</span>
+                </div>
+                
+                <div class="title">Running the in-solvent (paper) protocol</div>
+                
+              </div>
+            </a>
+        </div>
+        <div class="bottom-of-page">
+          <div class="left-details">
+            <div class="copyright">
+                Copyright &#169; 2025-2026, LuchkoLab. Project structure based on the Computational Molecular Science Python Cookiecutter version 1.5
+            </div>
+            Made with <a href="https://www.sphinx-doc.org/">Sphinx</a> and <a class="muted-link" href="https://pradyunsg.me">@pradyunsg</a>'s
+            
+            <a href="https://github.com/pradyunsg/furo">Furo</a>
+            
+          </div>
+          <div class="right-details">
+            
+          </div>
+        </div>
+        
+      </footer>
+    </div>
+    <aside class="toc-drawer">
+      
+      
+      <div class="toc-sticky toc-scroll">
+        <div class="toc-title-container">
+          <span class="toc-title">
+            On this page
+          </span>
+        </div>
+        <div class="toc-tree-container">
+          <div class="toc-tree">
+            <ul>
+<li><a class="reference internal" href="#">Running on GPUs with window packing</a><ul>
+<li><a class="reference internal" href="#when-to-use-it">When to use it</a></li>
+<li><a class="reference internal" href="#start-cuda-mps-first">Start CUDA MPS first</a></li>
+<li><a class="reference internal" href="#config">Config</a></li>
+<li><a class="reference internal" href="#the-slurm-job">The Slurm job</a></li>
+<li><a class="reference internal" href="#cpu-cores">CPU cores</a></li>
+<li><a class="reference internal" href="#checking-that-it-works">Checking that it works</a></li>
+<li><a class="reference internal" href="#benchmark">Benchmark</a></li>
+</ul>
+</li>
+</ul>
+
+          </div>
+        </div>
+      </div>
+      
+      
+    </aside>
+  </div>
+</div><script src="_static/documentation_options.js?v=8a448e45"></script>
+    <script src="_static/doctools.js?v=9bcbadda"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/scripts/furo.js?v=46bd48cc"></script>
+    <script src="_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="_static/copybutton.js?v=2871b0cb"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    </body>
+</html>
