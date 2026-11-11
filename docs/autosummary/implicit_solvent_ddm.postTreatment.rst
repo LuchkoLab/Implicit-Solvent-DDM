@@ -8,6 +8,7 @@
 
    .. autosummary::
    
+      cache_output_path
       create_mdout_dataframe
    
    .. rubric:: Classes

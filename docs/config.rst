@@ -91,17 +91,17 @@ Packing GPU windows
 ``windows_per_gpu`` (default ``1``) sets how many ``pmemd.cuda`` windows share each allocated GPU under
 Toil's ``single_machine`` batch system. It is ignored (reset to ``1``) for other batch systems.
 
-- **CUDA MPS is required.** Start the daemon on the node before the workflow
+- **CUDA MPS is required.** Start the daemon in the job before the workflow
   (``nvidia-cuda-mps-control -d``). Without it the windows time-slice and gain nothing; the leader
-  prints a warning if the daemon is not found.
+  prints a warning if the daemon is not found. The lines to put in the Slurm script are in
+  :ref:`gpu-mps`.
 - **One core per slot.** Each packed window holds about one CPU core, so ``maxCores`` is lowered by
   ``n_gpus * windows_per_gpu`` to keep CPU post-analysis off those cores. With ``--maxCores`` unset,
   the core count comes from ``SLURM_CPUS_PER_TASK``, else the process CPU affinity.
 - **REMD** requests ``remd_accelerators * windows_per_gpu`` slots, so it still claims whole devices.
 
-Benchmark (MCL-1 ligand-17 window, 2,471 atoms, RTX 5000 Ada, ``scripts/gpu_packing_benchmark.py``):
-the GPU total is 1,735 / 2,726 / 3,327 / 3,480 ns/day at 1 / 2 / 4 / 8 copies under MPS, with identical
-energies. Without MPS it stays flat at ~1,400-1,750 ns/day. ``4`` reaches ~95% of the plateau.
+Four windows per GPU nearly double the throughput of one (1,735 to 3,327 ns/day on an MCL-1
+window). The Slurm script, the MPS setup and the full benchmark table are in :doc:`gpu_packing`.
 
 Other hardware keys
 -------------------
@@ -572,6 +572,8 @@ neither list is given (RMSD mode only), the distance ladder is the orientational
 ``boresch_distance_offset`` (float, default ``-4.0``). ``boresch_distance_force_constant`` (float
 or null, default ``null``) sets the distance force constant written at the anchor and used in the
 analytic standard-state correction; ``null`` takes the largest value of the distance ladder.
+
+.. _block-mbar:
 
 Block-chained post-analysis
 ---------------------------

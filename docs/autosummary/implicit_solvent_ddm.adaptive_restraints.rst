@@ -8,16 +8,9 @@
 
    .. autosummary::
    
-      adaptive_lambda_windows
-      bisect_between
+      assemble_df_mbar
       compute_mbar
-      good_enough
-      group_overlap_neighbors
-      improve_charge_scaling
-      improve_gb_dielectric
-      improve_restraints_overlap
-      initilized_jobs
-      overlap_average
+      kcals_per_kt
       run_compute_mbar
       run_exponential_averaging
    

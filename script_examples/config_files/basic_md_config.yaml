@@ -1,30 +1,54 @@
+# Gas-phase cycle on the CB7/M01 host-guest example, with plain MD at the end states.
+#
+# The ligand is decoupled in the gas phase (decouple_in_solvent is left at its default, False).
+# The complex, host and guest end states are sampled with one MD run each
+# (endstate_templates_required/basic_md.template) before the intermediate windows run.
+# Everything runs at 298 K with saltcon = 0.3: both mdin templates and temperature below agree.
+#
+# Paths are relative to the repository root, so start the run from there:
+#   run_implicit_ddm.py file:jobstore_example_01 --config_file script_examples/config_files/basic_md_config.yaml
+#
+# Key reference: docs/config.rst.
+
 hardware_parameters:
-    executable: "pmemd.MPI" # executable machine for MD choice : [sander, sander.MPI, pmemd, pmemd.MPI, pmeded.CUDA]
-    mpi_command: srun # system dependent /
-    CUDA:  # run on GPU
-    output_directory_name: basic_md_dir
+  executable: "pmemd.MPI"          # sander, sander.MPI, pmemd, pmemd.MPI, pmemd.cuda or pmemd.cuda.MPI
+  mpi_command: srun                # system dependent: mpirun, mpiexec or srun
+  CUDA: False                      # run on CPUs
+  output_directory_name: basic_md_dir
+  # working_directory and cache_directory_output default to the directory the run is started from
 
 endstate_parameter_files:
-    complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7 # path to topology file; ["path/to/complex.parm7"]
-    complex_coordinate_filename: script_examples/structs/cb7-mol01.rst7 # path to coordinate ["path/to/complex.ncrst"]list of coordinate file of a complex
+  complex_parameter_filename: script_examples/structs/cb7-mol01_Hmass.parm7   # hydrogen-mass-repartitioned topology for the 4 fs timestep
+  complex_coordinate_filename: script_examples/structs/cb7-mol01.rst7
 
 number_of_cores_per_system:
-  complex_ncores: 2 #total number of cores per job
-  ligand_ncores: 1 #total number of cores per ligand simulation
-  receptor_ncores: 1 #total number of cores per ligand simulation
+  complex_ncores: 2                # cores per complex intermediate window
+  ligand_ncores: 1                 # cores per ligand intermediate window
+  receptor_ncores: 1               # cores per receptor intermediate window
 
 AMBER_masks:
-  receptor_mask: ":CB7" # list of Amber masks denoting receptor atoms in respected complex file
-  ligand_mask: ":M01" # list of Amber masks denoting ligand atoms in respected complex file
+  receptor_mask: ":CB7"            # residue names in cb7-mol01_Hmass.parm7: CB7 M01
+  ligand_mask: ":M01"
 
 workflow:
-  endstate_method: basic_md #options REMD or 0 (meaning no endstate simulation will be performed just intermidates)endstate_method: REMD #options REMD, MD or 0 (meaning no endstate simulation will be performed just intermidates) 
+  endstate_method: basic_md        # remd, basic_md, or 0 (end-state trajectories supplied by the user)
   endstate_arguments:
-      md_template_mdin: script_examples/endstate_templates_required/basic_md.template
+    md_template_mdin: script_examples/endstate_templates_required/basic_md.template   # 4 ps at 4 fs, temp0 = 298; needs DISANG=$restraint
+
   intermediate_states_arguments:
-      mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin #intermediate mdins required states 3-8
-      igb_solvent: 2 #igb [1,2,3,7,8]
-      temperature: 300
-      exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]  # list exponent values 2**p 
-      exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]  # list exponent values 2**p 
-      restraint_type: 2 # choices: [ 1: CoM-CoM, 2: CoM-Heavy_Atom, 3: Heavy_Atom-Heavy_Atom, must be 1, 2 or 3 ]
+    mdin_intermediate_file: script_examples/four_fento_time_step_mdin_template.mdin   # 4 fs, nstlim = 2500000 (10 ns per window), igb = 2, temp0 = 298
+    igb_solvent: 2                 # GB-OBC; keep equal to igb in the mdin template
+    temperature: 298               # keep equal to temp0 in both mdin templates, which the workflow does not rewrite
+    restraint_type: 2              # 1: CoM-CoM, 2: CoM-heavy atom, 3: heavy atom-heavy atom
+    exponent_conformational_forces: [-8, -7, -6, -5, -4, -3, -2, -1, 0, 1, 2, 2.584963, 3, 3.584963, 4]   # 2**p kcal/mol/A^2: pairwise network and Boresch distance
+    exponent_orientational_forces: [-4, -3, -2, -1, 0, 1, 2, 3, 4, 5, 6, 6.584963, 7, 7.584963, 8]        # 2**p kcal/mol/rad^2: Boresch angles and dihedrals
+
+    # Optional windows, off in this example.
+    # charges_lambda_window: [0.5, 1.0]          # ligand charge fractions; 0 and 1 are always added
+
+    # Block-MBAR (optional). Leave it unset for the full N x N MBAR over every window of a leg.
+    # A number K solves each leg as a chain of K-window MBAR blocks and runs only the energy
+    # evaluations those blocks need: K = 2 is the adjacent-window BAR chain (3N - 2 evaluations
+    # instead of N^2), and a larger K pools more windows per solve. See "Block-chained
+    # post-analysis" in docs/config.rst.
+    # post_analysis_block_size: 3

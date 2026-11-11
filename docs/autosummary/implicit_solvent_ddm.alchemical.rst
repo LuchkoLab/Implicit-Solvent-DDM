@@ -9,5 +9,6 @@
    .. autosummary::
    
       alter_topology
+      scale_ligand_receptor_lj
       split_complex_system
    

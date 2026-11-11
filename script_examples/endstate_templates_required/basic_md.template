@@ -1,12 +1,13 @@
 Basic MD Example
  &cntrl
-   irest=0, ntx=1, 
+   irest=0, ntx=1,
    nstlim = 1000, dt=0.004,
-   irest=0, ntt=3, gamma_ln=1.0,
-   temp0=300, ig=-1,
+   ntt=3, gamma_ln=1.0,
+   temp0=298, ig=-1,
    ntc=2, ntf=2, nscm=10,
    ntb=0, igb=2,
    cut=999.0, rgbmax=999.0,
+   saltcon=0.3, gbsa = 0,
    ntpr=10, ntwx=10, ntwr=10,
    nmropt=1,
  /

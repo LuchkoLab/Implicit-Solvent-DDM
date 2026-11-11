@@ -14,7 +14,9 @@ jobs:
   build-docs:
     runs-on: ubuntu-latest
     permissions: { contents: write }
-    defaults: { run: { shell: bash -el {0} } }
+    defaults:
+      run:
+        shell: bash -el {0}   # login shell activates the micromamba env
     steps:
       - uses: actions/checkout@v5
       - uses: mamba-org/setup-micromamba@v3

@@ -8,6 +8,9 @@
 
    .. autosummary::
    
+      mpi_executable
+      resolve_output_dir
+      serial_executable
       workflow
       write_empty_restraint
       write_mdin
